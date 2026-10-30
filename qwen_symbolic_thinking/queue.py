@@ -4,10 +4,12 @@
     run_queue("lane1")
 
 The queue is runs/queue_<lane>.json in the project repo: a list of specs, each {"name", "kind": "train" | "synth" |
-"throughput" | "extract", ...}. A train spec trains (its "train" keys go to train.run) and then screens the adapter (its "screen" keys go
+"throughput" | "extract" | "pe", ...}. A train spec trains (its "train" keys go to train.run) and then screens the adapter (its "screen" keys go
 to screen.run, with the trained model's forms by default). A synth spec generates synthetic items (synth.generate). A
 throughput spec measures rows an hour by batch size (screen.throughput, with an adapter when given). An extract spec writes
-whole rows for a manifest's pictures with the trained model (extract.run; its "extract" keys). Each run leaves runs/done/<name>.json
+whole rows for a manifest's pictures with the trained model (extract.run; its "extract" keys). A pe spec has one of the Qwen-Image 2.1
+prompt enhancers read a manifest's pictures or rewrite the seeds' prompts (pe.run; its "pe" keys). A screen spec screens a model, with
+an adapter when given, without training (screen.run; its "screen" keys: models, adapter, forms, ...). Each run leaves runs/done/<name>.json
 on the Hub (started, then done or failed, with the summaries); a spec whose marker exists is skipped unless it says "retry".
 When the queue is empty the lane waits for new specs, polling every minute, and leaves after idle_minutes without any."""
 from __future__ import annotations
@@ -89,6 +91,19 @@ def run_spec(spec: dict, lane: str, repo: str, out_dir: str) -> dict:
         if "sources" in x and x["sources"] is not None:
             x["sources"] = tuple(x["sources"])
         result["extract"] = {k: v for k, v in extract.run(**x, tag=name).items() if k not in ("env", "library_notes")}
+    elif spec["kind"] == "screen":
+        from . import screen
+        s = dict(DEFAULT_SCREEN, **spec["screen"])
+        s["forms"] = tuple(s["forms"])
+        s.setdefault("models", ["Qwen/Qwen3.5-9B"])
+        result["screen"] = screen.run(tag=name, repo=repo, **s)
+    elif spec["kind"] == "pe":
+        from . import pe
+        p = dict(spec["pe"])
+        for key in ("sources", "exclude"):
+            if key in p and p[key] is not None:
+                p[key] = tuple(p[key])
+        result["pe"] = {k: v for k, v in pe.run(**p, tag=name).items() if k not in ("env", "library_notes")}
     else:
         raise ValueError(f"unknown kind {spec['kind']!r}")
     result["finished"] = datetime.now(timezone.utc).isoformat(timespec="seconds")

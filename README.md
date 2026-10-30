@@ -54,8 +54,8 @@ time; nothing is redistributed here. The specification rows are the dataset's ow
 ## Install
 
 ```
-pip install git+https://github.com/AbstractEyes/qwen-symbolic-thinking@v0.1.10
-pip install "qwen-symbolic-thinking[screen] @ git+https://github.com/AbstractEyes/qwen-symbolic-thinking@v0.1.10"   # with torch, transformers 5, accelerate, peft
+pip install git+https://github.com/AbstractEyes/qwen-symbolic-thinking@v0.1.11
+pip install "qwen-symbolic-thinking[screen] @ git+https://github.com/AbstractEyes/qwen-symbolic-thinking@v0.1.11"   # with torch, transformers 5, accelerate, peft
 ```
 
 Qwen3.5 needs transformers 5 (the model code lives under `transformers.models.qwen3_5`); the preflight says so if it is missing.
@@ -115,6 +115,26 @@ text = chain.render(row, full=True)       # the whole row as the model is taught
 
 Tests: `pytest tests` (no GPU needed).
 
+## The prompt enhancers of Qwen-Image 2.1
+
+Qwen ships two 9B prompt enhancers beside Qwen-Image 2.1, [PE-I2I](https://huggingface.co/Qwen/Qwen-Image-2.1-PE-I2I) (pictures and
+an edit request in, thinking, then an edit prompt as JSON) and [PE-T2I](https://huggingface.co/Qwen/Qwen-Image-2.1-PE-T2I) (a short
+prompt in, thinking, then a long picture prompt and an aspect ratio). Both carry the Qwen3.5-9B architecture this package trains on.
+`qwen_symbolic_thinking.pe.run` has one of them read the manifest's pictures under a no-change request (its thinking of what stays
+fixed becomes a full reading) or rewrite the seeds' captions, with the shipped system prompt and the model cards' sampling; each
+answer is split at `</think>`, the thinking and the prompt are scored against the row's captions with the same said / backed rulers
+the extraction uses, the thinking's sentences are mapped onto the sixteen step names by their words, and the rows and a summary by
+source ship to `pe/<stamp>_<tag>/` in the project repo. The read puts a second 9B looker beside the trained adapter on the same
+pictures; the enhancers themselves are under the Qwen Research Licence (research and evaluation only).
+
+```python
+from qwen_symbolic_thinking.pe import run
+run(kind="i2i", manifest="hub:AbstractPhil/qwen-thinking-images/manifest_v1.2.jsonl", per_source=60, tag="PE_i2i_read")
+run(kind="t2i", seeds="hub:synth/seeds_v1.json", n=1000, tag="PE_t2i_read")
+```
+
 ## License
 
-Apache-2.0. The Qwen3.5 models are Apache-2.0; the dataset's rows carry their own licences per row.
+Apache-2.0. The Qwen3.5 models are Apache-2.0; the dataset's rows carry their own licences per row. The Qwen-Image 2.1 prompt
+enhancers that `pe.run` reads with are under the Qwen Research Licence (research and evaluation only); nothing of them is
+redistributed here.

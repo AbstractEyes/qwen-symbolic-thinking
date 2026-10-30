@@ -8,7 +8,7 @@ huggingface.co/datasets/AbstractPhil/thought-symbolic-image-captions do.
     from qwen_symbolic_thinking.queue import run_queue     # a card working through a queue of runs kept on the Hub
 
 Weights and results: huggingface.co/AbstractPhil/qwen-symbolic-thinking-image-training."""
-__version__ = "0.1.10"
+__version__ = "0.1.11"
 
 REPO = "AbstractPhil/qwen-symbolic-thinking-image-training"
 DATASET = "AbstractPhil/thought-symbolic-image-captions"
