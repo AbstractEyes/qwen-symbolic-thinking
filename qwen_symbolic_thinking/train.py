@@ -139,11 +139,17 @@ def run(model_id: str = "Qwen/Qwen3.5-9B", inputs: str = "hub:sft/sft_v1.json", 
     total = math.ceil(steps_per_epoch * epochs)
     trainable = [p for p in model.parameters() if p.requires_grad]
     optimizer = torch.optim.Adam(trainable, lr=lr, betas=(0.9, 0.999))        # plain Adam, no weight decay
-    args = TrainingArguments(output_dir=run_dir, per_device_train_batch_size=batch, gradient_accumulation_steps=grad_accum,
-                             num_train_epochs=epochs, learning_rate=lr, lr_scheduler_type="cosine", warmup_ratio=warmup,
-                             bf16=True, logging_steps=10, save_strategy="no", report_to=[], remove_unused_columns=False,
-                             dataloader_num_workers=0, seed=seed, gradient_checkpointing=True,
-                             gradient_checkpointing_kwargs={"use_reentrant": False})
+    wanted = dict(output_dir=run_dir, per_device_train_batch_size=batch, gradient_accumulation_steps=grad_accum,
+                  num_train_epochs=epochs, learning_rate=lr, lr_scheduler_type="cosine", warmup_steps=math.ceil(total * warmup),
+                  bf16=True, logging_steps=10, save_strategy="no", report_to=[], remove_unused_columns=False,
+                  dataloader_num_workers=0, seed=seed, gradient_checkpointing=True,
+                  gradient_checkpointing_kwargs={"use_reentrant": False})
+    import inspect
+    allowed = set(inspect.signature(TrainingArguments).parameters)
+    dropped = [k for k in wanted if k not in allowed]
+    if dropped:
+        print("  this transformers' TrainingArguments lacks", dropped, "(left out)", flush=True)
+    args = TrainingArguments(**{k: v for k, v in wanted.items() if k in allowed})
     log = []
 
     class Progress(TrainerCallback):
