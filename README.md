@@ -57,6 +57,10 @@ pip install "qwen-symbolic-thinking[screen] @ git+https://github.com/AbstractEye
 ```
 
 Qwen3.5 needs transformers 5 (the model code lives under `transformers.models.qwen3_5`); the preflight says so if it is missing.
+Colab's torchao 0.10 breaks PEFT's import (PEFT 0.21 wants torchao 0.16 or newer, or none): the notebooks' install cell removes
+torchao when PEFT fails to import, and `qwen_symbolic_thinking.checks.run()` reports it. The linear-attention kernels
+(causal-conv1d, flash-linear-attention, triton) are optional and all-or-nothing; the same checks report them, and every run
+prints whether transformers fell back to its reference implementation.
 
 ## The fine-tune
 

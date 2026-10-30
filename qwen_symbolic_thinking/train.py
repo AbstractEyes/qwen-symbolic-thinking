@@ -16,7 +16,7 @@ from datetime import datetime, timezone
 
 from . import REPO, __version__, chain, prompts
 from .hub import ship
-from .screen import fetch_image, load_inputs, preflight, vlm_class
+from .screen import fetch_images, load_inputs, preflight, vlm_class
 
 # The language model's projections, by name (the vision tower, under `visual`, is left alone): the full-attention layers'
 # q/k/v/o, every layer's MLP, and the linear-attention layers' token/value projections (in_proj_qkv, in_proj_z, out_proj in
@@ -115,12 +115,7 @@ def run(model_id: str = "Qwen/Qwen3.5-9B", inputs: str = "hub:sft/sft_v1.json", 
     data = load_inputs(inputs)
     items = data["items"][:n_items]
     t0 = time.time()
-    pictures = {}
-    for it in items:
-        if it["kind"] == "image":
-            im = fetch_image(it["image_urls"], os.path.join(out_dir, "images"))
-            if im is not None:
-                pictures[it["id"]] = im
+    pictures = fetch_images(items, os.path.join(out_dir, "images"))
     items = [it for it in items if it["kind"] != "image" or it["id"] in pictures]
     n_img = sum(1 for it in items if it["kind"] == "image")
     print(f"train {stamp}: {len(items)} items ({n_img} with a picture, {len(items) - n_img} from specifications); "

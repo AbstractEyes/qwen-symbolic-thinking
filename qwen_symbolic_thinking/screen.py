@@ -101,6 +101,19 @@ def fetch_image(urls: list, cache_dir: str):
     return None
 
 
+def fetch_images(items: list, cache_dir: str, workers: int = 16) -> dict:
+    """{item id: image} for the picture items, fetched in parallel; the items whose image never answers are left out."""
+    from concurrent.futures import ThreadPoolExecutor
+    picture_items = [it for it in items if it["kind"] == "image"]
+    with ThreadPoolExecutor(workers) as pool:
+        images = list(pool.map(lambda it: fetch_image(it["image_urls"], cache_dir), picture_items))
+    out = {it["id"]: im for it, im in zip(picture_items, images) if im is not None}
+    for it, im in zip(picture_items, images):
+        if im is None:
+            print(f"  no image for {it['id']} ({it['seed_id']}); skipped", flush=True)
+    return out
+
+
 def messages(form: str, it: dict, examples: dict, image=None) -> list:
     if form == "bare":
         text = prompts.bare(it["depth"])
@@ -218,13 +231,7 @@ def run(models: list, inputs: str = "hub:screens/inputs/screen_v1.json", out_dir
     print(f"screen {stamp}: {len(image_items)} picture rows, {len(spec_items)} specification rows, forms {forms}, "
           f"models {models}", flush=True)
     t0 = time.time()
-    pictures = {}
-    for it in image_items:
-        im = fetch_image(it["image_urls"], os.path.join(os.path.dirname(out_dir), "images"))
-        if im is None:
-            print(f"  no image for {it['id']} ({it['seed_id']}); skipped", flush=True)
-        else:
-            pictures[it["id"]] = im
+    pictures = fetch_images(image_items, os.path.join(os.path.dirname(out_dir), "images"))
     image_items = [it for it in image_items if it["id"] in pictures]
     print(f"  {len(pictures)} images ready in {time.time() - t0:.0f} s", flush=True)
     with open(os.path.join(out_dir, "env.json"), "w", encoding="utf-8") as fh:
@@ -341,10 +348,7 @@ def throughput(model_id: str, inputs: str = "hub:screens/inputs/screen_v1.json",
     items = [it for it in data["items"] if it["kind"] == kind][:n_rows]
     pictures = {}
     if kind == "image":
-        for it in items:
-            im = fetch_image(it["image_urls"], os.path.join(os.path.dirname(out_dir), "images"))
-            if im is not None:
-                pictures[it["id"]] = im
+        pictures = fetch_images(items, os.path.join(os.path.dirname(out_dir), "images"))
         items = [it for it in items if it["id"] in pictures]
     jobs = [(it, messages(form, it, data.get("examples", {}), pictures.get(it["id"])), pictures.get(it["id"])) for it in items]
     print(f"throughput {stamp}: {model_id}, {len(jobs)} rows, form {form}, batches {batches}", flush=True)
