@@ -19,7 +19,8 @@ from datetime import datetime, timezone
 
 from . import REPO, __version__, chain, prompts
 from .hub import ship
-from .screen import fetch_images, load_inputs, preflight, vlm_class
+from .extract import fetch_images                # by url list or by locator (a pretrain shard row, a Hub file, a zip member)
+from .screen import load_inputs, preflight, vlm_class
 
 # The language model's projections, by name (the vision tower, under `visual`, is left alone): the full-attention layers'
 # q/k/v/o, every layer's MLP, and the linear-attention layers' token/value projections (in_proj_qkv, in_proj_z, out_proj in

@@ -72,12 +72,25 @@ def _fetch_url(urls: list, cache_path: str):
     return None
 
 
+def locator_row(r: dict) -> dict:
+    """A manifest row as fetch_images reads it; a training item (id + image_urls, or id + image) is read the same way."""
+    if r.get("image") and r.get("sample_id"):
+        return r
+    r = dict(r)
+    r.setdefault("sample_id", r.get("id"))
+    if not r.get("image") and r.get("image_urls"):
+        r["image"] = {"kind": "url", "urls": list(r["image_urls"])}
+    return r
+
+
 def fetch_images(rows: list, cache_dir: str, workers: int = 16) -> dict:
-    """{sample_id: image} for the rows whose picture answers; grouped by locator kind so shards and zips download once."""
+    """{sample_id: image} for the rows whose picture answers (an item's id when it has no sample_id); grouped by locator kind so
+    shards and zips download once."""
     from concurrent.futures import ThreadPoolExecutor
     from huggingface_hub import hf_hub_download
     os.makedirs(cache_dir, exist_ok=True)
     out = {}
+    rows = [locator_row(r) for r in rows]
     by_kind = collections.defaultdict(list)
     for r in rows:
         by_kind[(r.get("image") or {}).get("kind", "pending")].append(r)
@@ -178,10 +191,12 @@ def fetch_images(rows: list, cache_dir: str, workers: int = 16) -> dict:
 
 def run(manifest: str, out_repo: str = "AbstractPhil/qwen-thinking-images", model_id: str = "Qwen/Qwen3.5-9B",
         adapter: str | None = "AbstractPhil/qwen3.5-9b-think-symbolic-image", adapter_subfolder: str | None = None,
-        per_source: int | None = None, sources: tuple | None = None, n: int | None = None, batch: int = 64,
+        per_source: int | None = None, sources: tuple | None = None, split: str | None = None, n: int | None = None, batch: int = 64,
         max_new_tokens: int = 400, min_backed: float = 0.2, min_said: float = 0.1, chunk: int = 512,
         out_dir: str = "/content/extract", repo_type: str = "dataset", do_ship: bool = True, tag: str = "pilot") -> dict:
-    """Extract whole rows for the manifest's pictures; ship extractions/<stamp>_<tag>/ to the dataset repo."""
+    """Extract whole rows for the manifest's pictures (those of one split when given); the next chunk's pictures are fetched
+    while the current chunk generates; ship extractions/<stamp>_<tag>/ to the dataset repo."""
+    from concurrent.futures import ThreadPoolExecutor
     import torch
     from huggingface_hub import HfApi
     stamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S") + f"_{tag}"
@@ -190,6 +205,8 @@ def run(manifest: str, out_repo: str = "AbstractPhil/qwen-thinking-images", mode
     env = preflight()
     rows = load_manifest(manifest)
     rows = [r for r in rows if (r.get("image") or {}).get("kind") not in (None, "pending")]
+    if split:
+        rows = [r for r in rows if r.get("split") == split]
     if sources:
         rows = [r for r in rows if r["source"] in set(sources)]
     if per_source:
@@ -207,9 +224,17 @@ def run(manifest: str, out_repo: str = "AbstractPhil/qwen-thinking-images", mode
     results_path = os.path.join(out_dir, "rows.jsonl")
     counts, reasons, t0, n_done, n_tok, n_missing = collections.Counter(), collections.Counter(), time.time(), 0, 0, 0
     said, backed = collections.defaultdict(list), collections.defaultdict(list)
-    for c0 in range(0, len(rows), chunk):
-        group = rows[c0:c0 + chunk]
-        pictures = fetch_images(group, os.path.join(os.path.dirname(out_dir), "images"))
+    img_dir = os.path.join(os.path.dirname(out_dir), "images")
+    chunks = [rows[c0:c0 + chunk] for c0 in range(0, len(rows), chunk)]
+    prefetch = ThreadPoolExecutor(1)
+    pending = prefetch.submit(fetch_images, chunks[0], img_dir) if chunks else None
+    for ci, group in enumerate(chunks):
+        t_fetch = time.time()
+        pictures = pending.result()
+        pending = prefetch.submit(fetch_images, chunks[ci + 1], img_dir) if ci + 1 < len(chunks) else None
+        waited = time.time() - t_fetch
+        if waited > 5:
+            print(f"  waited {waited:.0f} s for chunk {ci + 1}'s pictures", flush=True)
         n_missing += sum(1 for r in group if r["sample_id"] not in pictures)
         group = [r for r in group if r["sample_id"] in pictures]
         for b0 in range(0, len(group), batch):
@@ -246,6 +271,7 @@ def run(manifest: str, out_repo: str = "AbstractPhil/qwen-thinking-images", mode
                   f"{spent / n_done * (len(rows) - n_done):.0f} s left, {n_tok / max(spent, 1e-9):.0f} tok/s", flush=True)
             if n_done == len(part):
                 print("  linear attention:", fast_path_note(), flush=True)
+    prefetch.shutdown(wait=False)
     by_source = {}
     for src in sorted({r["source"] for r in rows}):
         by_source[src] = {"rows": sum(1 for r in rows if r["source"] == src),
@@ -274,3 +300,47 @@ def run(manifest: str, out_repo: str = "AbstractPhil/qwen-thinking-images", mode
                 time.sleep(15 * (attempt + 1))
     summary["path_in_repo"] = f"extractions/{stamp}"
     return summary
+
+
+def training_items(rows_path: str, out_path: str | None = None, manifest: str | None = None, min_backed: float = 0.3,
+                   min_said: float = 0.15, captioned_only: bool = True, forms: tuple = ("full",), max_items: int | None = None,
+                   seed: int = 20261030) -> dict:
+    """The kept rows of an extraction as training items (the whole row under the forms given), gated harder than the audit:
+    only rows whose source had captions when captioned_only, said and backed at or above the floors. With the manifest, each
+    item carries its row's captions as the hint (for the screen's grounding read) and its specification. Returns the file's
+    dict; writes it to out_path when given."""
+    rows = [json.loads(l) for l in open(rows_path, encoding="utf-8") if l.strip()]
+    by_id = {}
+    if manifest:
+        for m in load_manifest(manifest):
+            by_id[m["sample_id"]] = m
+    items, why = [], collections.Counter()
+    for r in rows:
+        if r.get("rejected"):
+            why["rejected by the audit"] += 1
+            continue
+        s = r["scores"]
+        if captioned_only and not r.get("hinted"):
+            why["no captions"] += 1
+            continue
+        if r.get("hinted") and ((s.get("hint_backed") or 0) < min_backed or (s.get("hint_said") or 0) < min_said):
+            why["under the grounding floors"] += 1
+            continue
+        m = by_id.get(r["sample_id"], {})
+        image = r["image"]
+        items.append({"kind": "image", "id": r["sample_id"], "depth": r["depth"], "domain": r.get("group"), "genre": (m.get("labels") or {}).get("genre"),
+                      "spec": m.get("spec") or {}, "thoughts": r["thoughts"], "wordings": r["wordings"], "questions": r["questions"],
+                      "hint": hint_of(m) if m else "", "seed_id": None, "image": image,
+                      "image_urls": list(image["urls"]) if image.get("kind") == "url" else [], "license": m.get("license"),
+                      "forms": list(forms), "source": r["source"], "extracted": os.path.basename(os.path.dirname(os.path.abspath(rows_path)))})
+    import random
+    random.Random(seed).shuffle(items)
+    if max_items:
+        items = items[:max_items]
+    data = {"version": 3, "rows": rows_path, "gates": {"min_backed": min_backed, "min_said": min_said, "captioned_only": captioned_only},
+            "left_out": dict(why), "by_source": dict(collections.Counter(it["source"] for it in items)),
+            "by_depth": dict(collections.Counter(it["depth"] for it in items)), "items": items}
+    if out_path:
+        with open(out_path, "w", encoding="utf-8") as fh:
+            json.dump(data, fh, ensure_ascii=False)
+    return data
