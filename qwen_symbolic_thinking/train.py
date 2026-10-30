@@ -99,6 +99,9 @@ def run(model_id: str = "Qwen/Qwen3.5-9B", inputs: str = "hub:sft/sft_v1.json", 
         grad_accum: int = 4, max_len: int = 2048, warmup: float = 0.03, n_items: int | None = None, ship_every: int = 100,
         repo: str = REPO, do_ship: bool = True, seed: int = 20261030) -> dict:
     """Train the adapter; return {adapter_dir, path_in_repo, steps, s_per_step, train_loss, ...}."""
+    from .checks import peft_beside_torchao
+    peft_check = peft_beside_torchao()
+    assert peft_check["peft_lora_ok"], f"PEFT cannot build a LoRA here: {peft_check.get('error')}; {peft_check.get('advice', '')}"
     import torch
     from peft import LoraConfig, TaskType, get_peft_model
     from transformers import AutoProcessor, Trainer, TrainerCallback, TrainingArguments

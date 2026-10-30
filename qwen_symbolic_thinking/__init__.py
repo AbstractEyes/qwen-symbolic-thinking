@@ -6,7 +6,7 @@ huggingface.co/datasets/AbstractPhil/thought-symbolic-image-captions do.
     from qwen_symbolic_thinking.screen import run          # the behaviour screen on a GPU (Colab)
 
 Weights and results: huggingface.co/AbstractPhil/qwen-symbolic-thinking-image-training."""
-__version__ = "0.1.0"
+__version__ = "0.1.1"
 
 REPO = "AbstractPhil/qwen-symbolic-thinking-image-training"
 DATASET = "AbstractPhil/thought-symbolic-image-captions"

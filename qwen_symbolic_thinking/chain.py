@@ -22,8 +22,13 @@ NUMBERS = {"1": "one", "2": "two", "3": "three", "4": "four", "5": "five", "6": 
            "10": "ten", "20s": "twenties", "30s": "thirties", "40s": "forties", "50s": "fifties", "60s": "sixties",
            "70s": "seventies"}
 SKIP_KEYS = {"from"}                          # a record that points at another record, not a fact of the picture
+UNNAMED = "unnamed"                           # a thought written without a step name
 _LINE = re.compile(r"^\s*(?:[-*•]\s*|\d+[.)]\s*)?[*_#\s]*([A-Za-z]+)[*_\s]*(?::|[—–-]\s)\s*(.*\S)\s*$")
 _THINK = re.compile(r"<think>.*?</think>", re.S)
+_THINK_TOKEN = re.compile(r"</?think>")        # a stray opening or closing token without its pair
+_STEP_HEAD = re.compile(r"^(" + "|".join(STEPS) + r")\b[:,.\s—–-]*(.*)$", re.I | re.S)
+GENERIC_LABELS = ("step", "thought")          # a label copied from the form line instead of a step name
+ECHOES = ("what you see or work out",)        # the form line's own body, echoed
 
 
 def render(row: dict, wordings: tuple = ("caption",)) -> str:
@@ -38,9 +43,11 @@ def parse(text: str) -> dict:
     """The model's text as {thoughts: [{step, text}], wordings: {label: text}, stray: [lines], thinking: str}.
 
     A labelled line starts a thought (a step name) or a wording; a bare line continues the thought before it; a bare line before
-    any thought is stray (an introduction, a heading). Markdown bold, list markers and numbering around a label are tolerated."""
+    any thought is stray (an introduction, a heading). Markdown bold, list markers and numbering around a label are tolerated.
+    A line labelled with the form's own word (`step: count three zebras`) is read by its first word: a step name names the
+    thought, anything else leaves it unnamed; an echo of the form line itself is stray."""
     thinking = " ".join(m.group(0)[7:-8].strip() for m in _THINK.finditer(text))
-    text = _THINK.sub("", text)
+    text = _THINK_TOKEN.sub("", _THINK.sub("", text))
     thoughts, wordings, stray = [], {}, []
     for raw in text.splitlines():
         if not raw.strip():
@@ -48,7 +55,13 @@ def parse(text: str) -> dict:
         m = _LINE.match(raw)
         label = m.group(1).lower() if m else None
         body = m.group(2).strip().lstrip("*_ ").strip() if m else raw.strip()
-        if label in STEPS:
+        if label in GENERIC_LABELS:
+            if body.lower().rstrip(".") in ECHOES:
+                stray.append(raw.strip())
+                continue
+            h = _STEP_HEAD.match(body)
+            label, body = (h.group(1).lower(), h.group(2).strip() or body) if h else (UNNAMED, body)
+        if label in STEPS or label == UNNAMED:
             thoughts.append({"step": label, "text": body})
         elif label in WORDINGS:
             wordings[label] = body
@@ -89,15 +102,17 @@ def score(parsed: dict, row: dict) -> dict:
     depth = row.get("depth", "medium")
     lo, hi = COUNTS[depth]["thoughts"]
     thoughts = parsed["thoughts"]
-    text = " ".join([t["text"] for t in thoughts] + list(parsed["wordings"].values()))
+    named = [t for t in thoughts if t["step"] != UNNAMED]
+    text = " ".join([t["text"] for t in thoughts] + list(parsed["wordings"].values()) + parsed["stray"])   # every fact anywhere
     facts = leaves(row.get("spec") or {})
     hits = [f for f in facts if present(f, text)]
-    row_steps, out_steps = {t["step"] for t in row.get("thoughts", [])}, {t["step"] for t in thoughts}
+    row_steps, out_steps = {t["step"] for t in row.get("thoughts", [])}, {t["step"] for t in named}
     union = row_steps | out_steps
     return {"n_thoughts": len(thoughts),
             "in_range": lo <= len(thoughts) <= hi,
             "has_caption": bool(parsed["wordings"].get("caption")),
-            "format_ok": bool(thoughts) and bool(parsed["wordings"].get("caption")),
+            "format_ok": bool(named) and bool(parsed["wordings"].get("caption")),
+            "named_frac": (len(named) / len(thoughts)) if thoughts else None,
             "stray_lines": len(parsed["stray"]),
             "spec_n": len(facts),
             "spec_recall": (len(hits) / len(facts)) if facts else None,

@@ -11,6 +11,7 @@ from __future__ import annotations
 import gc
 import io
 import json
+import logging
 import os
 import platform
 import time
@@ -23,6 +24,25 @@ from .hub import fetch, ship, token
 FORMS = ("bare", "shown", "spec")                 # the base model's screen
 TRAINED_FORMS = ("short", "spec_short")           # the trained model's screen
 SPEC_FORMS = ("spec", "spec_short")               # the forms that take a specification instead of a picture
+LIBRARY_NOTES = []                                # what the transformers logger says (the kernel fallback warning lands here)
+
+
+class _Notes(logging.Handler):
+    def emit(self, record):
+        LIBRARY_NOTES.append(record.getMessage())
+
+
+def _listen():
+    """Attach once to the transformers logger, so a 'falling back to its reference PyTorch implementation' note is kept."""
+    lg = logging.getLogger("transformers")
+    if not any(isinstance(h, _Notes) for h in lg.handlers):
+        lg.addHandler(_Notes())
+
+
+def fast_path_note() -> str:
+    """What the run has learnt about the linear-attention kernels so far."""
+    fallbacks = [m for m in LIBRARY_NOTES if "falling back" in m]
+    return ("TORCH FALLBACK: " + fallbacks[0][:200]) if fallbacks else "no fallback warning (the kernels serve the linear attention)"
 
 
 def preflight() -> dict:
@@ -103,6 +123,7 @@ def load_model(model_id: str, thinking: bool, adapter: str | None = None, adapte
     weights are merged into the model."""
     import torch
     from transformers import AutoProcessor
+    _listen()
     processor = AutoProcessor.from_pretrained(model_id)
     processor.tokenizer.padding_side = "left"
     model = vlm_class().from_pretrained(model_id, dtype=torch.bfloat16, device_map="cuda")
@@ -154,6 +175,8 @@ def summarize(results: list) -> dict:
             "in_range": sum(x["in_range"] for x in s) / n,
             "has_caption": sum(x["has_caption"] for x in s) / n,
             "mean_thoughts": sum(x["n_thoughts"] for x in s) / n,
+            "named_frac": (sum(x["named_frac"] for x in s if x.get("named_frac") is not None)
+                           / max(sum(1 for x in s if x.get("named_frac") is not None), 1)),
             "spec_recall": (sum(recalls) / len(recalls)) if recalls else None,
             "spec_recall_of_rows": (sum(refs) / len(refs)) if refs else None,
             "rows_with_gloss": sum(1 for x in s if x["gloss_hits"]) / n,
@@ -169,8 +192,8 @@ def summarize(results: list) -> dict:
 
 
 def table(summary: dict) -> str:
-    cols = ["rows", "format_ok", "in_range", "spec_recall", "spec_recall_of_rows", "rows_with_gloss", "rows_with_remark",
-            "mean_thoughts", "step_jaccard", "thinking_chars", "s_per_row", "tok_per_s"]
+    cols = ["rows", "format_ok", "named_frac", "in_range", "mean_thoughts", "spec_recall", "spec_recall_of_rows", "rows_with_gloss",
+            "rows_with_remark", "step_jaccard", "thinking_chars", "s_per_row", "tok_per_s"]
     lines = ["| model | form | " + " | ".join(cols) + " |", "|---|---|" + "---|" * len(cols)]
     for key, v in summary.items():
         model, form = key.split(" | ")
@@ -245,6 +268,8 @@ def run(models: list, inputs: str = "hub:screens/inputs/screen_v1.json", out_dir
                 if start == 0 and not thinking and any(chain.parse(t)["thinking"] for t in texts):
                     print("  NOTE: the model is thinking although thinking is off; the parse strips it, the token budget pays for it",
                           flush=True)
+                if start == 0 and form == forms[0]:
+                    print("  linear attention:", fast_path_note(), flush=True)
                 spent = time.time() - t_form
                 print(f"  [{form}] {done}/{len(jobs)} rows, {spent:.0f} s spent, {spent / done * (len(jobs) - done):.0f} s left, "
                       f"{dt:.1f} s/row", flush=True)
@@ -268,8 +293,103 @@ def run(models: list, inputs: str = "hub:screens/inputs/screen_v1.json", out_dir
     with open(os.path.join(out_dir, "summary.json"), "w", encoding="utf-8") as fh:
         json.dump(summary, fh, indent=1)
     with open(os.path.join(out_dir, "summary.md"), "w", encoding="utf-8") as fh:
-        fh.write(table(summary) + "\n")
+        fh.write(table(summary) + "\n\nlinear attention: " + fast_path_note() + "\n")
+    with open(os.path.join(out_dir, "library_notes.json"), "w", encoding="utf-8") as fh:
+        json.dump(LIBRARY_NOTES[-50:], fh, indent=1)
     if do_ship:
         ship(out_dir, f"screens/{stamp}", f"screen {stamp}: summary", repo)
     print(f"\nscreen done in {(time.time() - t0) / 60:.1f} min; results in {out_dir}", flush=True)
     return summary
+
+
+def rescore(results_path: str, inputs: str | None = None) -> dict:
+    """The summary of a shipped results.jsonl under the current chain reader (the texts are kept, so a better reader re-reads
+    them); with the screen set given, the rows are scored against it, otherwise against the reference kept in each record."""
+    items = {}
+    if inputs:
+        items = {it["id"]: it for it in load_inputs(inputs)["items"]}
+    out = []
+    with open(results_path, encoding="utf-8") as fh:
+        for line in fh:
+            if not line.strip():
+                continue
+            r = json.loads(line)
+            row = items.get(r["id"]) or {"depth": r["depth"], "spec": {}, "thoughts": []}
+            parsed = chain.parse(r["text"])
+            r["parsed"], r["scores"] = parsed, chain.score(parsed, row)
+            if row.get("spec"):
+                r["reference"] = chain.reference(row)
+            out.append(r)
+    summary = summarize(out)
+    print(table(summary))
+    return summary
+
+
+def throughput(model_id: str, inputs: str = "hub:screens/inputs/screen_v1.json", batches: tuple = (4, 8, 16, 32, 64),
+               n_rows: int = 64, form: str = "shown", max_new_tokens: int = 700, thinking: bool = False,
+               out_dir: str = "/content/screen", repo: str = REPO, do_ship: bool = True, tag: str = "throughput") -> list:
+    """Rows an hour against the batch size: the same rows generated at each batch size, the peak memory read each time; an
+    out-of-memory batch is recorded and ends the sweep. Results ship under screens/<stamp>_throughput/."""
+    os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")   # read when torch loads (after a restart)
+    import torch
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S") + f"_{tag}"
+    out_dir = os.path.join(out_dir, stamp)
+    os.makedirs(out_dir, exist_ok=True)
+    env = preflight()
+    data = load_inputs(inputs)
+    kind = "spec" if form in SPEC_FORMS else "image"
+    items = [it for it in data["items"] if it["kind"] == kind][:n_rows]
+    pictures = {}
+    if kind == "image":
+        for it in items:
+            im = fetch_image(it["image_urls"], os.path.join(os.path.dirname(out_dir), "images"))
+            if im is not None:
+                pictures[it["id"]] = im
+        items = [it for it in items if it["id"] in pictures]
+    jobs = [(it, messages(form, it, data.get("examples", {}), pictures.get(it["id"])), pictures.get(it["id"])) for it in items]
+    print(f"throughput {stamp}: {model_id}, {len(jobs)} rows, form {form}, batches {batches}", flush=True)
+    processor, model = load_model(model_id, thinking)
+    generate(processor, model, [j[1] for j in jobs[:4]], [j[2] for j in jobs[:4]], 64, thinking, None)   # warm-up
+    print("  linear attention:", fast_path_note(), flush=True)
+    results = []
+    for b in batches:
+        b = min(b, len(jobs))
+        torch.cuda.synchronize()
+        torch.cuda.reset_peak_memory_stats()
+        t0, n_tok, err = time.time(), 0, None
+        try:
+            for start in range(0, len(jobs), b):
+                group = jobs[start:start + b]
+                _, lengths = generate(processor, model, [j[1] for j in group], [j[2] for j in group], max_new_tokens, thinking, None)
+                n_tok += sum(lengths)
+            torch.cuda.synchronize()
+        except torch.cuda.OutOfMemoryError:
+            err = "out of memory"
+            torch.cuda.empty_cache()
+        except Exception as e:
+            err = f"{type(e).__name__}: {str(e)[:160]}"
+        dt = time.time() - t0
+        rec = {"model": model_id, "form": form, "batch": b, "rows": len(jobs), "ok": err is None, "error": err,
+               "s_total": round(dt, 1), "s_per_row": round(dt / len(jobs), 3), "rows_per_hour": round(3600 * len(jobs) / dt),
+               "tok_per_s": round(n_tok / dt, 1), "new_tokens": n_tok, "peak_gb": round(torch.cuda.max_memory_allocated() / 1024 ** 3, 1),
+               "max_new_tokens": max_new_tokens}
+        results.append(rec)
+        print(f"  batch {b}: {rec['rows_per_hour']} rows/h, {rec['s_per_row']} s/row, {rec['tok_per_s']} tok/s, peak {rec['peak_gb']} GB"
+              + (f", {err}" if err else ""), flush=True)
+        if err:
+            break
+    lines = ["| model | form | batch | rows/h | s/row | tok/s | peak GB | note |", "|---|---|---|---|---|---|---|---|"]
+    lines += [f"| {r['model'].split('/')[-1]} | {r['form']} | {r['batch']} | {r['rows_per_hour']} | {r['s_per_row']} | {r['tok_per_s']} | "
+              f"{r['peak_gb']} | {r['error'] or ''} |" for r in results]
+    md = "\n".join(lines) + "\n\nlinear attention: " + fast_path_note() + "\n"
+    with open(os.path.join(out_dir, "throughput.json"), "w", encoding="utf-8") as fh:
+        json.dump({"env": env, "results": results, "library_notes": LIBRARY_NOTES[-50:]}, fh, indent=1)
+    with open(os.path.join(out_dir, "throughput.md"), "w", encoding="utf-8") as fh:
+        fh.write(md)
+    print("\n" + md, flush=True)
+    del model, processor
+    gc.collect()
+    torch.cuda.empty_cache()
+    if do_ship:
+        print("  shipped:", ship(out_dir, f"screens/{stamp}", f"throughput {stamp}: {model_id}", repo), flush=True)
+    return results

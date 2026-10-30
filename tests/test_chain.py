@@ -35,6 +35,30 @@ def test_parse_tolerates_markdown_numbering_and_thinking():
     assert parsed["thinking"] == "some private thinking"
 
 
+def test_parse_reads_the_literal_step_form_and_stray_think_tokens():
+    text = ("step: what you see or work out\n\n"
+            "step: see three zebras grazing in a dry field.\n\n"
+            "step: count three zebras, all facing away.\n\n"
+            "step: A line written without a step name.\n"
+            "</think>\n"
+            "caption: Three zebras graze in a dry field.")
+    parsed = chain.parse(text)
+    assert [t["step"] for t in parsed["thoughts"]] == ["see", "count", chain.UNNAMED]
+    assert parsed["thoughts"][0]["text"] == "three zebras grazing in a dry field."
+    assert parsed["thoughts"][1]["text"] == "three zebras, all facing away."
+    assert parsed["stray"] == ["step: what you see or work out"]
+    assert parsed["wordings"]["caption"].startswith("Three zebras")
+    s = chain.score(parsed, dict(ROW, depth="medium", spec={"animal": {"name": "zebra", "count": "3"}}, thoughts=[]))
+    assert s["format_ok"] and s["n_thoughts"] == 3 and s["named_frac"] == 2 / 3 and s["in_range"]
+    assert s["spec_recall"] == 1.0
+
+
+def test_unnamed_thoughts_do_not_make_the_format():
+    parsed = chain.parse("step: A girl stands in a swamp.\nstep: The light is golden.\ncaption: A girl in a swamp.")
+    s = chain.score(parsed, ROW)
+    assert s["n_thoughts"] == 2 and s["named_frac"] == 0 and not s["format_ok"] and s["has_caption"]
+
+
 def test_reference_scores_the_rows_own_chain():
     ref = chain.reference(ROW)
     assert ref["format_ok"] and ref["in_range"] and ref["has_caption"]
@@ -65,8 +89,9 @@ def test_counts_read_as_words():
 def test_prompt_forms_carry_the_form_and_the_depth():
     for depth, lo, hi in (("simple", 1, 2), ("medium", 3, 5), ("deep", 6, 10)):
         text = prompts.bare(depth)
-        assert f"{lo} to {hi} thoughts" in text
-        assert "see, name, place, count" in text and "caption:" in text
+        assert f"{lo} to {hi} thoughts" in text and "never the whole list" in text
+        assert "see, name, place, count" in text and "caption:" in text and "`see: two riders on grey horses`" in text
+        assert "step: what you see" not in text
     shown = prompts.shown("medium", [dict(ROW, hint="A man making pizzas in a kitchen.")])
     assert "Picture: A man making pizzas in a kitchen." in shown and "see: One man" in shown
     spec = prompts.spec("deep", ROW["spec"])

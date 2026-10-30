@@ -23,10 +23,10 @@ RULES = """Rules:
 
 def _form(depth: str) -> str:
     lo, hi = COUNTS[depth]["thoughts"]
-    return (f"Think it through in writing, one thought per line, in this form:\n\n"
-            f"step: what you see or work out\n\n"
-            f"The steps, in the order a careful looker takes them: {', '.join(STEPS)}. "
-            f"Use only the steps the picture needs: {lo} to {hi} thoughts for {LOOK[depth]}.\n\n{RULES}")
+    return (f"Think it through in writing, one thought per line. Each line is the step's name, a colon, then the thought, "
+            f"like `see: two riders on grey horses` or `count: three windows, one of them lit`.\n\n"
+            f"The steps a careful looker can take, in their usual order: {', '.join(STEPS)}. "
+            f"Pick only the few the picture needs: {lo} to {hi} thoughts in all for {LOOK[depth]}, never the whole list.\n\n{RULES}")
 
 
 def bare(depth: str) -> str:
