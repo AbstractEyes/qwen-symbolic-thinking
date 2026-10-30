@@ -33,6 +33,19 @@ def test_training_items_gates_and_round_trip(tmp_path):
     assert json.load(open(tmp_path / "items.json", encoding="utf-8"))["by_source"] == {"coco": 1, "ffhq": 1}
 
 
+def test_training_items_either_rule_caps_and_exclusions(tmp_path):
+    rows = [_row("qti-000001", "coco", True, 0.10, 0.30), _row("qti-000002", "coco", True, 0.40, 0.05),
+            _row("qti-000003", "coco", True, 0.10, 0.10), _row("qti-000004", "instagram", True, 0.90, 0.90),
+            _row("qti-000005", "ffhq", True, 0.40, 0.05), _row("qti-000006", "ffhq", True, 0.40, 0.20)]
+    p = tmp_path / "rows.jsonl"
+    p.write_text("".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8")
+    data = extract.training_items(str(p), min_backed=0.25, min_said=0.15, grounding="either", exclude_sources=("instagram",), per_source_max=1)
+    assert data["by_source"] == {"coco": 1, "ffhq": 1}
+    assert data["left_out"] == {"under the grounding floors": 1, "source left out": 1, "over the source's cap": 2}
+    both = extract.training_items(str(p), min_backed=0.25, min_said=0.15, grounding="both", exclude_sources=("instagram",))
+    assert [it["id"] for it in both["items"]] == ["qti-000006"]          # the one row over both floors
+
+
 def test_locator_row_reads_training_items():
     r = extract.locator_row({"id": "row-1", "image_urls": ["http://example.invalid/a.jpg", "http://example.invalid/b.jpg"]})
     assert r["sample_id"] == "row-1" and r["image"] == {"kind": "url", "urls": ["http://example.invalid/a.jpg", "http://example.invalid/b.jpg"]}

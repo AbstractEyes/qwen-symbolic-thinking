@@ -445,12 +445,15 @@ def run(manifest: str, out_repo: str = "AbstractPhil/qwen-thinking-images", mode
 
 
 def training_items(rows_path: str, out_path: str | None = None, manifest: str | None = None, min_backed: float = 0.3,
-                   min_said: float = 0.15, captioned_only: bool = True, forms: tuple = ("full",), max_items: int | None = None,
+                   min_said: float = 0.15, grounding: str = "both", captioned_only: bool = True, exclude_sources: tuple = (),
+                   per_source_max: int | None = None, forms: tuple = ("full",), max_items: int | None = None,
                    seed: int = 20261030) -> dict:
     """The kept rows of an extraction as training items (the whole row under the forms given), gated harder than the audit:
-    only rows whose source had captions when captioned_only, said and backed at or above the floors. With the manifest, each
-    item carries its row's captions as the hint (for the screen's grounding read) and its specification. Returns the file's
-    dict; writes it to out_path when given."""
+    only rows whose source had captions when captioned_only, none of exclude_sources, said and backed at or above the floors
+    (grounding "both": said AND backed; "either": one floor suffices, the rule for sources whose caption pools differ in size),
+    at most per_source_max a source, at most max_items in all (shuffled). With the manifest, each item carries its row's
+    captions as the hint (for the screen's grounding read) and its specification. Returns the file's dict; writes it to
+    out_path when given."""
     rows = [json.loads(l) for l in open(rows_path, encoding="utf-8") if l.strip()]
     by_id = {}
     if manifest:
@@ -462,12 +465,17 @@ def training_items(rows_path: str, out_path: str | None = None, manifest: str | 
             why["rejected by the audit"] += 1
             continue
         s = r["scores"]
+        if r["source"] in set(exclude_sources):
+            why["source left out"] += 1
+            continue
         if captioned_only and not r.get("hinted"):
             why["no captions"] += 1
             continue
-        if r.get("hinted") and ((s.get("hint_backed") or 0) < min_backed or (s.get("hint_said") or 0) < min_said):
-            why["under the grounding floors"] += 1
-            continue
+        if r.get("hinted"):
+            said_ok, backed_ok = (s.get("hint_said") or 0) >= min_said, (s.get("hint_backed") or 0) >= min_backed
+            if not ((said_ok or backed_ok) if grounding == "either" else (said_ok and backed_ok)):
+                why["under the grounding floors"] += 1
+                continue
         m = by_id.get(r["sample_id"], {})
         image = r["image"]
         items.append({"kind": "image", "id": r["sample_id"], "depth": r["depth"], "domain": r.get("group"), "genre": (m.get("labels") or {}).get("genre"),
@@ -477,9 +485,20 @@ def training_items(rows_path: str, out_path: str | None = None, manifest: str | 
                       "forms": list(forms), "source": r["source"], "extracted": os.path.basename(os.path.dirname(os.path.abspath(rows_path)))})
     import random
     random.Random(seed).shuffle(items)
+    if per_source_max:
+        seen, capped = collections.Counter(), []
+        for it in items:
+            if seen[it["source"]] < per_source_max:
+                capped.append(it)
+                seen[it["source"]] += 1
+            else:
+                why["over the source's cap"] += 1
+        items = capped
     if max_items:
+        why["over the total cap"] += max(0, len(items) - max_items)
         items = items[:max_items]
-    data = {"version": 3, "rows": rows_path, "gates": {"min_backed": min_backed, "min_said": min_said, "captioned_only": captioned_only},
+    data = {"version": 3, "rows": rows_path, "gates": {"min_backed": min_backed, "min_said": min_said, "grounding": grounding, "captioned_only": captioned_only,
+                                                        "exclude_sources": list(exclude_sources), "per_source_max": per_source_max, "max_items": max_items},
             "left_out": dict(why), "by_source": dict(collections.Counter(it["source"] for it in items)),
             "by_depth": dict(collections.Counter(it["depth"] for it in items)), "items": items}
     if out_path:
