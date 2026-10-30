@@ -72,3 +72,7 @@ def test_prompt_forms_carry_the_form_and_the_depth():
     spec = prompts.spec("deep", ROW["spec"])
     assert "person count: 1" in spec and "relation: man in front of oven" in spec and "mood from" not in spec
     assert "6 to 10 thoughts" in spec
+    short = prompts.short("simple")
+    assert "a quick look" in short and short.endswith("ending with a caption.") and "steps" not in short
+    spec_short = prompts.spec_short("medium", ROW["spec"])
+    assert "scene setting: kitchen" in spec_short and "a closer look" in spec_short

@@ -20,15 +20,19 @@ from datetime import datetime, timezone
 from . import REPO, __version__, chain, prompts
 from .hub import fetch, ship, token
 
-FORMS = ("bare", "shown", "spec")
+FORMS = ("bare", "shown", "spec")                 # the base model's screen
+TRAINED_FORMS = ("short", "spec_short")           # the trained model's screen
+SPEC_FORMS = ("spec", "spec_short")               # the forms that take a specification instead of a picture
 
 
 def preflight() -> dict:
     """What the card and the environment are; printed once before anything loads."""
+    import importlib.util
     import torch
     import transformers
     info = {"package": __version__, "python": platform.python_version(), "torch": torch.__version__,
-            "transformers": transformers.__version__, "cuda": torch.cuda.is_available(),
+            "transformers": transformers.__version__,
+            "qwen3_5": importlib.util.find_spec("transformers.models.qwen3_5") is not None, "cuda": torch.cuda.is_available(),
             "gpu": torch.cuda.get_device_name(0) if torch.cuda.is_available() else None,
             "gpu_gb": round(torch.cuda.get_device_properties(0).total_memory / 1024 ** 3, 1) if torch.cuda.is_available() else None,
             "hf_token": bool(token())}
@@ -37,7 +41,18 @@ def preflight() -> dict:
         print("NO GPU: set the runtime to a GPU before running the screen.")
     elif "6000" not in (info["gpu"] or ""):
         print("note: the card is not the RTX PRO 6000; the screen runs, the timings are not comparable.")
+    if not info["qwen3_5"]:
+        print("this transformers has no Qwen3.5 model code: install transformers 5.x and restart the session.")
     return info
+
+
+def vlm_class():
+    """The auto class for a vision-language model: the model card's name on transformers 5, the older name before it."""
+    try:
+        from transformers import AutoModelForMultimodalLM as cls
+    except ImportError:
+        from transformers import AutoModelForImageTextToText as cls
+    return cls
 
 
 def load_inputs(inputs: str) -> dict:
@@ -73,18 +88,28 @@ def messages(form: str, it: dict, examples: dict, image=None) -> list:
         text = prompts.shown(it["depth"], examples.get(it["depth"]) or examples.get("medium") or [])
     elif form == "spec":
         text = prompts.spec(it["depth"], it["spec"])
+    elif form == "short":
+        text = prompts.short(it["depth"])
+    elif form == "spec_short":
+        text = prompts.spec_short(it["depth"], it["spec"])
     else:
         raise ValueError(f"unknown form {form!r}")
     content = ([{"type": "image", "image": image}] if image is not None else []) + [{"type": "text", "text": text}]
     return [{"role": "user", "content": content}]
 
 
-def load_model(model_id: str, thinking: bool):
+def load_model(model_id: str, thinking: bool, adapter: str | None = None, adapter_subfolder: str | None = None):
+    """The processor and the model on the card; with an adapter (a local folder or a Hub repo, with a subfolder), the LoRA
+    weights are merged into the model."""
     import torch
-    from transformers import AutoModelForImageTextToText, AutoProcessor
+    from transformers import AutoProcessor
     processor = AutoProcessor.from_pretrained(model_id)
     processor.tokenizer.padding_side = "left"
-    model = AutoModelForImageTextToText.from_pretrained(model_id, dtype=torch.bfloat16, device_map="cuda")
+    model = vlm_class().from_pretrained(model_id, dtype=torch.bfloat16, device_map="cuda")
+    if adapter:
+        from peft import PeftModel
+        kwargs = {"subfolder": adapter_subfolder} if adapter_subfolder else {}
+        model = PeftModel.from_pretrained(model, adapter, token=token(), **kwargs).merge_and_unload()
     model.eval()
     return processor, model
 
@@ -153,9 +178,9 @@ def table(summary: dict) -> str:
 def run(models: list, inputs: str = "hub:screens/inputs/screen_v1.json", out_dir: str = "/content/screen",
         forms: tuple = FORMS, n_images: int | None = None, n_specs: int | None = None, batch: int = 4,
         max_new_tokens: int = 700, thinking: bool = False, sampling: dict | None = None, repo: str = REPO,
-        do_ship: bool = True) -> dict:
-    """The screen over every model and form; results and summaries on disk and on the Hub."""
-    stamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+        do_ship: bool = True, adapter: str | None = None, adapter_subfolder: str | None = None, tag: str = "") -> dict:
+    """The screen over every model and form; results and summaries on disk and on the Hub (screens/<stamp>[_<tag>]/)."""
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S") + (f"_{tag}" if tag else "")
     out_dir = os.path.join(out_dir, stamp)
     os.makedirs(out_dir, exist_ok=True)
     env = preflight()
@@ -178,20 +203,21 @@ def run(models: list, inputs: str = "hub:screens/inputs/screen_v1.json", out_dir
     with open(os.path.join(out_dir, "env.json"), "w", encoding="utf-8") as fh:
         json.dump({**env, "models": models, "forms": list(forms), "inputs": inputs, "batch": batch,
                    "max_new_tokens": max_new_tokens, "thinking": thinking, "sampling": sampling,
+                   "adapter": adapter, "adapter_subfolder": adapter_subfolder,
                    "n_images": len(image_items), "n_specs": len(spec_items)}, fh, indent=1)
     results_path = os.path.join(out_dir, "results.jsonl")
     all_results = []
     for model_id in models:
-        print(f"\n== {model_id}", flush=True)
+        print(f"\n== {model_id}" + (f" + {adapter}/{adapter_subfolder or ''}" if adapter else ""), flush=True)
         t_load = time.time()
-        processor, model = load_model(model_id, thinking)
+        processor, model = load_model(model_id, thinking, adapter, adapter_subfolder)
         print(f"  loaded in {time.time() - t_load:.0f} s", flush=True)
         results = []
         for form in forms:
-            todo = spec_items if form == "spec" else image_items
+            todo = spec_items if form in SPEC_FORMS else image_items
             jobs = []
             for it in todo:
-                im = None if form == "spec" else pictures[it["id"]]
+                im = None if form in SPEC_FORMS else pictures[it["id"]]
                 jobs.append((it, messages(form, it, data.get("examples", {}), im), im))
             t_form, done = time.time(), 0
             for start in range(0, len(jobs), batch):

@@ -3,6 +3,7 @@
     bare    the picture and the instructions: the line form, the steps, the depth's counts, the rules
     shown   the same, with two worked examples written for other pictures (described in a line each, not shown)
     spec    no picture: a specification of one, as records, to be thought through as if seen
+    short   the trained form: the picture and one line (spec_short: the records and one line); the form is the model's to know
 
 Every form asks for the same output: one thought per line as `step: text`, then one `caption:` line."""
 from __future__ import annotations
@@ -54,3 +55,14 @@ def records(spec: dict) -> str:
 def spec(depth: str, specification: dict) -> str:
     return (f"There is no picture to see. Here is a specification of one, as records:\n\n{records(specification)}\n\n"
             f"Treat the records as what the picture shows and " + _form(depth)[0].lower() + _form(depth)[1:])
+
+
+def short(depth: str) -> str:
+    """The trained form: the picture and one line; the form of the answer is the model's to know."""
+    return f"Look at this picture and think it through in writing, {LOOK[depth]}, ending with a caption."
+
+
+def spec_short(depth: str, specification: dict) -> str:
+    """The trained form for a specification instead of a picture."""
+    return (f"There is no picture to see. Here is a specification of one, as records:\n\n{records(specification)}\n\n"
+            f"Treat the records as what the picture shows and think it through in writing, {LOOK[depth]}, ending with a caption.")

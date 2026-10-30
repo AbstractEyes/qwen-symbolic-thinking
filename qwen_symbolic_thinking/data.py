@@ -79,7 +79,45 @@ def build_screen(accepted_path: str, seeds_dir: str, out_path: str, n_images: in
             "items": [item(r, hint.get((r.get("source") or {}).get("seed_id") or "", "")) for r in picks],
             "examples": {d: [item(r, hint.get((r.get("source") or {}).get("seed_id") or "", "")) for r in rs]
                          for d, rs in examples.items()}}
+    _write(data, out_path)
+    return data
+
+
+def build_sft(accepted_path: str, seeds_dir: str, screen_path: str, out_path: str, rng_seed: int = 20261030) -> dict:
+    """The fine-tune set: every accepted picture row outside the screen set (and its examples), and as many drawn rows, drawn
+    simple : medium : deep = 1 : 1 : 2 so the deep depth is taught through the specifications."""
+    rng = random.Random(rng_seed)
+    with open(screen_path, encoding="utf-8") as fh:
+        screen = json.load(fh)
+    held = {it["id"] for it in screen["items"]} | {ex["id"] for exs in screen["examples"].values() for ex in exs}
+    rows = [r for f in accepted_files(accepted_path) for r in read_rows(f)]
+    pictures, drawn = [], defaultdict(list)
+    for r in rows:
+        if r["id"] in held:
+            continue
+        src = ((r.get("source") or {}).get("seed_id") or "").split(":")[0]
+        if src in PICTURE_SOURCES:
+            pictures.append(r)
+        elif not src:
+            drawn[r["depth"]].append(r)
+    n = len(pictures)
+    want = {"simple": n // 4, "medium": n // 4, "deep": n - 2 * (n // 4)}
+    specs = []
+    for depth, k in want.items():
+        pool = drawn[depth]
+        rng.shuffle(pool)
+        specs += pool[:k]
+    wanted = {(r.get("source") or {}).get("seed_id") for r in pictures}
+    hint = hints(seeds_dir, {s for s in wanted if s})
+    items = [item(r, hint.get((r.get("source") or {}).get("seed_id") or "", "")) for r in pictures] + [item(r) for r in specs]
+    rng.shuffle(items)
+    data = {"version": 1, "rng_seed": rng_seed, "screen": os.path.basename(screen_path), "held_out": sorted(held),
+            "items": items}
+    _write(data, out_path)
+    return data
+
+
+def _write(data: dict, out_path: str) -> None:
     os.makedirs(os.path.dirname(os.path.abspath(out_path)), exist_ok=True)
     with open(out_path, "w", encoding="utf-8", newline="\n") as fh:
         json.dump(data, fh, ensure_ascii=False, indent=1)
-    return data
