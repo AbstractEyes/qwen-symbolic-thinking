@@ -41,6 +41,8 @@ Each answer is parsed back into thoughts and read against the row it answers:
 | `rows_with_gloss` | rows with a thought that defines a word instead of looking at the picture |
 | `rows_with_remark` | rows with a thought about the task instead of the picture |
 | `step_jaccard` | overlap of the steps used with the row's steps |
+| `hint_said`, `hint_backed` | the picture's own captions against the thoughts and the caption: the share of the captions' content words the chain says, and the share of the chain's content words the captions back |
+| `wordings_ok`, `questions_ok`, `full_ok` | for the whole-row forms: the depth's wordings present with a caption; the number of questions fits the depth; both, with every question well formed |
 | `s_per_row`, `tok_per_s` | the time cost on the card |
 
 Results land on the Hub under `screens/<stamp>/`: `results.jsonl` (one line per answer, with the text, the parse and the
@@ -52,8 +54,8 @@ time; nothing is redistributed here. The specification rows are the dataset's ow
 ## Install
 
 ```
-pip install git+https://github.com/AbstractEyes/qwen-symbolic-thinking@v0.1.0
-pip install "qwen-symbolic-thinking[screen] @ git+https://github.com/AbstractEyes/qwen-symbolic-thinking@v0.1.0"   # with torch, transformers 5, accelerate, peft
+pip install git+https://github.com/AbstractEyes/qwen-symbolic-thinking@v0.1.5
+pip install "qwen-symbolic-thinking[screen] @ git+https://github.com/AbstractEyes/qwen-symbolic-thinking@v0.1.5"   # with torch, transformers 5, accelerate, peft
 ```
 
 Qwen3.5 needs transformers 5 (the model code lives under `transformers.models.qwen3_5`); the preflight says so if it is missing.
@@ -66,14 +68,29 @@ prints whether transformers fell back to its reference implementation.
 
 `qwen_symbolic_thinking.train.run` trains a LoRA adapter (rank 32, alpha 64, on the language model's attention,
 linear-attention and MLP projections; the vision tower frozen) with plain Adam and a cosine schedule, the loss on the
-assistant turn only. Each training item is the picture (or the specification) with a one-line prompt, answered by the row's
-own chain. The adapter ships to the Hub during training under `lora/<model>/r<rank>/<stamp>/`. The trained model is read with
-the same screen, in the one-line prompt forms (`short`, `spec_short`).
+assistant turn only. Each training item is taught under the one-line prompt forms it carries:
+
+| form | the prompt | the answer |
+|---|---|---|
+| `short` | the picture, "think it through in writing, a closer look, ending with a caption" | the chain and the caption |
+| `full` | the picture, the same, "then write a caption and a prompt or tags, and the questions a careful looker would still ask" | the whole row: the chain, the wordings in order (caption, prompt, tags, critique), then one `question: what -> answer [record, chain or unknown]` line each |
+| `spec_short`, `spec_full` | the specification as records instead of a picture | the same two answers |
+
+The adapter ships to the Hub during training under `lora/<model>/r<rank>/<stamp>_<tag>/`, and the trained model is read with
+the same screen in the trained forms (`full`, `short`, `spec_full`).
+
+`qwen_symbolic_thinking.synth.generate` makes synthetic picture items: the base model, shown two worked examples, thinks
+through pictures no row was written about; a chain passes the audit when it holds the form and the depth, defines nothing,
+remarks on nothing, strays nowhere, and both says and is backed by the picture's own captions (0.2 each); the passing chains
+ship as short-form items under `synth/`. `qwen_symbolic_thinking.queue.run_queue(lane)` lets a card work unattended through
+`runs/queue_<lane>.json` on the Hub (fine-tunes, each followed by its screen; synthetic generation), leaving
+`runs/done/<name>.json` per run; `notebooks/lane1.ipynb` to `lane3.ipynb` run it.
 
 ```python
 from qwen_symbolic_thinking import chain
-parsed = chain.parse(model_text)          # {thoughts: [{step, text}], wordings: {caption: ...}, stray: [...]}
+parsed = chain.parse(model_text)          # {thoughts: [{step, text}], wordings: {caption: ...}, questions: [...], stray: [...]}
 scores = chain.score(parsed, row)         # the reads above, for one row of the dataset
+text = chain.render(row, full=True)       # the whole row as the model is taught to write it
 ```
 
 Tests: `pytest tests` (no GPU needed).
