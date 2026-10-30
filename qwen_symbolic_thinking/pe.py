@@ -163,10 +163,12 @@ def _mean(xs: list):
 def run(kind: str = "i2i", model_id: str | None = None, manifest: str = "hub:AbstractPhil/qwen-thinking-images/manifest_v1.2.jsonl",
         split: str | None = "main", sources: tuple | None = None, exclude: tuple | None = ("instagram", "trdg_words", "wikidata"),
         per_source: int | None = 60, n: int | None = None, seeds: str = "hub:synth/seeds_v1.json", request: str = NO_CHANGE_REQUEST,
-        batch: int = 16, max_new_tokens: int = 4096, max_side: int = MAX_SIDE, sampling: dict | None = None, seed: int = 0,
-        out_dir: str = "/content/pe", repo: str = REPO, do_ship: bool = True, tag: str = "pe") -> dict:
+        batch: int = 16, max_new_tokens: int = 4096, chunk: int = 128, max_side: int = MAX_SIDE, sampling: dict | None = None,
+        seed: int = 0, out_dir: str = "/content/pe", repo: str = REPO, do_ship: bool = True, tag: str = "pe") -> dict:
     """The enhancer of `kind` reads the manifest's pictures (i2i: the no-change request) or rewrites the seeds' prompts (t2i);
-    every answer split, scored and written to rows.jsonl; the summary by source; the folder shipped to pe/<stamp>_<tag>/."""
+    the pictures are fetched a chunk at a time, the next chunk while the current one generates; every answer split, scored and
+    written to rows.jsonl; the summary by source; the folder shipped to pe/<stamp>_<tag>/."""
+    from concurrent.futures import ThreadPoolExecutor
     import torch
     if kind not in MODELS:
         raise ValueError(f"kind must be one of {tuple(MODELS)}, not {kind!r}")
@@ -177,57 +179,79 @@ def run(kind: str = "i2i", model_id: str | None = None, manifest: str = "hub:Abs
     os.makedirs(out_dir, exist_ok=True)
     env = preflight()
     system = system_prompt(model_id)
+    img_dir = os.path.join(os.path.dirname(out_dir), "images")
     if kind == "i2i":
         rows = select_rows(load_manifest(manifest), split, sources, exclude, per_source, n)
-        ids = [r["sample_id"] for r in rows]
+        key = "sample_id"
         hints = {r["sample_id"]: hint_of(r) for r in rows}
         srcs = {r["sample_id"]: r["source"] for r in rows}
         texts_in = {r["sample_id"]: request for r in rows}
-        pictures = fetch_images(rows, os.path.join(os.path.dirname(out_dir), "images"), max_side=max_side)
-        missing = [i for i in ids if i not in pictures]
-        ids = [i for i in ids if i in pictures]
+
+        def fetch(group):
+            fails = {}
+            ims = fetch_images(group, img_dir, failures=fails, max_side=max_side)
+            return ims, fails
     else:
-        items = load_inputs(seeds)["items"][:n]
-        ids = [it["id"] for it in items]
-        hints = {it["id"]: it.get("hint") or "" for it in items}
-        srcs = {it["id"]: str(it.get("seed_id", "seed")).split(":")[0] for it in items}
-        texts_in = {it["id"]: seed_prompt(it) for it in items}
-        pictures, missing = {}, []
-    print(f"pe {stamp}: {kind} {model_id}; {len(ids)} rows ({len(missing)} pictures missing); batch {batch}, {max_new_tokens} new tokens, "
+        rows = load_inputs(seeds)["items"][:n]
+        key = "id"
+        hints = {it["id"]: it.get("hint") or "" for it in rows}
+        srcs = {it["id"]: str(it.get("seed_id", "seed")).split(":")[0] for it in rows}
+        texts_in = {it["id"]: seed_prompt(it) for it in rows}
+
+        def fetch(group):
+            return {}, {}
+    total = len(rows)
+    groups = [rows[c0:c0 + chunk] for c0 in range(0, total, chunk)]
+    print(f"pe {stamp}: {kind} {model_id}; {total} rows in {len(groups)} chunks of {chunk}; batch {batch}, {max_new_tokens} new tokens, "
           f"sampling {sampling}", flush=True)
+    prefetch = ThreadPoolExecutor(1)
+    pending = prefetch.submit(fetch, groups[0]) if groups else None     # the first chunk's pictures fetch while the model loads
     torch.manual_seed(seed)
     processor, model = load_model(model_id, True)
     rows_path = os.path.join(out_dir, "rows.jsonl")
     t0, n_done, n_tok = time.time(), 0, 0
     by_src = collections.defaultdict(list)
-    errors = 0
-    for b0 in range(0, len(ids), batch):
-        part = ids[b0:b0 + batch]
-        convs = [conversation(system, texts_in[i], pictures.get(i)) for i in part]
-        images = [pictures.get(i) for i in part]
-        try:
-            texts, lengths = generate(processor, model, convs, images, max_new_tokens, True, sampling)
-        except Exception as e:
-            gc.collect()
-            torch.cuda.empty_cache()
-            texts, lengths = [f"<error {type(e).__name__}: {str(e)[:200]}>"] * len(part), [0] * len(part)
-            errors += len(part)
-        n_tok += sum(lengths)
-        with open(rows_path, "a", encoding="utf-8") as fh:
-            for i, text, length in zip(part, texts, lengths):
-                answer = split_answer(text)
-                s = score(answer, hints[i])
-                s["new_tokens"] = length
-                by_src[srcs[i]].append(s)
-                fh.write(json.dumps({"id": i, "source": srcs[i], "kind": kind, "input": texts_in[i], "hint": hints[i], "text": text,
-                                     "thinking": answer["thinking"], "prompt": answer["prompt"], "ratio": answer["ratio"],
-                                     "ratio_key": answer["ratio_key"], "scores": s}, ensure_ascii=False) + "\n")
-        n_done += len(part)
-        spent = time.time() - t0
-        print(f"  {n_done}/{len(ids)} rows, {spent:.0f} s spent, {spent / n_done * (len(ids) - n_done):.0f} s left, "
-              f"{n_tok / max(spent, 1e-9):.0f} tok/s, mean {n_tok / n_done:.0f} new tokens", flush=True)
-        if n_done == len(part):
-            print("  linear attention:", fast_path_note(), flush=True)
+    errors, missing = 0, []
+    for ci, group in enumerate(groups):
+        t_fetch = time.time()
+        pictures, fails = pending.result()
+        pending = prefetch.submit(fetch, groups[ci + 1]) if ci + 1 < len(groups) else None
+        waited = time.time() - t_fetch
+        if waited > 5:
+            print(f"  waited {waited:.0f} s for chunk {ci + 1}'s pictures", flush=True)
+        ids = [r[key] for r in group]
+        if kind == "i2i":
+            missing += [i for i in ids if i not in pictures]
+            ids = [i for i in ids if i in pictures]
+        for b0 in range(0, len(ids), batch):
+            part = ids[b0:b0 + batch]
+            convs = [conversation(system, texts_in[i], pictures.get(i)) for i in part]
+            images = [pictures.get(i) for i in part]
+            try:
+                texts, lengths = generate(processor, model, convs, images, max_new_tokens, True, sampling)
+            except Exception as e:
+                gc.collect()
+                torch.cuda.empty_cache()
+                texts, lengths = [f"<error {type(e).__name__}: {str(e)[:200]}>"] * len(part), [0] * len(part)
+                errors += len(part)
+            n_tok += sum(lengths)
+            with open(rows_path, "a", encoding="utf-8") as fh:
+                for i, text, length in zip(part, texts, lengths):
+                    answer = split_answer(text)
+                    s = score(answer, hints[i])
+                    s["new_tokens"] = length
+                    by_src[srcs[i]].append(s)
+                    fh.write(json.dumps({"id": i, "source": srcs[i], "kind": kind, "input": texts_in[i], "hint": hints[i], "text": text,
+                                         "thinking": answer["thinking"], "prompt": answer["prompt"], "ratio": answer["ratio"],
+                                         "ratio_key": answer["ratio_key"], "scores": s}, ensure_ascii=False) + "\n")
+            n_done += len(part)
+            spent = time.time() - t0
+            print(f"  {n_done}/{total} rows, {spent:.0f} s spent, {spent / n_done * (total - n_done):.0f} s left, "
+                  f"{n_tok / max(spent, 1e-9):.0f} tok/s, mean {n_tok / n_done:.0f} new tokens", flush=True)
+            if n_done == len(part):
+                print("  linear attention:", fast_path_note(), flush=True)
+    prefetch.shutdown(wait=False)
+    ids = [r[key] for r in rows]
     by_source = {}
     for src in sorted(by_src):
         ss = by_src[src]
@@ -241,7 +265,7 @@ def run(kind: str = "i2i", model_id: str | None = None, manifest: str = "hub:Abs
     summary = {"package": __version__, "kind": kind, "model": model_id, "manifest": manifest if kind == "i2i" else None,
                "seeds": seeds if kind == "t2i" else None, "split": split, "sources": list(sources) if sources else None,
                "exclude": list(exclude) if exclude else None, "per_source": per_source, "n": n, "request": request if kind == "i2i" else None,
-               "batch": batch, "max_new_tokens": max_new_tokens, "max_side": max_side, "sampling": sampling, "seed": seed,
+               "batch": batch, "max_new_tokens": max_new_tokens, "chunk": chunk, "max_side": max_side, "sampling": sampling, "seed": seed,
                "rows": len(ids), "pictures_missing": len(missing), "errors": errors,
                "json_ok": _mean([float(s["json_ok"]) for s in allrows]), "cut": _mean([float(s["cut"]) for s in allrows]),
                "think_said": _mean([s["think_said"] for s in allrows]), "think_backed": _mean([s["think_backed"] for s in allrows]),

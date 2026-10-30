@@ -162,11 +162,15 @@ def fetch_images(rows: list, cache_dir: str, workers: int = 16, failures: dict |
             out[r["sample_id"]] = im
         else:
             failures[r["sample_id"]] = why
-    # parquet shards: one download and one read per shard
+    # parquet shards: one download and one read per shard; the shards in parallel (a repo of one-picture shards downloads
+    # one file a row, and one at a time it is the slowest part of a read)
     by_shard = collections.defaultdict(list)
     for r in by_kind.get("hf_parquet", []):
         by_shard[(r["image"]["repo"], r["image"].get("repo_type", "dataset"), r["image"]["path"])].append(r)
-    for (repo, rtype, path), rs in by_shard.items():
+
+    def one_shard(item):
+        (repo, rtype, path), rs = item
+        got, fails = {}, {}
         try:
             import pyarrow.parquet as pq
             local = hf_hub_download(repo, path, repo_type=rtype, token=token())
@@ -183,14 +187,21 @@ def fetch_images(rows: list, cache_dir: str, workers: int = 16, failures: dict |
                         cell = tbl.column(col)[i - start].as_py()
                         b = cell.get("bytes") if isinstance(cell, dict) else cell
                         try:
-                            out[wanted[i]["sample_id"]] = _image_from_bytes(b, max_side)
+                            got[wanted[i]["sample_id"]] = _image_from_bytes(b, max_side)
                         except Exception as e:
-                            failures[wanted[i]["sample_id"]] = f"undecodable ({type(e).__name__})"
+                            fails[wanted[i]["sample_id"]] = f"undecodable ({type(e).__name__})"
                 start += n
         except Exception as e:
             print(f"  shard {path} failed: {type(e).__name__}: {str(e)[:120]}", flush=True)
             for r in rs:
-                failures.setdefault(r["sample_id"], f"shard failed ({type(e).__name__})")
+                fails.setdefault(r["sample_id"], f"shard failed ({type(e).__name__})")
+        return got, fails
+
+    with ThreadPoolExecutor(workers) as pool:
+        for got, fails in pool.map(one_shard, list(by_shard.items())):
+            out.update(got)
+            for k, v in fails.items():
+                failures.setdefault(k, v)
     # single files on the Hub
     def one_file(r):
         try:
