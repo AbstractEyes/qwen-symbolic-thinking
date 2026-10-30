@@ -117,7 +117,10 @@ def load_model(model_id: str, thinking: bool, adapter: str | None = None, adapte
 def generate(processor, model, convs: list, images: list, max_new_tokens: int, thinking: bool, sampling: dict | None) -> tuple:
     """One batch: the conversations rendered through the chat template, the images beside them; returns (texts, new_tokens)."""
     import torch
-    texts = [processor.apply_chat_template(c, add_generation_prompt=True, tokenize=False, enable_thinking=thinking) for c in convs]
+    try:
+        texts = [processor.apply_chat_template(c, add_generation_prompt=True, tokenize=False, enable_thinking=thinking) for c in convs]
+    except TypeError:  # a processor that takes no template switch; the parse strips any thinking and the summary counts it
+        texts = [processor.apply_chat_template(c, add_generation_prompt=True, tokenize=False) for c in convs]
     kwargs = {"text": texts, "padding": True, "return_tensors": "pt"}
     if any(im is not None for im in images):
         kwargs["images"] = [im for im in images if im is not None]
@@ -158,6 +161,7 @@ def summarize(results: list) -> dict:
             "stray_lines": sum(x["stray_lines"] for x in s) / n,
             "step_jaccard": sum(x["step_jaccard"] or 0 for x in s) / n,
             "mean_chars": sum(x["chars"] for x in s) / n,
+            "thinking_chars": sum(x["thinking_chars"] for x in s) / n,
             "s_per_row": sum(r["gen_s"] for r in rs) / n,
             "tok_per_s": sum(r["new_tokens"] for r in rs) / max(sum(r["gen_s"] for r in rs), 1e-9),
         }
@@ -166,7 +170,7 @@ def summarize(results: list) -> dict:
 
 def table(summary: dict) -> str:
     cols = ["rows", "format_ok", "in_range", "spec_recall", "spec_recall_of_rows", "rows_with_gloss", "rows_with_remark",
-            "mean_thoughts", "step_jaccard", "s_per_row", "tok_per_s"]
+            "mean_thoughts", "step_jaccard", "thinking_chars", "s_per_row", "tok_per_s"]
     lines = ["| model | form | " + " | ".join(cols) + " |", "|---|---|" + "---|" * len(cols)]
     for key, v in summary.items():
         model, form = key.split(" | ")
@@ -238,6 +242,9 @@ def run(models: list, inputs: str = "hub:screens/inputs/screen_v1.json", out_dir
                     with open(results_path, "a", encoding="utf-8") as fh:
                         fh.write(json.dumps(rec, ensure_ascii=False) + "\n")
                 done += len(group)
+                if start == 0 and not thinking and any(chain.parse(t)["thinking"] for t in texts):
+                    print("  NOTE: the model is thinking although thinking is off; the parse strips it, the token budget pays for it",
+                          flush=True)
                 spent = time.time() - t_form
                 print(f"  [{form}] {done}/{len(jobs)} rows, {spent:.0f} s spent, {spent / done * (len(jobs) - done):.0f} s left, "
                       f"{dt:.1f} s/row", flush=True)
