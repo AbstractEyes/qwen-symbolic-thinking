@@ -54,8 +54,8 @@ time; nothing is redistributed here. The specification rows are the dataset's ow
 ## Install
 
 ```
-pip install git+https://github.com/AbstractEyes/qwen-symbolic-thinking@v0.1.8
-pip install "qwen-symbolic-thinking[screen] @ git+https://github.com/AbstractEyes/qwen-symbolic-thinking@v0.1.8"   # with torch, transformers 5, accelerate, peft
+pip install git+https://github.com/AbstractEyes/qwen-symbolic-thinking@v0.1.9
+pip install "qwen-symbolic-thinking[screen] @ git+https://github.com/AbstractEyes/qwen-symbolic-thinking@v0.1.9"   # with torch, transformers 5, accelerate, peft
 ```
 
 Qwen3.5 needs transformers 5 (the model code lives under `transformers.models.qwen3_5`); the preflight says so if it is missing.
@@ -90,11 +90,16 @@ extractions), leaving `runs/done/<name>.json` per run; `notebooks/lane1.ipynb` t
 
 `qwen_symbolic_thinking.extract.run` has the trained model write whole rows for the pictures of a manifest, the list kept at
 [AbstractPhil/qwen-thinking-images](https://huggingface.co/datasets/AbstractPhil/qwen-thinking-images). A manifest row names its
-picture by a locator (`url` with fallbacks, `hf_parquet` row of a shard, `hf_file`, `zip_member`, `hf_dataset_row` keyed in a
-split), the depth it is asked at (`depth_plan`: quick, closer or long) and whatever captions its source carries. Pictures are
-fetched in groups (a shard or a zip downloads once); each answer is parsed, scored and audited the way the synthetic rows were,
-with the grounding gates only where the source has captions; the rows, kept and rejected alike, ship with a summary to
-`extractions/<stamp>_<tag>/` in the dataset repo.
+picture by a locator (`url` with fallbacks, `hf_parquet` row of a shard, `hf_file`, `zip_member`, `url_archive` member of a tar
+or zip fetched once, `hf_dataset_row` keyed in a split), the depth it is asked at (`depth_plan`: quick, closer or long) and
+whatever captions its source carries. Pictures are fetched in groups (a shard, a zip or an archive downloads once), the next
+chunk while the current one generates, each bounded to 1,024 px on its longer side; a batch that runs out of memory is retried
+in halves. Each answer is parsed, scored and audited the way the synthetic rows were, with the grounding gates only where the
+source has captions (the floors mean different things per caption pool, so a volume run sets them to 0 and selects offline);
+the rows, kept and rejected alike, the pictures that did not answer (`missing.jsonl`, with why) and a summary ship to
+`extractions/<stamp>_<tag>/` in the dataset repo. `extract.training_items(rows, manifest, floors)` turns a run's kept rows into
+training items (the whole row under the `full` form, the captions as the hint), and the trainer fetches pictures by the same
+locators.
 
 ```python
 from qwen_symbolic_thinking.extract import run

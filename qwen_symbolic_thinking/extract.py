@@ -28,6 +28,7 @@ from .synth import audit
 
 DEPTHS = {"quick": "simple", "closer": "medium", "long": "deep"}
 CAPTION_KEYS_IGNORED = ("vlm_0.8b_json", "animetimm_json")      # structured JSON captions are not grounding text
+MAX_SIDE = 1024          # a picture's longer side at most this many pixels before the processor (a 4,000 px portrait made batch 64 run out of memory)
 
 
 def load_manifest(manifest: str) -> list:
@@ -46,30 +47,86 @@ def hint_of(row: dict) -> str:
     return " ".join(str(v) for k, v in caps.items() if k not in CAPTION_KEYS_IGNORED and isinstance(v, str) and v.strip())
 
 
-def _image_from_bytes(b: bytes):
+def bounded(im, max_side: int = MAX_SIDE):
+    """The picture with its longer side at most max_side (in place when it is larger)."""
+    if max(im.size) > max_side:
+        im.thumbnail((max_side, max_side))
+    return im
+
+
+def _image_from_bytes(b: bytes, max_side: int = MAX_SIDE):
     from PIL import Image
-    return Image.open(io.BytesIO(b)).convert("RGB")
+    return bounded(Image.open(io.BytesIO(b)).convert("RGB"), max_side)
 
 
-def _fetch_url(urls: list, cache_path: str):
+def _fetch_url(urls: list, cache_path: str, max_side: int = MAX_SIDE):
+    """The picture behind the first url that answers, or (None, why)."""
     import requests
     from PIL import Image
     if os.path.exists(cache_path):
-        return Image.open(cache_path).convert("RGB")
+        return bounded(Image.open(cache_path).convert("RGB"), max_side), None
+    why = []
     for url in urls:
-        try:
-            r = requests.get(url, timeout=30, headers={"User-Agent": "qwen-symbolic-thinking/" + __version__})
-        except requests.RequestException:
-            continue
-        if r.status_code == 200 and len(r.content) > 1000:
+        for attempt in range(3):
             try:
-                im = _image_from_bytes(r.content)
-            except Exception:
+                r = requests.get(url, timeout=30, headers={"User-Agent": "qwen-symbolic-thinking/" + __version__ + " (research; huggingface.co/AbstractPhil)"})
+            except requests.RequestException as e:
+                why.append(f"{type(e).__name__}")
+                time.sleep(2 * (attempt + 1))
                 continue
-            with open(cache_path, "wb") as fh:
-                fh.write(r.content)
-            return im
-    return None
+            if r.status_code == 200 and len(r.content) > 1000:
+                try:
+                    im = _image_from_bytes(r.content, max_side)
+                except Exception as e:
+                    why.append(f"undecodable ({type(e).__name__})")
+                    break
+                with open(cache_path, "wb") as fh:
+                    fh.write(r.content)
+                return im, None
+            why.append(f"http {r.status_code}")
+            if r.status_code in (429, 500, 502, 503, 504):
+                time.sleep(5 * (attempt + 1))
+                continue
+            break
+    return None, "; ".join(why) or "no url"
+
+
+def _archive(url: str, cache_dir: str) -> str:
+    """The archive at url, downloaded once into cache_dir (named after the url), as a local path."""
+    import requests
+    name = url.rsplit("/", 1)[-1].split("?")[0] or "archive"
+    local = os.path.join(cache_dir, name)
+    if os.path.exists(local) and os.path.getsize(local) > 0:
+        return local
+    tmp = local + ".part"
+    t0, done, shown = time.time(), 0, 0
+    with requests.get(url, stream=True, timeout=120, headers={"User-Agent": "qwen-symbolic-thinking/" + __version__}) as r:
+        r.raise_for_status()
+        total = int(r.headers.get("Content-Length") or 0)
+        with open(tmp, "wb") as fh:
+            for chunk in r.iter_content(1 << 22):
+                fh.write(chunk)
+                done += len(chunk)
+                if done - shown > (1 << 29):
+                    shown = done
+                    print(f"  archive {name}: {done >> 20} of {total >> 20} MB, {time.time() - t0:.0f} s", flush=True)
+    os.replace(tmp, local)
+    print(f"  archive {name}: {done >> 20} MB in {time.time() - t0:.0f} s", flush=True)
+    return local
+
+
+def _extracted(local: str) -> str:
+    """A tar archive unpacked once beside itself (<local>_x); the folder's path."""
+    import tarfile
+    xdir = local + "_x"
+    if os.path.isdir(xdir) and os.listdir(xdir):
+        return xdir
+    t0 = time.time()
+    with tarfile.open(local) as tf:
+        tf.extractall(xdir + ".part")
+    os.replace(xdir + ".part", xdir)
+    print(f"  archive {os.path.basename(local)} unpacked in {time.time() - t0:.0f} s", flush=True)
+    return xdir
 
 
 def locator_row(r: dict) -> dict:
@@ -83,13 +140,15 @@ def locator_row(r: dict) -> dict:
     return r
 
 
-def fetch_images(rows: list, cache_dir: str, workers: int = 16) -> dict:
+def fetch_images(rows: list, cache_dir: str, workers: int = 16, failures: dict | None = None, max_side: int = MAX_SIDE) -> dict:
     """{sample_id: image} for the rows whose picture answers (an item's id when it has no sample_id); grouped by locator kind so
-    shards and zips download once."""
+    shards, zips and archives download once; pictures bounded to max_side. When a dict is passed as failures, it collects
+    {sample_id: why} for the pictures that did not answer."""
     from concurrent.futures import ThreadPoolExecutor
     from huggingface_hub import hf_hub_download
     os.makedirs(cache_dir, exist_ok=True)
     out = {}
+    failures = failures if failures is not None else {}
     rows = [locator_row(r) for r in rows]
     by_kind = collections.defaultdict(list)
     for r in rows:
@@ -97,8 +156,12 @@ def fetch_images(rows: list, cache_dir: str, workers: int = 16) -> dict:
     # urls, in parallel
     url_rows = by_kind.get("url", [])
     with ThreadPoolExecutor(workers) as pool:
-        ims = list(pool.map(lambda r: _fetch_url(r["image"]["urls"], os.path.join(cache_dir, r["sample_id"] + ".img")), url_rows))
-    out.update({r["sample_id"]: im for r, im in zip(url_rows, ims) if im is not None})
+        got = list(pool.map(lambda r: _fetch_url(r["image"]["urls"], os.path.join(cache_dir, r["sample_id"] + ".img"), max_side), url_rows))
+    for r, (im, why) in zip(url_rows, got):
+        if im is not None:
+            out[r["sample_id"]] = im
+        else:
+            failures[r["sample_id"]] = why
     # parquet shards: one download and one read per shard
     by_shard = collections.defaultdict(list)
     for r in by_kind.get("hf_parquet", []):
@@ -120,23 +183,29 @@ def fetch_images(rows: list, cache_dir: str, workers: int = 16) -> dict:
                         cell = tbl.column(col)[i - start].as_py()
                         b = cell.get("bytes") if isinstance(cell, dict) else cell
                         try:
-                            out[wanted[i]["sample_id"]] = _image_from_bytes(b)
-                        except Exception:
-                            pass
+                            out[wanted[i]["sample_id"]] = _image_from_bytes(b, max_side)
+                        except Exception as e:
+                            failures[wanted[i]["sample_id"]] = f"undecodable ({type(e).__name__})"
                 start += n
         except Exception as e:
             print(f"  shard {path} failed: {type(e).__name__}: {str(e)[:120]}", flush=True)
+            for r in rs:
+                failures.setdefault(r["sample_id"], f"shard failed ({type(e).__name__})")
     # single files on the Hub
     def one_file(r):
         try:
             local = hf_hub_download(r["image"]["repo"], r["image"]["path"], repo_type=r["image"].get("repo_type", "dataset"), token=token())
-            return _image_from_bytes(open(local, "rb").read())
-        except Exception:
-            return None
+            return _image_from_bytes(open(local, "rb").read(), max_side), None
+        except Exception as e:
+            return None, f"{type(e).__name__}"
     file_rows = by_kind.get("hf_file", [])
     with ThreadPoolExecutor(workers) as pool:
-        ims = list(pool.map(one_file, file_rows))
-    out.update({r["sample_id"]: im for r, im in zip(file_rows, ims) if im is not None})
+        got = list(pool.map(one_file, file_rows))
+    for r, (im, why) in zip(file_rows, got):
+        if im is not None:
+            out[r["sample_id"]] = im
+        else:
+            failures[r["sample_id"]] = why
     # zip members: one download per zip
     by_zip = collections.defaultdict(list)
     for r in by_kind.get("zip_member", []):
@@ -147,11 +216,39 @@ def fetch_images(rows: list, cache_dir: str, workers: int = 16) -> dict:
             with zipfile.ZipFile(local) as zf:
                 for r in rs:
                     try:
-                        out[r["sample_id"]] = _image_from_bytes(zf.read(r["image"]["member"]))
-                    except Exception:
-                        pass
+                        out[r["sample_id"]] = _image_from_bytes(zf.read(r["image"]["member"]), max_side)
+                    except Exception as e:
+                        failures[r["sample_id"]] = f"zip member ({type(e).__name__})"
         except Exception as e:
             print(f"  zip {path} failed: {type(e).__name__}: {str(e)[:120]}", flush=True)
+            for r in rs:
+                failures.setdefault(r["sample_id"], f"zip failed ({type(e).__name__})")
+    # members of an archive at a url (a tar or zip fetched once into the cache dir)
+    by_archive = collections.defaultdict(list)
+    for r in by_kind.get("url_archive", []):
+        by_archive[r["image"]["archive_url"]].append(r)
+    for url, rs in by_archive.items():
+        try:
+            local = _archive(url, cache_dir)
+            if local.endswith(".zip"):
+                with zipfile.ZipFile(local) as zf:
+                    for r in rs:
+                        try:
+                            out[r["sample_id"]] = _image_from_bytes(zf.read(r["image"]["member"]), max_side)
+                        except Exception as e:
+                            failures[r["sample_id"]] = f"archive member ({type(e).__name__})"
+            else:
+                xdir = _extracted(local)          # a tar is unpacked once; members are then plain files
+                for r in rs:
+                    try:
+                        with open(os.path.join(xdir, r["image"]["member"]), "rb") as fh:
+                            out[r["sample_id"]] = _image_from_bytes(fh.read(), max_side)
+                    except Exception as e:
+                        failures[r["sample_id"]] = f"archive member ({type(e).__name__})"
+        except Exception as e:
+            print(f"  archive {url} failed: {type(e).__name__}: {str(e)[:120]}", flush=True)
+            for r in rs:
+                failures.setdefault(r["sample_id"], f"archive failed ({type(e).__name__})")
     # keyed rows of a Hub dataset split (DOCCI): the split's parquet files scanned once for the keys
     by_split = collections.defaultdict(list)
     for r in by_kind.get("hf_dataset_row", []):
@@ -178,37 +275,34 @@ def fetch_images(rows: list, cache_dir: str, workers: int = 16) -> dict:
                             cell = imgs[i].as_py()
                             b = cell.get("bytes") if isinstance(cell, dict) else cell
                             try:
-                                out[wanted.pop(k)["sample_id"]] = _image_from_bytes(b)
-                            except Exception:
-                                wanted.pop(k, None)
+                                out[wanted.pop(k)["sample_id"]] = _image_from_bytes(b, max_side)
+                            except Exception as e:
+                                failures[wanted.pop(k)["sample_id"]] = f"undecodable ({type(e).__name__})"
+            for r in wanted.values():
+                failures.setdefault(r["sample_id"], "key not in the split's files")
         except Exception as e:
             print(f"  dataset rows {repo}/{split} failed: {type(e).__name__}: {str(e)[:120]}", flush=True)
+            for r in rs:
+                failures.setdefault(r["sample_id"], f"dataset rows failed ({type(e).__name__})")
+    for r in by_kind.get("pending", []):
+        failures[r["sample_id"]] = "no locator"
     missing = [r["sample_id"] for r in rows if r["sample_id"] not in out]
     if missing:
-        print(f"  {len(missing)} pictures did not answer (first {missing[:5]})", flush=True)
+        print(f"  {len(missing)} pictures did not answer (first {missing[:5]}: {[failures.get(m, '?') for m in missing[:5]]})", flush=True)
     return out
 
 
-def run(manifest: str, out_repo: str = "AbstractPhil/qwen-thinking-images", model_id: str = "Qwen/Qwen3.5-9B",
-        adapter: str | None = "AbstractPhil/qwen3.5-9b-think-symbolic-image", adapter_subfolder: str | None = None,
-        per_source: int | None = None, sources: tuple | None = None, split: str | None = None, n: int | None = None, batch: int = 64,
-        max_new_tokens: int = 400, min_backed: float = 0.2, min_said: float = 0.1, chunk: int = 512,
-        out_dir: str = "/content/extract", repo_type: str = "dataset", do_ship: bool = True, tag: str = "pilot") -> dict:
-    """Extract whole rows for the manifest's pictures (those of one split when given); the next chunk's pictures are fetched
-    while the current chunk generates; ship extractions/<stamp>_<tag>/ to the dataset repo."""
-    from concurrent.futures import ThreadPoolExecutor
-    import torch
-    from huggingface_hub import HfApi
-    stamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S") + f"_{tag}"
-    out_dir = os.path.join(out_dir, stamp)
-    os.makedirs(out_dir, exist_ok=True)
-    env = preflight()
-    rows = load_manifest(manifest)
+def select_rows(rows: list, split: str | None = None, sources: tuple | None = None, exclude: tuple | None = None,
+                per_source: int | None = None, n: int | None = None) -> list:
+    """The manifest rows a run works on: with a locator, of one split, of some sources or all but some, at most per_source
+    a source, at most n in all."""
     rows = [r for r in rows if (r.get("image") or {}).get("kind") not in (None, "pending")]
     if split:
         rows = [r for r in rows if r.get("split") == split]
     if sources:
         rows = [r for r in rows if r["source"] in set(sources)]
+    if exclude:
+        rows = [r for r in rows if r["source"] not in set(exclude)]
     if per_source:
         seen = collections.Counter()
         kept = []
@@ -217,34 +311,78 @@ def run(manifest: str, out_repo: str = "AbstractPhil/qwen-thinking-images", mode
                 kept.append(r)
                 seen[r["source"]] += 1
         rows = kept
-    rows = rows[:n]
+    return rows[:n]
+
+
+def run(manifest: str, out_repo: str = "AbstractPhil/qwen-thinking-images", model_id: str = "Qwen/Qwen3.5-9B",
+        adapter: str | None = "AbstractPhil/qwen3.5-9b-think-symbolic-image", adapter_subfolder: str | None = None,
+        per_source: int | None = None, sources: tuple | None = None, exclude: tuple | None = None, split: str | None = None,
+        n: int | None = None, batch: int = 64, max_new_tokens: int = 400, min_backed: float = 0.2, min_said: float = 0.1,
+        chunk: int = 512, max_side: int = MAX_SIDE, out_dir: str = "/content/extract", repo_type: str = "dataset",
+        do_ship: bool = True, tag: str = "pilot") -> dict:
+    """Extract whole rows for the manifest's pictures (those of one split, of some sources or all but some); the next chunk's
+    pictures are fetched while the current chunk generates (bounded to max_side); a batch that runs out of memory is retried
+    in halves; ship extractions/<stamp>_<tag>/ (rows.jsonl, missing.jsonl, summary.json) to the dataset repo."""
+    from concurrent.futures import ThreadPoolExecutor
+    import torch
+    from huggingface_hub import HfApi
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S") + f"_{tag}"
+    out_dir = os.path.join(out_dir, stamp)
+    os.makedirs(out_dir, exist_ok=True)
+    env = preflight()
+    rows = select_rows(load_manifest(manifest), split, sources, exclude, per_source, n)
     print(f"extract {stamp}: {len(rows)} pictures from {len({r['source'] for r in rows})} sources; {model_id}"
           + (f" + {adapter}/{adapter_subfolder or ''}" if adapter else ""), flush=True)
     processor, model = load_model(model_id, False, adapter, adapter_subfolder)
     results_path = os.path.join(out_dir, "rows.jsonl")
     counts, reasons, t0, n_done, n_tok, n_missing = collections.Counter(), collections.Counter(), time.time(), 0, 0, 0
     said, backed = collections.defaultdict(list), collections.defaultdict(list)
+    missing_by_source, oom = collections.Counter(), collections.Counter()
     img_dir = os.path.join(os.path.dirname(out_dir), "images")
     chunks = [rows[c0:c0 + chunk] for c0 in range(0, len(rows), chunk)]
     prefetch = ThreadPoolExecutor(1)
-    pending = prefetch.submit(fetch_images, chunks[0], img_dir) if chunks else None
+
+    def fetch(group):
+        fails = {}
+        ims = fetch_images(group, img_dir, failures=fails, max_side=max_side)
+        return ims, fails
+
+    def gen(part, pictures):
+        convs = [[{"role": "user", "content": [{"type": "image", "image": pictures[r["sample_id"]]},
+                                               {"type": "text", "text": prompts.full(DEPTHS.get(r.get("depth_plan"), "medium"))}]}] for r in part]
+        try:
+            return generate(processor, model, convs, [pictures[r["sample_id"]] for r in part], max_new_tokens, False, None)
+        except Exception as e:
+            is_oom = type(e).__name__ == "OutOfMemoryError" or "out of memory" in str(e).lower()
+            gc.collect()
+            torch.cuda.empty_cache()
+            if is_oom and len(part) > 1:
+                oom["splits"] += 1
+                h = len(part) // 2
+                a, b = gen(part[:h], pictures), gen(part[h:], pictures)
+                return a[0] + b[0], a[1] + b[1]
+            oom["rows_failed" if is_oom else "errors"] += len(part)
+            return [f"<error {type(e).__name__}: {str(e)[:200]}>"] * len(part), [0] * len(part)
+
+    pending = prefetch.submit(fetch, chunks[0]) if chunks else None
     for ci, group in enumerate(chunks):
         t_fetch = time.time()
-        pictures = pending.result()
-        pending = prefetch.submit(fetch_images, chunks[ci + 1], img_dir) if ci + 1 < len(chunks) else None
+        pictures, fails = pending.result()
+        pending = prefetch.submit(fetch, chunks[ci + 1]) if ci + 1 < len(chunks) else None
         waited = time.time() - t_fetch
         if waited > 5:
             print(f"  waited {waited:.0f} s for chunk {ci + 1}'s pictures", flush=True)
+        if fails:
+            with open(os.path.join(out_dir, "missing.jsonl"), "a", encoding="utf-8") as fh:
+                for r in group:
+                    if r["sample_id"] in fails:
+                        fh.write(json.dumps({"sample_id": r["sample_id"], "source": r["source"], "why": fails[r["sample_id"]], "image": r["image"]}) + "\n")
+                        missing_by_source[r["source"]] += 1
         n_missing += sum(1 for r in group if r["sample_id"] not in pictures)
         group = [r for r in group if r["sample_id"] in pictures]
         for b0 in range(0, len(group), batch):
             part = group[b0:b0 + batch]
-            convs = [[{"role": "user", "content": [{"type": "image", "image": pictures[r["sample_id"]]},
-                                                   {"type": "text", "text": prompts.full(DEPTHS.get(r.get("depth_plan"), "medium"))}]}] for r in part]
-            try:
-                texts, lengths = generate(processor, model, convs, [pictures[r["sample_id"]] for r in part], max_new_tokens, False, None)
-            except Exception as e:
-                texts, lengths = [f"<error {type(e).__name__}: {str(e)[:200]}>"] * len(part), [0] * len(part)
+            texts, lengths = gen(part, pictures)
             n_tok += sum(lengths)
             with open(results_path, "a", encoding="utf-8") as fh:
                 for r, text in zip(part, texts):
@@ -278,12 +416,16 @@ def run(manifest: str, out_repo: str = "AbstractPhil/qwen-thinking-images", mode
                           "said": (sum(said[src]) / len(said[src])) if said[src] else None,
                           "backed": (sum(backed[src]) / len(backed[src])) if backed[src] else None}
     summary = {"package": __version__, "model": model_id, "adapter": adapter, "adapter_subfolder": adapter_subfolder, "manifest": manifest,
-               "rows": len(rows), "pictures_missing": n_missing, "kept": counts["kept"], "rejected": dict(reasons),
+               "split": split, "sources": list(sources) if sources else None, "exclude": list(exclude) if exclude else None,
+               "batch": batch, "chunk": chunk, "max_side": max_side, "max_new_tokens": max_new_tokens, "floors": {"min_backed": min_backed, "min_said": min_said},
+               "rows": len(rows), "pictures_missing": n_missing, "pictures_missing_by_source": dict(missing_by_source), "oom": dict(oom),
+               "kept": counts["kept"], "rejected": dict(reasons),
                "s_per_row": round((time.time() - t0) / max(n_done, 1), 3), "tok_per_s": round(n_tok / max(time.time() - t0, 1e-9), 1),
                "by_source": by_source, "env": env, "library_notes": LIBRARY_NOTES[-20:]}
     with open(os.path.join(out_dir, "summary.json"), "w", encoding="utf-8") as fh:
         json.dump(summary, fh, indent=1)
-    print(f"\nextract done: {counts['kept']} of {n_done} kept; rejected {dict(reasons)}; {summary['s_per_row']} s a row", flush=True)
+    print(f"\nextract done: {counts['kept']} of {n_done} kept; rejected {dict(reasons)}; {n_missing} pictures missing {dict(missing_by_source)}; "
+          f"out of memory {dict(oom)}; {summary['s_per_row']} s a row", flush=True)
     del model, processor
     gc.collect()
     torch.cuda.empty_cache()
