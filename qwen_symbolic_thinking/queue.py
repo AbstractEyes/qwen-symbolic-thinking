@@ -4,9 +4,10 @@
     run_queue("lane1")
 
 The queue is runs/queue_<lane>.json in the project repo: a list of specs, each {"name", "kind": "train" | "synth" |
-"throughput", ...}. A train spec trains (its "train" keys go to train.run) and then screens the adapter (its "screen" keys go
+"throughput" | "extract", ...}. A train spec trains (its "train" keys go to train.run) and then screens the adapter (its "screen" keys go
 to screen.run, with the trained model's forms by default). A synth spec generates synthetic items (synth.generate). A
-throughput spec measures rows an hour by batch size (screen.throughput, with an adapter when given). Each run leaves runs/done/<name>.json
+throughput spec measures rows an hour by batch size (screen.throughput, with an adapter when given). An extract spec writes
+whole rows for a manifest's pictures with the trained model (extract.run; its "extract" keys). Each run leaves runs/done/<name>.json
 on the Hub (started, then done or failed, with the summaries); a spec whose marker exists is skipped unless it says "retry".
 When the queue is empty the lane waits for new specs, polling every minute, and leaves after idle_minutes without any."""
 from __future__ import annotations
@@ -82,6 +83,12 @@ def run_spec(spec: dict, lane: str, repo: str, out_dir: str) -> dict:
         if "batches" in t:
             t["batches"] = tuple(t["batches"])
         result["throughput"] = screen.throughput(**t, tag=name, repo=repo)
+    elif spec["kind"] == "extract":
+        from . import extract
+        x = dict(spec["extract"])
+        if "sources" in x and x["sources"] is not None:
+            x["sources"] = tuple(x["sources"])
+        result["extract"] = {k: v for k, v in extract.run(**x, tag=name).items() if k not in ("env", "library_notes")}
     else:
         raise ValueError(f"unknown kind {spec['kind']!r}")
     result["finished"] = datetime.now(timezone.utc).isoformat(timespec="seconds")

@@ -54,8 +54,8 @@ time; nothing is redistributed here. The specification rows are the dataset's ow
 ## Install
 
 ```
-pip install git+https://github.com/AbstractEyes/qwen-symbolic-thinking@v0.1.6
-pip install "qwen-symbolic-thinking[screen] @ git+https://github.com/AbstractEyes/qwen-symbolic-thinking@v0.1.6"   # with torch, transformers 5, accelerate, peft
+pip install git+https://github.com/AbstractEyes/qwen-symbolic-thinking@v0.1.7
+pip install "qwen-symbolic-thinking[screen] @ git+https://github.com/AbstractEyes/qwen-symbolic-thinking@v0.1.7"   # with torch, transformers 5, accelerate, peft
 ```
 
 Qwen3.5 needs transformers 5 (the model code lives under `transformers.models.qwen3_5`); the preflight says so if it is missing.
@@ -83,8 +83,23 @@ the same screen in the trained forms (`full`, `short`, `spec_full`).
 through pictures no row was written about; a chain passes the audit when it holds the form and the depth, defines nothing,
 remarks on nothing, strays nowhere, and both says and is backed by the picture's own captions (0.2 each); the passing chains
 ship as short-form items under `synth/`. `qwen_symbolic_thinking.queue.run_queue(lane)` lets a card work unattended through
-`runs/queue_<lane>.json` on the Hub (fine-tunes, each followed by its screen; synthetic generation), leaving
-`runs/done/<name>.json` per run; `notebooks/lane1.ipynb` to `lane3.ipynb` run it.
+`runs/queue_<lane>.json` on the Hub (fine-tunes, each followed by its screen; synthetic generation; throughput sweeps;
+extractions), leaving `runs/done/<name>.json` per run; `notebooks/lane1.ipynb` to `lane3.ipynb` run it.
+
+## Extraction
+
+`qwen_symbolic_thinking.extract.run` has the trained model write whole rows for the pictures of a manifest, the list kept at
+[AbstractPhil/qwen-thinking-images](https://huggingface.co/datasets/AbstractPhil/qwen-thinking-images). A manifest row names its
+picture by a locator (`url` with fallbacks, `hf_parquet` row of a shard, `hf_file`, `zip_member`, `hf_dataset_row` keyed in a
+split), the depth it is asked at (`depth_plan`: quick, closer or long) and whatever captions its source carries. Pictures are
+fetched in groups (a shard or a zip downloads once); each answer is parsed, scored and audited the way the synthetic rows were,
+with the grounding gates only where the source has captions; the rows, kept and rejected alike, ship with a summary to
+`extractions/<stamp>_<tag>/` in the dataset repo.
+
+```python
+from qwen_symbolic_thinking.extract import run
+run(manifest="hub:AbstractPhil/qwen-thinking-images/pilot_v1.jsonl", adapter="AbstractPhil/qwen3.5-9b-think-symbolic-image", tag="pilot")
+```
 
 ```python
 from qwen_symbolic_thinking import chain
