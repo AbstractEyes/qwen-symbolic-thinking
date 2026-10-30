@@ -84,6 +84,8 @@ def test_counts_read_as_words():
     assert chain.present("2", "2 ovens stand there")
     assert not chain.present("2", "twelve ovens stand there")
     assert chain.present("30s", "a woman in her thirties")
+    assert chain.present("centre", "zebras in the center of the frame") and chain.present("grey", "a gray coat")
+    assert not chain.present("centre", "zebras at the edge")
 
 
 def test_prompt_forms_carry_the_form_and_the_depth():

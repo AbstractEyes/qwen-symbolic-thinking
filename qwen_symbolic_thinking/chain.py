@@ -89,12 +89,21 @@ def leaves(spec: dict) -> list:
     return out
 
 
+SPELLINGS = {"centre": "center", "colour": "color", "grey": "gray", "theatre": "theater", "harbour": "harbor", "armour": "armor",
+             "moustache": "mustache", "jewellery": "jewelry", "pyjamas": "pajamas", "mould": "mold", "plough": "plow"}
+
+
 def present(value: str, text: str) -> bool:
-    """Is a fact's value in the text, as itself or as the number word it stands for?"""
+    """Is a fact's value in the text, as itself, as the number word it stands for, or in the other English spelling?"""
     v, t = value.lower(), text.lower()
     if v in NUMBERS:
         return NUMBERS[v] in t or re.search(rf"\b{re.escape(v)}\b", t) is not None
-    return v in t
+    if v in t:
+        return True
+    other = v
+    for british, american in SPELLINGS.items():
+        other = other.replace(british, american)
+    return other != v and other in t
 
 
 def score(parsed: dict, row: dict) -> dict:
