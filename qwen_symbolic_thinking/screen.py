@@ -350,9 +350,11 @@ def rescore(results_path: str, inputs: str | None = None) -> dict:
 
 def throughput(model_id: str, inputs: str = "hub:screens/inputs/screen_v1.json", batches: tuple = (4, 8, 16, 32, 64),
                n_rows: int = 64, form: str = "shown", max_new_tokens: int = 700, thinking: bool = False,
-               out_dir: str = "/content/screen", repo: str = REPO, do_ship: bool = True, tag: str = "throughput") -> list:
+               out_dir: str = "/content/screen", repo: str = REPO, do_ship: bool = True, tag: str = "throughput",
+               adapter: str | None = None, adapter_subfolder: str | None = None) -> list:
     """Rows an hour against the batch size: the same rows generated at each batch size, the peak memory read each time; an
-    out-of-memory batch is recorded and ends the sweep. Results ship under screens/<stamp>_throughput/."""
+    out-of-memory batch is recorded and ends the sweep. With an adapter (a Hub repo and subfolder, or a local folder) the
+    trained model is measured. Results ship under screens/<stamp>_<tag>/."""
     os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")   # read when torch loads (after a restart)
     import torch
     stamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S") + f"_{tag}"
@@ -367,8 +369,9 @@ def throughput(model_id: str, inputs: str = "hub:screens/inputs/screen_v1.json",
         pictures = fetch_images(items, os.path.join(os.path.dirname(out_dir), "images"))
         items = [it for it in items if it["id"] in pictures]
     jobs = [(it, messages(form, it, data.get("examples", {}), pictures.get(it["id"])), pictures.get(it["id"])) for it in items]
-    print(f"throughput {stamp}: {model_id}, {len(jobs)} rows, form {form}, batches {batches}", flush=True)
-    processor, model = load_model(model_id, thinking)
+    print(f"throughput {stamp}: {model_id}" + (f" + {adapter}/{adapter_subfolder or ''}" if adapter else "")
+          + f", {len(jobs)} rows, form {form}, batches {batches}", flush=True)
+    processor, model = load_model(model_id, thinking, adapter, adapter_subfolder)
     generate(processor, model, [j[1] for j in jobs[:4]], [j[2] for j in jobs[:4]], 64, thinking, None)   # warm-up
     print("  linear attention:", fast_path_note(), flush=True)
     results = []
@@ -389,7 +392,8 @@ def throughput(model_id: str, inputs: str = "hub:screens/inputs/screen_v1.json",
         except Exception as e:
             err = f"{type(e).__name__}: {str(e)[:160]}"
         dt = time.time() - t0
-        rec = {"model": model_id, "form": form, "batch": b, "rows": len(jobs), "ok": err is None, "error": err,
+        rec = {"model": model_id, "adapter": adapter, "adapter_subfolder": adapter_subfolder, "form": form, "batch": b,
+               "rows": len(jobs), "ok": err is None, "error": err,
                "s_total": round(dt, 1), "s_per_row": round(dt / len(jobs), 3), "rows_per_hour": round(3600 * len(jobs) / dt),
                "tok_per_s": round(n_tok / dt, 1), "new_tokens": n_tok, "peak_gb": round(torch.cuda.max_memory_allocated() / 1024 ** 3, 1),
                "max_new_tokens": max_new_tokens}

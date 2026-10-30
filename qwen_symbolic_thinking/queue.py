@@ -3,9 +3,10 @@
     from qwen_symbolic_thinking.queue import run_queue
     run_queue("lane1")
 
-The queue is runs/queue_<lane>.json in the project repo: a list of specs, each {"name", "kind": "train" | "synth", ...}. A
-train spec trains (its "train" keys go to train.run) and then screens the adapter (its "screen" keys go to screen.run, with the
-trained model's forms by default). A synth spec generates synthetic items (synth.generate). Each run leaves runs/done/<name>.json
+The queue is runs/queue_<lane>.json in the project repo: a list of specs, each {"name", "kind": "train" | "synth" |
+"throughput", ...}. A train spec trains (its "train" keys go to train.run) and then screens the adapter (its "screen" keys go
+to screen.run, with the trained model's forms by default). A synth spec generates synthetic items (synth.generate). A
+throughput spec measures rows an hour by batch size (screen.throughput, with an adapter when given). Each run leaves runs/done/<name>.json
 on the Hub (started, then done or failed, with the summaries); a spec whose marker exists is skipped unless it says "retry".
 When the queue is empty the lane waits for new specs, polling every minute, and leaves after idle_minutes without any."""
 from __future__ import annotations
@@ -75,6 +76,12 @@ def run_spec(spec: dict, lane: str, repo: str, out_dir: str) -> dict:
         from . import synth
         s = synth.generate(**spec["synth"], tag=name, repo=repo)
         result["synth"] = {k: v for k, v in s.items() if k != "env"}
+    elif spec["kind"] == "throughput":
+        from . import screen
+        t = dict(spec["throughput"])
+        if "batches" in t:
+            t["batches"] = tuple(t["batches"])
+        result["throughput"] = screen.throughput(**t, tag=name, repo=repo)
     else:
         raise ValueError(f"unknown kind {spec['kind']!r}")
     result["finished"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
