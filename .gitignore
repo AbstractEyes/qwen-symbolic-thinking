@@ -1,0 +1,12 @@
+__pycache__/
+*.pyc
+*.egg-info/
+build/
+dist/
+.venv/
+.pytest_cache/
+.idea/
+runs/
+screens/
+*.jsonl
+!tests/**/*.jsonl

@@ -1,0 +1,40 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "qwen-symbolic-thinking"
+dynamic = ["version"]
+description = "Teaching a Qwen vision-language model to think about a picture in writing: the behaviour screen, the fine-tune and the extraction, on the thought-symbolic-image-captions rows."
+readme = "README.md"
+license = { text = "Apache-2.0" }
+requires-python = ">=3.10"
+authors = [{ name = "AbstractPhil" }]
+keywords = ["vision-language", "chain-of-thought", "qwen", "lora", "image captioning", "art", "photography"]
+classifiers = [
+  "License :: OSI Approved :: Apache Software License",
+  "Programming Language :: Python :: 3",
+  "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+dependencies = [
+  "thought-image-seeds @ git+https://github.com/AbstractEyes/thought-image-seeds@v0.3.2",
+  "huggingface_hub>=0.24",
+  "requests>=2.31",
+  "pillow>=10",
+]
+
+[project.optional-dependencies]
+screen = ["torch>=2.4", "transformers>=4.57", "accelerate>=1.0"]
+train = ["torch>=2.4", "transformers>=4.57", "accelerate>=1.0", "peft>=0.12", "datasets>=4.0"]
+test = ["pytest>=8"]
+
+[project.urls]
+Homepage = "https://github.com/AbstractEyes/qwen-symbolic-thinking"
+Weights = "https://huggingface.co/AbstractPhil/qwen-symbolic-thinking-image-training"
+Dataset = "https://huggingface.co/datasets/AbstractPhil/thought-symbolic-image-captions"
+
+[tool.setuptools.dynamic]
+version = { attr = "qwen_symbolic_thinking.__version__" }
+
+[tool.setuptools.packages.find]
+include = ["qwen_symbolic_thinking*"]
