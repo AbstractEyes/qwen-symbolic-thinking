@@ -1,16 +1,19 @@
-"""The first fine-tune: a LoRA on a Qwen3.5 vision-language model, taught the chains with the short prompt form.
+"""The fine-tune: a LoRA on a Qwen3.5 vision-language model, taught the rows under their prompt forms.
 
     from qwen_symbolic_thinking.train import run
-    run(model_id="Qwen/Qwen3.5-9B", inputs="hub:sft/sft_v1.json", epochs=1)
+    run(model_id="Qwen/Qwen3.5-9B", inputs=["hub:sft/pictures_v2.json"], epochs=3, tag="pictures")
 
-Each item becomes one conversation: the picture (or the specification) with the short form as the user turn, the row's own
-chain as the assistant turn. The loss is on the assistant turn only. Plain Adam with a cosine schedule and warmup. The adapter
-ships to the project repo during training and at the end, under lora/<model>/r<rank>/<stamp>/."""
+Each item becomes one conversation per form it carries: the picture (or the specification) with the form's one-line prompt as
+the user turn, the row's chain (short) or the whole row (full) as the assistant turn. The loss is on the assistant turn only.
+Plain Adam with a cosine schedule and warmup. The adapter ships to the project repo during training and at the end, under
+lora/<model>/r<rank>/<stamp>_<tag>/."""
 from __future__ import annotations
 
+import inspect
 import json
 import math
 import os
+import random
 import time
 from datetime import datetime, timezone
 
@@ -23,41 +26,62 @@ from .screen import fetch_images, load_inputs, preflight, vlm_class
 # Qwen3.5; in_proj_qkvz in the Qwen3-Next naming). The tiny gate projections (in_proj_a, in_proj_b) are not adapted.
 TARGETS = (r".*language_model.*\.(q_proj|k_proj|v_proj|o_proj|gate_proj|up_proj|down_proj|in_proj_qkv|in_proj_z|in_proj_qkvz|out_proj)$")
 TURN_END = "<|im_end|>\n"
+PICTURE_FORMS = ("short", "full")
+SPEC_FORMS = ("spec_short", "spec_full")
 
 
-def conversation(it: dict, image=None) -> tuple:
-    """(the user messages, the answer text) of one item."""
-    if it["kind"] == "image":
-        user = [{"type": "image", "image": image}, {"type": "text", "text": prompts.short(it["depth"])}]
+def conversation(it: dict, form: str, image=None) -> tuple:
+    """(the user messages, the answer text) of one item under one form."""
+    depth = it["depth"]
+    if form == "short":
+        user, answer = [{"type": "image", "image": image}, {"type": "text", "text": prompts.short(depth)}], chain.render(it)
+    elif form == "full":
+        user, answer = [{"type": "image", "image": image}, {"type": "text", "text": prompts.full(depth)}], chain.render(it, full=True)
+    elif form == "spec_short":
+        user, answer = [{"type": "text", "text": prompts.spec_short(depth, it["spec"])}], chain.render(it)
+    elif form == "spec_full":
+        user, answer = [{"type": "text", "text": prompts.spec_full(depth, it["spec"])}], chain.render(it, full=True)
     else:
-        user = [{"type": "text", "text": prompts.spec_short(it["depth"], it["spec"])}]
-    return [{"role": "user", "content": user}], chain.render(it)
+        raise ValueError(f"unknown form {form!r}")
+    return [{"role": "user", "content": user}], answer
+
+
+def examples_of(items: list) -> list:
+    """(item, form) pairs: every form an item carries; a picture item without forms is taught the short form, a specification
+    item the spec_short form."""
+    out = []
+    for it in items:
+        forms = it.get("forms") or (["short"] if it["kind"] == "image" else ["spec_short"])
+        for form in forms:
+            if (form in PICTURE_FORMS) != (it["kind"] == "image"):
+                raise ValueError(f"{it['id']}: form {form} does not fit a {it['kind']} item")
+            out.append((it, form))
+    return out
 
 
 class Collator:
-    """A batch from items: the prompt rendered through the chat template (thinking off), the answer and the turn end appended,
-    the images beside; labels cover the answer only. The prompt length of each item is cached across epochs."""
+    """A batch from (item, form) pairs: the prompt rendered through the chat template (thinking off), the answer and the turn end
+    appended, the images beside; labels cover the answer only. The prompt length of each pair is cached across epochs."""
 
     def __init__(self, processor, pictures: dict, max_len: int):
         self.processor, self.pictures, self.max_len, self.prefix_len = processor, pictures, max_len, {}
 
-    def prefix_length(self, it: dict, prefix: str, image) -> int:
-        if it["id"] not in self.prefix_len:
+    def prefix_length(self, key: tuple, prefix: str, image) -> int:
+        if key not in self.prefix_len:
             kwargs = {"images": [image]} if image is not None else {}
-            self.prefix_len[it["id"]] = int(self.processor(text=[prefix], return_tensors="pt", **kwargs)["input_ids"].shape[1])
-        return self.prefix_len[it["id"]]
+            self.prefix_len[key] = int(self.processor(text=[prefix], return_tensors="pt", **kwargs)["input_ids"].shape[1])
+        return self.prefix_len[key]
 
-    def __call__(self, items: list) -> dict:
-        import torch
+    def __call__(self, pairs: list) -> dict:
         texts, images, lengths = [], [], []
-        for it in items:
+        for it, form in pairs:
             image = self.pictures.get(it["id"]) if it["kind"] == "image" else None
-            messages, answer = conversation(it, image)
+            messages, answer = conversation(it, form, image)
             prefix = self.processor.apply_chat_template(messages, add_generation_prompt=True, tokenize=False, enable_thinking=False)
             texts.append(prefix + answer + TURN_END)
             if image is not None:
                 images.append(image)
-            lengths.append(self.prefix_length(it, prefix, image))
+            lengths.append(self.prefix_length((it["id"], form), prefix, image))
         kwargs = {"images": images} if images else {}
         batch = self.processor(text=texts, padding=True, return_tensors="pt", **kwargs)
         labels = batch["input_ids"].clone()
@@ -73,15 +97,15 @@ class Collator:
         return batch
 
 
-class Items:
-    def __init__(self, items: list):
-        self.items = items
+class Pairs:
+    def __init__(self, pairs: list):
+        self.pairs = pairs
 
     def __len__(self):
-        return len(self.items)
+        return len(self.pairs)
 
     def __getitem__(self, i):
-        return self.items[i]
+        return self.pairs[i]
 
 
 def lora_report(model) -> dict:
@@ -94,10 +118,18 @@ def lora_report(model) -> dict:
     return dict(hits)
 
 
-def run(model_id: str = "Qwen/Qwen3.5-9B", inputs: str = "hub:sft/sft_v1.json", out_dir: str = "/content/train",
-        rank: int = 32, alpha: int = 64, dropout: float = 0.05, lr: float = 2e-4, epochs: float = 1.0, batch: int = 4,
-        grad_accum: int = 4, max_len: int = 2048, warmup: float = 0.03, n_items: int | None = None, ship_every: int = 100,
-        repo: str = REPO, do_ship: bool = True, seed: int = 20261030) -> dict:
+def load_items(inputs) -> list:
+    """The items of one input file or of several, in order."""
+    out = []
+    for path in ([inputs] if isinstance(inputs, str) else list(inputs)):
+        out += load_inputs(path)["items"]
+    return out
+
+
+def run(model_id: str = "Qwen/Qwen3.5-9B", inputs="hub:sft/sft_v1.json", out_dir: str = "/content/train",
+        rank: int = 32, alpha: int = 64, dropout: float = 0.05, lr: float = 2e-4, epochs: float = 1.0, batch: int = 8,
+        grad_accum: int = 2, max_len: int = 2048, warmup: float = 0.03, n_items: int | None = None, ship_every: int = 100,
+        repo: str = REPO, do_ship: bool = True, seed: int = 20261030, tag: str = "") -> dict:
     """Train the adapter; return {adapter_dir, path_in_repo, steps, s_per_step, train_loss, ...}."""
     from .checks import peft_beside_torchao
     peft_check = peft_beside_torchao()
@@ -105,21 +137,25 @@ def run(model_id: str = "Qwen/Qwen3.5-9B", inputs: str = "hub:sft/sft_v1.json", 
     import torch
     from peft import LoraConfig, TaskType, get_peft_model
     from transformers import AutoProcessor, Trainer, TrainerCallback, TrainingArguments
-    stamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S") + (f"_{tag}" if tag else "")
     short = model_id.split("/")[-1]
     path_in_repo = f"lora/{short}/r{rank}/{stamp}"
     run_dir = os.path.join(out_dir, f"{short}_r{rank}_{stamp}")
     adapter_dir = os.path.join(run_dir, "adapter")
     os.makedirs(adapter_dir, exist_ok=True)
     env = preflight()
-    data = load_inputs(inputs)
-    items = data["items"][:n_items]
+    items = load_items(inputs)[:n_items]
     t0 = time.time()
     pictures = fetch_images(items, os.path.join(out_dir, "images"))
     items = [it for it in items if it["kind"] != "image" or it["id"] in pictures]
+    pairs = examples_of(items)
+    random.Random(seed).shuffle(pairs)
     n_img = sum(1 for it in items if it["kind"] == "image")
-    print(f"train {stamp}: {len(items)} items ({n_img} with a picture, {len(items) - n_img} from specifications); "
-          f"images fetched in {time.time() - t0:.0f} s", flush=True)
+    forms = {}
+    for _, form in pairs:
+        forms[form] = forms.get(form, 0) + 1
+    print(f"train {stamp}: {len(items)} items ({n_img} with a picture), {len(pairs)} examples by form {forms}; images fetched in "
+          f"{time.time() - t0:.0f} s", flush=True)
 
     processor = AutoProcessor.from_pretrained(model_id)
     processor.tokenizer.padding_side = "right"
@@ -135,7 +171,7 @@ def run(model_id: str = "Qwen/Qwen3.5-9B", inputs: str = "hub:sft/sft_v1.json", 
     assert report, "no module matched the LoRA targets; read the model's module names"
     model.print_trainable_parameters()
 
-    steps_per_epoch = math.ceil(len(items) / (batch * grad_accum))
+    steps_per_epoch = math.ceil(len(pairs) / (batch * grad_accum))
     total = math.ceil(steps_per_epoch * epochs)
     trainable = [p for p in model.parameters() if p.requires_grad]
     optimizer = torch.optim.Adam(trainable, lr=lr, betas=(0.9, 0.999))        # plain Adam, no weight decay
@@ -144,7 +180,6 @@ def run(model_id: str = "Qwen/Qwen3.5-9B", inputs: str = "hub:sft/sft_v1.json", 
                   bf16=True, logging_steps=10, save_strategy="no", report_to=[], remove_unused_columns=False,
                   dataloader_num_workers=0, seed=seed, gradient_checkpointing=True,
                   gradient_checkpointing_kwargs={"use_reentrant": False})
-    import inspect
     allowed = set(inspect.signature(TrainingArguments).parameters)
     dropped = [k for k in wanted if k not in allowed]
     if dropped:
@@ -172,15 +207,16 @@ def run(model_id: str = "Qwen/Qwen3.5-9B", inputs: str = "hub:sft/sft_v1.json", 
                 model.save_pretrained(adapter_dir)
                 ship(adapter_dir, f"{path_in_repo}/step_{state.global_step}", f"{short} r{rank} {stamp}: step {state.global_step}", repo)
 
-    trainer = Trainer(model=model, args=args, train_dataset=Items(items), data_collator=Collator(processor, pictures, max_len),
+    trainer = Trainer(model=model, args=args, train_dataset=Pairs(pairs), data_collator=Collator(processor, pictures, max_len),
                       optimizers=(optimizer, None), callbacks=[Progress()])
     result = trainer.train()
     model.save_pretrained(adapter_dir)
-    summary = {"package": __version__, "model": model_id, "rank": rank, "alpha": alpha, "dropout": dropout, "lr": lr,
+    summary = {"package": __version__, "model": model_id, "tag": tag, "rank": rank, "alpha": alpha, "dropout": dropout, "lr": lr,
                "epochs": epochs, "batch": batch, "grad_accum": grad_accum, "max_len": max_len, "items": len(items),
-               "items_with_picture": n_img, "steps": result.global_step, "train_loss": result.training_loss,
-               "s_per_step": round((time.time() - t0) / max(result.global_step, 1), 2), "train_min": round((time.time() - t0) / 60, 1),
-               "lora_modules": report, "targets": TARGETS, "inputs": inputs, "path_in_repo": path_in_repo, "env": env, "log": log}
+               "items_with_picture": n_img, "examples": len(pairs), "examples_by_form": forms, "steps": result.global_step,
+               "train_loss": result.training_loss, "s_per_step": round((time.time() - t0) / max(result.global_step, 1), 2),
+               "train_min": round((time.time() - t0) / 60, 1), "lora_modules": report, "targets": TARGETS, "inputs": inputs,
+               "path_in_repo": path_in_repo, "env": env, "log": log}
     with open(os.path.join(adapter_dir, "train_summary.json"), "w", encoding="utf-8") as fh:
         json.dump(summary, fh, indent=1)
     print(f"\ntrained in {summary['train_min']} min: {summary['steps']} steps, loss {summary['train_loss']:.4f}, "
@@ -189,4 +225,8 @@ def run(model_id: str = "Qwen/Qwen3.5-9B", inputs: str = "hub:sft/sft_v1.json", 
         url = ship(adapter_dir, f"{path_in_repo}/final", f"{short} r{rank} {stamp}: final ({summary['steps']} steps)", repo)
         print(f"  shipped: {url}", flush=True)
     summary["adapter_dir"] = adapter_dir
+    del trainer, model, processor
+    import gc
+    gc.collect()
+    torch.cuda.empty_cache()
     return summary

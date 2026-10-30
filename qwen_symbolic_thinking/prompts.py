@@ -1,11 +1,13 @@
-"""The prompt forms of the behaviour screen.
+"""The prompt forms.
 
-    bare    the picture and the instructions: the line form, the steps, the depth's counts, the rules
-    shown   the same, with two worked examples written for other pictures (described in a line each, not shown)
-    spec    no picture: a specification of one, as records, to be thought through as if seen
-    short   the trained form: the picture and one line (spec_short: the records and one line); the form is the model's to know
+    bare        the picture and the instructions: the line form, the steps, the depth's counts, the rules
+    shown       the same, with two worked examples written for other pictures (described in a line each, not shown)
+    spec        no picture: a specification of one, as records, to be thought through as if seen
+    short       the trained form: the picture and one line, for the chain and a caption
+    full        the trained form for the whole row: the chain, the wordings and the questions
+    spec_short, spec_full   the two trained forms for a specification instead of a picture
 
-Every form asks for the same output: one thought per line as `step: text`, then one `caption:` line."""
+The screen forms ask for one thought per line as `step: text`, then one `caption:` line."""
 from __future__ import annotations
 
 from thought_seeds.thought_tools import COUNTS, STEPS
@@ -13,6 +15,7 @@ from thought_seeds.thought_tools import COUNTS, STEPS
 from .chain import render
 
 LOOK = {"simple": "a quick look", "medium": "a closer look", "deep": "a long look"}
+WORDS = {"simple": "a caption", "medium": "a caption and a prompt or tags", "deep": "a caption, a prompt, tags and a critique"}
 
 RULES = """Rules:
 - Every thought is about THIS picture: what is in it, where, how many, in what light, and what that suggests. Never define a word or explain a term in general.
@@ -52,9 +55,13 @@ def records(spec: dict) -> str:
     return "\n".join(lines)
 
 
-def spec(depth: str, specification: dict) -> str:
+def _records_preamble(specification: dict) -> str:
     return (f"There is no picture to see. Here is a specification of one, as records:\n\n{records(specification)}\n\n"
-            f"Treat the records as what the picture shows and " + _form(depth)[0].lower() + _form(depth)[1:])
+            f"Treat the records as what the picture shows and ")
+
+
+def spec(depth: str, specification: dict) -> str:
+    return _records_preamble(specification) + _form(depth)[0].lower() + _form(depth)[1:]
 
 
 def short(depth: str) -> str:
@@ -63,6 +70,18 @@ def short(depth: str) -> str:
 
 
 def spec_short(depth: str, specification: dict) -> str:
-    """The trained form for a specification instead of a picture."""
-    return (f"There is no picture to see. Here is a specification of one, as records:\n\n{records(specification)}\n\n"
-            f"Treat the records as what the picture shows and think it through in writing, {LOOK[depth]}, ending with a caption.")
+    return _records_preamble(specification) + f"think it through in writing, {LOOK[depth]}, ending with a caption."
+
+
+def _full_tail(depth: str) -> str:
+    return (f"think it through in writing, {LOOK[depth]}; then write {WORDS[depth]}, and the questions a careful looker would "
+            f"still ask, each as `question: what -> answer [record, chain or unknown]`.")
+
+
+def full(depth: str) -> str:
+    """The trained form for the whole row: the chain, the wordings and the questions."""
+    return "Look at this picture and " + _full_tail(depth)
+
+
+def spec_full(depth: str, specification: dict) -> str:
+    return _records_preamble(specification) + _full_tail(depth)

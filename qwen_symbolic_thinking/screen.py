@@ -21,9 +21,9 @@ from datetime import datetime, timezone
 from . import REPO, __version__, chain, prompts
 from .hub import fetch, ship, token
 
-FORMS = ("bare", "shown", "spec")                 # the base model's screen
-TRAINED_FORMS = ("short", "spec_short")           # the trained model's screen
-SPEC_FORMS = ("spec", "spec_short")               # the forms that take a specification instead of a picture
+FORMS = ("bare", "shown", "spec")                        # the base model's screen
+TRAINED_FORMS = ("full", "short", "spec_full")           # the trained model's screen: the whole row, the chain, a specification
+SPEC_FORMS = ("spec", "spec_short", "spec_full")         # the forms that take a specification instead of a picture
 LIBRARY_NOTES = []                                # what the transformers logger says (the kernel fallback warning lands here)
 
 
@@ -125,6 +125,10 @@ def messages(form: str, it: dict, examples: dict, image=None) -> list:
         text = prompts.short(it["depth"])
     elif form == "spec_short":
         text = prompts.spec_short(it["depth"], it["spec"])
+    elif form == "full":
+        text = prompts.full(it["depth"])
+    elif form == "spec_full":
+        text = prompts.spec_full(it["depth"], it["spec"])
     else:
         raise ValueError(f"unknown form {form!r}")
     content = ([{"type": "image", "image": image}] if image is not None else []) + [{"type": "text", "text": text}]
@@ -171,6 +175,11 @@ def generate(processor, model, convs: list, images: list, max_new_tokens: int, t
     return decoded, lengths
 
 
+def _mean(values: list):
+    xs = [v for v in values if v is not None]
+    return (sum(xs) / len(xs)) if xs else None
+
+
 def summarize(results: list) -> dict:
     """Per (model, form): the rates and means the screen reads."""
     groups = defaultdict(list)
@@ -190,6 +199,13 @@ def summarize(results: list) -> dict:
             "mean_thoughts": sum(x["n_thoughts"] for x in s) / n,
             "named_frac": (sum(x["named_frac"] for x in s if x.get("named_frac") is not None)
                            / max(sum(1 for x in s if x.get("named_frac") is not None), 1)),
+            "wordings_ok": sum(bool(x.get("wordings_ok")) for x in s) / n,
+            "questions_ok": sum(bool(x.get("questions_in_range")) for x in s) / n,
+            "mean_questions": sum(x.get("questions_n", 0) for x in s) / n,
+            "questions_formed": _mean([(x["questions_formed"] / x["questions_n"]) for x in s if x.get("questions_n")]),
+            "full_ok": sum(bool(x.get("full_ok")) for x in s) / n,
+            "hint_said": _mean([x.get("hint_said") for x in s]),
+            "hint_backed": _mean([x.get("hint_backed") for x in s]),
             "spec_recall": (sum(recalls) / len(recalls)) if recalls else None,
             "spec_recall_of_rows": (sum(refs) / len(refs)) if refs else None,
             "rows_with_gloss": sum(1 for x in s if x["gloss_hits"]) / n,
@@ -205,8 +221,8 @@ def summarize(results: list) -> dict:
 
 
 def table(summary: dict) -> str:
-    cols = ["rows", "format_ok", "named_frac", "in_range", "mean_thoughts", "spec_recall", "spec_recall_of_rows", "rows_with_gloss",
-            "rows_with_remark", "step_jaccard", "thinking_chars", "s_per_row", "tok_per_s"]
+    cols = ["rows", "format_ok", "in_range", "mean_thoughts", "wordings_ok", "questions_ok", "full_ok", "spec_recall", "hint_said",
+            "hint_backed", "rows_with_gloss", "rows_with_remark", "s_per_row", "tok_per_s"]
     lines = ["| model | form | " + " | ".join(cols) + " |", "|---|---|" + "---|" * len(cols)]
     for key, v in summary.items():
         model, form = key.split(" | ")
