@@ -74,6 +74,7 @@ def run_spec(spec: dict, lane: str, repo: str, out_dir: str) -> dict:
         result["train"] = {k: v for k, v in t.items() if k not in ("log", "env")}
         s = dict(DEFAULT_SCREEN, **spec.get("screen", {}))
         s["forms"] = tuple(s["forms"])
+        s.setdefault("system", spec["train"].get("system"))     # an arm trained with a system prompt is screened with it
         result["screen"] = screen.run(models=[spec["train"].get("model_id", "Qwen/Qwen3.5-9B")], adapter=t["adapter_dir"], tag=name, repo=repo, **s)
     elif spec["kind"] == "synth":
         from . import synth

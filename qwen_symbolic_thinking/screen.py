@@ -114,7 +114,9 @@ def fetch_images(items: list, cache_dir: str, workers: int = 16) -> dict:
     return out
 
 
-def messages(form: str, it: dict, examples: dict, image=None) -> list:
+def messages(form: str, it: dict, examples: dict, image=None, system: str | None = None) -> list:
+    """The conversation of one screen row: the user turn (the picture, when the form takes one, and the form's text), after a
+    system turn when a system prompt is given."""
     if form == "bare":
         text = prompts.bare(it["depth"])
     elif form == "shown":
@@ -132,7 +134,7 @@ def messages(form: str, it: dict, examples: dict, image=None) -> list:
     else:
         raise ValueError(f"unknown form {form!r}")
     content = ([{"type": "image", "image": image}] if image is not None else []) + [{"type": "text", "text": text}]
-    return [{"role": "user", "content": content}]
+    return ([{"role": "system", "content": system}] if system else []) + [{"role": "user", "content": content}]
 
 
 def load_model(model_id: str, thinking: bool, adapter: str | None = None, adapter_subfolder: str | None = None):
@@ -234,12 +236,15 @@ def table(summary: dict) -> str:
 def run(models: list, inputs: str = "hub:screens/inputs/screen_v1.json", out_dir: str = "/content/screen",
         forms: tuple = FORMS, n_images: int | None = None, n_specs: int | None = None, batch: int = 4,
         max_new_tokens: int = 700, thinking: bool = False, sampling: dict | None = None, repo: str = REPO,
-        do_ship: bool = True, adapter: str | None = None, adapter_subfolder: str | None = None, tag: str = "") -> dict:
-    """The screen over every model and form; results and summaries on disk and on the Hub (screens/<stamp>[_<tag>]/)."""
+        do_ship: bool = True, adapter: str | None = None, adapter_subfolder: str | None = None, tag: str = "",
+        system: str | None = None) -> dict:
+    """The screen over every model and form; results and summaries on disk and on the Hub (screens/<stamp>[_<tag>]/). With
+    system (see prompts.system) every row's conversation opens with that system turn."""
     stamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S") + (f"_{tag}" if tag else "")
     out_dir = os.path.join(out_dir, stamp)
     os.makedirs(out_dir, exist_ok=True)
     env = preflight()
+    system_text = prompts.system(system)
     data = load_inputs(inputs)
     items = data["items"]
     image_items = [it for it in items if it["kind"] == "image"][:n_images]
@@ -253,7 +258,7 @@ def run(models: list, inputs: str = "hub:screens/inputs/screen_v1.json", out_dir
     with open(os.path.join(out_dir, "env.json"), "w", encoding="utf-8") as fh:
         json.dump({**env, "models": models, "forms": list(forms), "inputs": inputs, "batch": batch,
                    "max_new_tokens": max_new_tokens, "thinking": thinking, "sampling": sampling,
-                   "adapter": adapter, "adapter_subfolder": adapter_subfolder,
+                   "adapter": adapter, "adapter_subfolder": adapter_subfolder, "system": system,
                    "n_images": len(image_items), "n_specs": len(spec_items)}, fh, indent=1)
     results_path = os.path.join(out_dir, "results.jsonl")
     all_results = []
@@ -262,13 +267,15 @@ def run(models: list, inputs: str = "hub:screens/inputs/screen_v1.json", out_dir
         t_load = time.time()
         processor, model = load_model(model_id, thinking, adapter, adapter_subfolder)
         print(f"  loaded in {time.time() - t_load:.0f} s", flush=True)
+        if system_text:
+            print(f"  system prompt {system!r}: {len(processor.tokenizer(system_text)['input_ids'])} tokens before every row", flush=True)
         results = []
         for form in forms:
             todo = spec_items if form in SPEC_FORMS else image_items
             jobs = []
             for it in todo:
                 im = None if form in SPEC_FORMS else pictures[it["id"]]
-                jobs.append((it, messages(form, it, data.get("examples", {}), im), im))
+                jobs.append((it, messages(form, it, data.get("examples", {}), im, system_text), im))
             t_form, done = time.time(), 0
             for start in range(0, len(jobs), batch):
                 group = jobs[start:start + batch]

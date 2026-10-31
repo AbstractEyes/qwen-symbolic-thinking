@@ -330,7 +330,7 @@ def run(manifest: str, out_repo: str = "AbstractPhil/qwen-thinking-images", mode
         per_source: int | None = None, sources: tuple | None = None, exclude: tuple | None = None, split: str | None = None,
         n: int | None = None, batch: int = 64, max_new_tokens: int = 400, min_backed: float = 0.2, min_said: float = 0.1,
         chunk: int = 512, max_side: int = MAX_SIDE, out_dir: str = "/content/extract", repo_type: str = "dataset",
-        do_ship: bool = True, tag: str = "pilot") -> dict:
+        do_ship: bool = True, tag: str = "pilot", system: str | None = None) -> dict:
     """Extract whole rows for the manifest's pictures (those of one split, of some sources or all but some); the next chunk's
     pictures are fetched while the current chunk generates (bounded to max_side); a batch that runs out of memory is retried
     in halves; ship extractions/<stamp>_<tag>/ (rows.jsonl, missing.jsonl, summary.json) to the dataset repo."""
@@ -342,8 +342,9 @@ def run(manifest: str, out_repo: str = "AbstractPhil/qwen-thinking-images", mode
     os.makedirs(out_dir, exist_ok=True)
     env = preflight()
     rows = select_rows(load_manifest(manifest), split, sources, exclude, per_source, n)
+    system_text = prompts.system(system)
     print(f"extract {stamp}: {len(rows)} pictures from {len({r['source'] for r in rows})} sources; {model_id}"
-          + (f" + {adapter}/{adapter_subfolder or ''}" if adapter else ""), flush=True)
+          + (f" + {adapter}/{adapter_subfolder or ''}" if adapter else "") + (f"; system prompt {system!r}" if system_text else ""), flush=True)
     processor, model = load_model(model_id, False, adapter, adapter_subfolder)
     results_path = os.path.join(out_dir, "rows.jsonl")
     counts, reasons, t0, n_done, n_tok, n_missing = collections.Counter(), collections.Counter(), time.time(), 0, 0, 0
@@ -359,8 +360,9 @@ def run(manifest: str, out_repo: str = "AbstractPhil/qwen-thinking-images", mode
         return ims, fails
 
     def gen(part, pictures):
-        convs = [[{"role": "user", "content": [{"type": "image", "image": pictures[r["sample_id"]]},
-                                               {"type": "text", "text": prompts.full(DEPTHS.get(r.get("depth_plan"), "medium"))}]}] for r in part]
+        head = [{"role": "system", "content": system_text}] if system_text else []
+        convs = [head + [{"role": "user", "content": [{"type": "image", "image": pictures[r["sample_id"]]},
+                                                      {"type": "text", "text": prompts.full(DEPTHS.get(r.get("depth_plan"), "medium"))}]}] for r in part]
         try:
             return generate(processor, model, convs, [pictures[r["sample_id"]] for r in part], max_new_tokens, False, None)
         except Exception as e:
@@ -426,8 +428,8 @@ def run(manifest: str, out_repo: str = "AbstractPhil/qwen-thinking-images", mode
         by_source[src] = {"rows": sum(1 for r in rows if r["source"] == src),
                           "said": (sum(said[src]) / len(said[src])) if said[src] else None,
                           "backed": (sum(backed[src]) / len(backed[src])) if backed[src] else None}
-    summary = {"package": __version__, "model": model_id, "adapter": adapter, "adapter_subfolder": adapter_subfolder, "manifest": manifest,
-               "split": split, "sources": list(sources) if sources else None, "exclude": list(exclude) if exclude else None,
+    summary = {"package": __version__, "model": model_id, "adapter": adapter, "adapter_subfolder": adapter_subfolder, "system": system,
+               "manifest": manifest, "split": split, "sources": list(sources) if sources else None, "exclude": list(exclude) if exclude else None,
                "batch": batch, "chunk": chunk, "max_side": max_side, "max_new_tokens": max_new_tokens, "floors": {"min_backed": min_backed, "min_said": min_said},
                "rows": len(rows), "pictures_missing": n_missing, "pictures_missing_by_source": dict(missing_by_source), "oom": dict(oom),
                "kept": counts["kept"], "rejected": dict(reasons),

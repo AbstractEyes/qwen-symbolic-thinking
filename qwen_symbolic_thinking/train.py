@@ -31,8 +31,8 @@ PICTURE_FORMS = ("short", "full")
 SPEC_FORMS = ("spec_short", "spec_full")
 
 
-def conversation(it: dict, form: str, image=None) -> tuple:
-    """(the user messages, the answer text) of one item under one form."""
+def conversation(it: dict, form: str, image=None, system: str | None = None) -> tuple:
+    """(the messages, the answer text) of one item under one form: the user turn, after a system turn when a system prompt is given."""
     depth = it["depth"]
     if form == "short":
         user, answer = [{"type": "image", "image": image}, {"type": "text", "text": prompts.short(depth)}], chain.render(it)
@@ -44,7 +44,7 @@ def conversation(it: dict, form: str, image=None) -> tuple:
         user, answer = [{"type": "text", "text": prompts.spec_full(depth, it["spec"])}], chain.render(it, full=True)
     else:
         raise ValueError(f"unknown form {form!r}")
-    return [{"role": "user", "content": user}], answer
+    return ([{"role": "system", "content": system}] if system else []) + [{"role": "user", "content": user}], answer
 
 
 def examples_of(items: list) -> list:
@@ -64,8 +64,8 @@ class Collator:
     """A batch from (item, form) pairs: the prompt rendered through the chat template (thinking off), the answer and the turn end
     appended, the images beside; labels cover the answer only. The prompt length of each pair is cached across epochs."""
 
-    def __init__(self, processor, pictures: dict, max_len: int):
-        self.processor, self.pictures, self.max_len, self.prefix_len = processor, pictures, max_len, {}
+    def __init__(self, processor, pictures: dict, max_len: int, system: str | None = None):
+        self.processor, self.pictures, self.max_len, self.prefix_len, self.system = processor, pictures, max_len, {}, system
 
     def prefix_length(self, key: tuple, prefix: str, image) -> int:
         if key not in self.prefix_len:
@@ -77,7 +77,7 @@ class Collator:
         texts, images, lengths = [], [], []
         for it, form in pairs:
             image = self.pictures.get(it["id"]) if it["kind"] == "image" else None
-            messages, answer = conversation(it, form, image)
+            messages, answer = conversation(it, form, image, self.system)
             prefix = self.processor.apply_chat_template(messages, add_generation_prompt=True, tokenize=False, enable_thinking=False)
             texts.append(prefix + answer + TURN_END)
             if image is not None:
@@ -138,9 +138,11 @@ def adapter_source(spec: str, repo: str = REPO) -> tuple:
 def run(model_id: str = "Qwen/Qwen3.5-9B", inputs="hub:sft/sft_v1.json", out_dir: str = "/content/train",
         rank: int = 32, alpha: int = 64, dropout: float = 0.05, lr: float = 2e-4, epochs: float = 1.0, batch: int = 8,
         grad_accum: int = 2, max_len: int = 2048, warmup: float = 0.03, n_items: int | None = None, ship_every: int = 100,
-        repo: str = REPO, do_ship: bool = True, seed: int = 20261030, tag: str = "", init_adapter: str | None = None) -> dict:
+        repo: str = REPO, do_ship: bool = True, seed: int = 20261030, tag: str = "", init_adapter: str | None = None,
+        system: str | None = None) -> dict:
     """Train the adapter; return {adapter_dir, path_in_repo, steps, s_per_step, train_loss, ...}. With init_adapter (see
-    adapter_source) training continues from that trained adapter instead of a fresh LoRA; its rank and alpha must be the ones passed."""
+    adapter_source) training continues from that trained adapter instead of a fresh LoRA; its rank and alpha must be the ones passed.
+    With system (see prompts.system) every example carries that system turn before its user turn."""
     from .checks import peft_beside_torchao
     peft_check = peft_beside_torchao()
     assert peft_check["peft_lora_ok"], f"PEFT cannot build a LoRA here: {peft_check.get('error')}; {peft_check.get('advice', '')}"
@@ -169,6 +171,10 @@ def run(model_id: str = "Qwen/Qwen3.5-9B", inputs="hub:sft/sft_v1.json", out_dir
 
     processor = AutoProcessor.from_pretrained(model_id)
     processor.tokenizer.padding_side = "right"
+    system_text = prompts.system(system)
+    system_tokens = len(processor.tokenizer(system_text)["input_ids"]) if system_text else 0
+    if system_text:
+        print(f"system prompt {system!r}: {system_tokens} tokens before every example", flush=True)
     model = vlm_class().from_pretrained(model_id, dtype=torch.bfloat16, device_map="cuda")
     model.config.use_cache = False
     model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
@@ -226,7 +232,7 @@ def run(model_id: str = "Qwen/Qwen3.5-9B", inputs="hub:sft/sft_v1.json", out_dir
                 model.save_pretrained(adapter_dir)
                 ship(adapter_dir, f"{path_in_repo}/step_{state.global_step}", f"{short} r{rank} {stamp}: step {state.global_step}", repo)
 
-    trainer = Trainer(model=model, args=args, train_dataset=Pairs(pairs), data_collator=Collator(processor, pictures, max_len),
+    trainer = Trainer(model=model, args=args, train_dataset=Pairs(pairs), data_collator=Collator(processor, pictures, max_len, system_text),
                       optimizers=(optimizer, None), callbacks=[Progress()])
     result = trainer.train()
     model.save_pretrained(adapter_dir)
@@ -235,7 +241,8 @@ def run(model_id: str = "Qwen/Qwen3.5-9B", inputs="hub:sft/sft_v1.json", out_dir
                "items_with_picture": n_img, "examples": len(pairs), "examples_by_form": forms, "steps": result.global_step,
                "train_loss": result.training_loss, "s_per_step": round((time.time() - t0) / max(result.global_step, 1), 2),
                "train_min": round((time.time() - t0) / 60, 1), "lora_modules": report, "targets": TARGETS, "inputs": inputs,
-               "init_adapter": init_adapter, "path_in_repo": path_in_repo, "env": env, "log": log}
+               "init_adapter": init_adapter, "system": system, "system_tokens": system_tokens, "path_in_repo": path_in_repo,
+               "env": env, "log": log}
     with open(os.path.join(adapter_dir, "train_summary.json"), "w", encoding="utf-8") as fh:
         json.dump(summary, fh, indent=1)
     print(f"\ntrained in {summary['train_min']} min: {summary['steps']} steps, loss {summary['train_loss']:.4f}, "
