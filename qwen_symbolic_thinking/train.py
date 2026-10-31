@@ -127,11 +127,20 @@ def load_items(inputs) -> list:
     return out
 
 
+def adapter_source(spec: str, repo: str = REPO) -> tuple:
+    """Where an adapter to continue from lives: 'hub:lora/<base>/r32/<stamp>/final' -> (the project repo, that subfolder);
+    a local folder or a Hub repo id -> (itself, no subfolder)."""
+    if spec.startswith("hub:"):
+        return repo, spec[4:].strip("/")
+    return spec, None
+
+
 def run(model_id: str = "Qwen/Qwen3.5-9B", inputs="hub:sft/sft_v1.json", out_dir: str = "/content/train",
         rank: int = 32, alpha: int = 64, dropout: float = 0.05, lr: float = 2e-4, epochs: float = 1.0, batch: int = 8,
         grad_accum: int = 2, max_len: int = 2048, warmup: float = 0.03, n_items: int | None = None, ship_every: int = 100,
-        repo: str = REPO, do_ship: bool = True, seed: int = 20261030, tag: str = "") -> dict:
-    """Train the adapter; return {adapter_dir, path_in_repo, steps, s_per_step, train_loss, ...}."""
+        repo: str = REPO, do_ship: bool = True, seed: int = 20261030, tag: str = "", init_adapter: str | None = None) -> dict:
+    """Train the adapter; return {adapter_dir, path_in_repo, steps, s_per_step, train_loss, ...}. With init_adapter (see
+    adapter_source) training continues from that trained adapter instead of a fresh LoRA; its rank and alpha must be the ones passed."""
     from .checks import peft_beside_torchao
     peft_check = peft_beside_torchao()
     assert peft_check["peft_lora_ok"], f"PEFT cannot build a LoRA here: {peft_check.get('error')}; {peft_check.get('advice', '')}"
@@ -164,9 +173,18 @@ def run(model_id: str = "Qwen/Qwen3.5-9B", inputs="hub:sft/sft_v1.json", out_dir
     model.config.use_cache = False
     model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
     model.enable_input_require_grads()
-    config = LoraConfig(r=rank, lora_alpha=alpha, lora_dropout=dropout, bias="none", target_modules=TARGETS,
-                        task_type=TaskType.CAUSAL_LM)
-    model = get_peft_model(model, config)
+    if init_adapter:
+        from peft import PeftModel
+        from .hub import token
+        src, sub = adapter_source(init_adapter, repo)
+        print(f"continuing from the adapter {src}" + (f" / {sub}" if sub else ""), flush=True)
+        model = PeftModel.from_pretrained(model, src, is_trainable=True, token=token(), **({"subfolder": sub} if sub else {}))
+        cfg = model.peft_config["default"]
+        assert (cfg.r, cfg.lora_alpha) == (rank, alpha), f"the adapter is r{cfg.r} alpha {cfg.lora_alpha}; pass its own rank and alpha"
+    else:
+        config = LoraConfig(r=rank, lora_alpha=alpha, lora_dropout=dropout, bias="none", target_modules=TARGETS,
+                            task_type=TaskType.CAUSAL_LM)
+        model = get_peft_model(model, config)
     report = lora_report(model)
     print("LoRA modules by name:", report, flush=True)
     assert report, "no module matched the LoRA targets; read the model's module names"
@@ -217,7 +235,7 @@ def run(model_id: str = "Qwen/Qwen3.5-9B", inputs="hub:sft/sft_v1.json", out_dir
                "items_with_picture": n_img, "examples": len(pairs), "examples_by_form": forms, "steps": result.global_step,
                "train_loss": result.training_loss, "s_per_step": round((time.time() - t0) / max(result.global_step, 1), 2),
                "train_min": round((time.time() - t0) / 60, 1), "lora_modules": report, "targets": TARGETS, "inputs": inputs,
-               "path_in_repo": path_in_repo, "env": env, "log": log}
+               "init_adapter": init_adapter, "path_in_repo": path_in_repo, "env": env, "log": log}
     with open(os.path.join(adapter_dir, "train_summary.json"), "w", encoding="utf-8") as fh:
         json.dump(summary, fh, indent=1)
     print(f"\ntrained in {summary['train_min']} min: {summary['steps']} steps, loss {summary['train_loss']:.4f}, "
