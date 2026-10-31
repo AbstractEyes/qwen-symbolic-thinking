@@ -115,6 +115,26 @@ text = chain.render(row, full=True)       # the whole row as the model is taught
 
 Tests: `pytest tests` (no GPU needed).
 
+## Reading an arm
+
+`qwen_symbolic_thinking.tools` reads a trained arm's runs from the Hub without a GPU. Files live under a data root (`--data`, else
+`QST_DATA`, else `./data`) and are fetched when missing (`HF_TOKEN` in the environment while a repo is private; `--offline` reads
+what is there).
+
+```
+python -m qwen_symbolic_thinking.tools.probe_read P_probe_med4          # the held-out probe: 500 NGA pictures, 100 a kind
+python -m qwen_symbolic_thinking.tools.museum_read P_museum_med4        # 200 museum pictures against their catalogue lines
+python -m qwen_symbolic_thinking.tools.museum_mismatch P_museum_med4    # one kind row by row (works on paper flagged)
+python -m qwen_symbolic_thinking.tools.screen_conflicts <stamp> <stamp> # a screen's conflicts beside its rulers
+```
+
+The probe counts, per kind, the rows whose prompt line's first term names the kind the museum's own classification gives; the
+`probe` split is held out of every training set, so it is the medium term's ruler. The museum read uses the catalogue line instead
+(`tools.medium.expected`): its painting row understates a model, because watercolours and gouaches on paper are named drawings, the
+National Gallery's convention, and a few object and print lines match the painting pattern; `museum_mismatch` shows which. The
+conflicts counted on every row: an unknown question, a thought about light, a stock mood word (gentle, quiet, everyday, unhurried,
+calm, plain), a defining pattern (means, is a, refers to) in a thought.
+
 ## The prompt enhancers of Qwen-Image 2.1
 
 Qwen ships two 9B prompt enhancers beside Qwen-Image 2.1, [PE-I2I](https://huggingface.co/Qwen/Qwen-Image-2.1-PE-I2I) (pictures and
