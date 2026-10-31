@@ -54,8 +54,8 @@ time; nothing is redistributed here. The specification rows are the dataset's ow
 ## Install
 
 ```
-pip install git+https://github.com/AbstractEyes/qwen-symbolic-thinking@v0.1.14
-pip install "qwen-symbolic-thinking[screen] @ git+https://github.com/AbstractEyes/qwen-symbolic-thinking@v0.1.14"   # with torch, transformers 5, accelerate, peft
+pip install git+https://github.com/AbstractEyes/qwen-symbolic-thinking@v0.1.16
+pip install "qwen-symbolic-thinking[screen] @ git+https://github.com/AbstractEyes/qwen-symbolic-thinking@v0.1.16"   # with torch, transformers 5, accelerate, peft
 ```
 
 Qwen3.5 needs transformers 5 (the model code lives under `transformers.models.qwen3_5`); the preflight says so if it is missing.
@@ -134,6 +134,13 @@ The probe counts, per kind, the rows whose prompt line's first term names the ki
 National Gallery's convention, and a few object and print lines match the painting pattern; `museum_mismatch` shows which. The
 conflicts counted on every row: an unknown question, a thought about light, a stock mood word (gentle, quiet, everyday, unhurried,
 calm, plain), a defining pattern (means, is a, refers to) in a thought.
+
+## Releases
+
+- **Lucia v1** (2026-10-31): the root adapter of
+  [AbstractPhil/qwen3.5-9b-think-symbolic-image](https://huggingface.co/AbstractPhil/qwen3.5-9b-think-symbolic-image), also at the
+  tag `lucia-v1`; the original release (2026-10-30) is kept under `legacy/E_all_2ep/` and at the tag `legacy-e-all-2ep`. The card
+  gives her held-out reads. `extract.run` and the lane notebooks use the root adapter by default.
 
 ## The prompt enhancers of Qwen-Image 2.1
 
