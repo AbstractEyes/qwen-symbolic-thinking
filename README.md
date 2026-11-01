@@ -167,11 +167,13 @@ reads; the sizes differ in what they can hold, and the cards say so.
 The trainer, the screen and the extraction are written against the chat template, not against one model: the prompt is rendered
 with the template's own thinking switch off, the training text is the generation prompt + the row + whatever the template writes
 after an answer (`train.turn_end`, read from the template itself: `<|im_end|>` for Qwen3.5, `<turn|>` for Gemma 4), and the
-LoRA targets are the language model's projection names, which Gemma 4 shares. The first expert outside the Qwen line is Google's
-Gemma 4 12B (`google/gemma-4-12B-it`, the unified encoder-free vision-language model, Apache-2.0, 280 image tokens a picture by
-default): [`gemma_12b.ipynb`](https://colab.research.google.com/github/AbstractEyes/qwen-symbolic-thinking/blob/main/notebooks/gemma_12b.ipynb)
-works through `runs/queue_gemma_12b.json`, Lucia v1's recipe verbatim, screened and read on the same held-out sets so the two
-families are read on one ruler.
+LoRA targets are the language model's projection names, which Gemma 4 shares (both its architectures: `gemma4`, the E2B and E4B
+with a vision encoder, and `gemma4_unified`, the encoder-free 12B). The Gemma line runs through
+[`gemma.ipynb`](https://colab.research.google.com/github/AbstractEyes/qwen-symbolic-thinking/blob/main/notebooks/gemma.ipynb)
+and `runs/queue_gemma.json`: first the base models' screens, as the Qwen bases were screened before any training (the bare,
+shown and specification forms over the same 60 pictures and 40 specifications, thinking off and on), then the arms under Lucia
+v1's recipe verbatim (`google/gemma-4-E4B-it`, `google/gemma-4-12B-it`; Apache-2.0; 280 image tokens a picture by default),
+screened and read on the same held-out sets so the two families are read on one ruler.
 
 ## The prompt enhancers of Qwen-Image 2.1
 
