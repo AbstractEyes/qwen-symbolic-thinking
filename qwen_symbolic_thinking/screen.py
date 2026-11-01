@@ -14,6 +14,7 @@ import json
 import logging
 import os
 import platform
+import re
 import time
 from collections import defaultdict
 from datetime import datetime, timezone
@@ -157,17 +158,55 @@ def load_model(model_id: str, thinking: bool, adapter: str | None = None, adapte
     return processor, model
 
 
+def encode(processor, texts: list, images: list | None = None, **kwargs):
+    """The processor over a batch of texts with at most one picture each (images aligned with texts, None where a text has none).
+    Qwen3.5's processor takes the pictures as one flat list, matched to the placeholders in order; Gemma 4's takes one list of
+    pictures per text and reads a flat list as a single text with several pictures ("Received inconsistently sized batches of
+    images (1) and text (4)"): the flat form is tried first, the per-text form on that error."""
+    images = list(images or [])
+    flat = [im for im in images if im is not None]
+    kwargs = dict(text=texts, return_tensors="pt", **kwargs)
+    if not flat:
+        return processor(**kwargs)
+    try:
+        return processor(images=flat, **kwargs)
+    except ValueError as e:
+        if "inconsistently sized" not in str(e):
+            raise
+        assert len(images) == len(texts), "one picture slot per text (None where a text has no picture)"
+        return processor(images=[[im] if im is not None else [] for im in images], **kwargs)
+
+
+_CHANNEL = re.compile(r"<\|channel>thought\n?(.*?)(?:<channel\|>|$)", re.S)   # Gemma 4's thought channel
+
+
+def special_tokens(tokenizer) -> list:
+    out = list(getattr(tokenizer, "all_special_tokens", None) or [])
+    for t in (getattr(tokenizer, "added_tokens_decoder", None) or {}).values():
+        if getattr(t, "special", False) and str(t) not in out:
+            out.append(str(t))
+    return out
+
+
+def plain(text: str, tokenizer) -> str:
+    """Generated text with its special tokens removed and the model's thinking kept as <think>...</think>, so chain.parse strips
+    and counts it the same for every family: Gemma 4 thinks inside a channel of special tokens (which skip_special_tokens dropped,
+    leaving the thought inline with the answer); Qwen3.5 thinks inside <think> tags, which are ordinary tokens."""
+    text = _CHANNEL.sub(lambda m: f"<think>{m.group(1).strip()}</think>", text)
+    for tok in special_tokens(tokenizer):
+        text = text.replace(tok, "")
+    return text
+
+
 def generate(processor, model, convs: list, images: list, max_new_tokens: int, thinking: bool, sampling: dict | None) -> tuple:
-    """One batch: the conversations rendered through the chat template, the images beside them; returns (texts, new_tokens)."""
+    """One batch: the conversations rendered through the chat template, the images beside them (one or none per conversation);
+    returns (texts, new_tokens). With thinking on, the text keeps the thinking as <think>...</think> for the parse."""
     import torch
     try:
         texts = [processor.apply_chat_template(c, add_generation_prompt=True, tokenize=False, enable_thinking=thinking) for c in convs]
     except TypeError:  # a processor that takes no template switch; the parse strips any thinking and the summary counts it
         texts = [processor.apply_chat_template(c, add_generation_prompt=True, tokenize=False) for c in convs]
-    kwargs = {"text": texts, "padding": True, "return_tensors": "pt"}
-    if any(im is not None for im in images):
-        kwargs["images"] = [im for im in images if im is not None]
-    inputs = processor(**kwargs).to(model.device)
+    inputs = encode(processor, texts, images, padding=True).to(model.device)
     pad = processor.tokenizer.pad_token_id   # Gemma's pad id is 0: a falsy id is still an id
     gen = {"max_new_tokens": max_new_tokens, "do_sample": False, "eos_token_id": stop_ids(processor, model),
            "pad_token_id": pad if pad is not None else processor.tokenizer.eos_token_id}
@@ -176,7 +215,10 @@ def generate(processor, model, convs: list, images: list, max_new_tokens: int, t
     with torch.no_grad():
         out = model.generate(**inputs, **gen)
     new = out[:, inputs["input_ids"].shape[1]:]
-    decoded = processor.batch_decode(new, skip_special_tokens=True)
+    if thinking:
+        decoded = [plain(t, processor.tokenizer) for t in processor.batch_decode(new, skip_special_tokens=False)]
+    else:
+        decoded = processor.batch_decode(new, skip_special_tokens=True)
     lengths = [int((row != gen["pad_token_id"]).sum()) for row in new]
     return decoded, lengths
 

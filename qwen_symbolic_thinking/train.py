@@ -22,7 +22,7 @@ from datetime import datetime, timezone
 from . import REPO, __version__, chain, prompts
 from .hub import model_short, resolve_model, ship
 from .extract import fetch_images                # by url list or by locator (a pretrain shard row, a Hub file, a zip member)
-from .screen import load_inputs, preflight, vlm_class
+from .screen import encode, load_inputs, preflight, vlm_class
 from .template import stop_ids, turn_end                 # the template's turn end (training examples end with it) and the stop ids
 
 # The language model's projections, by name (the vision side, under `visual` in Qwen3.5 or `embed_vision` in Gemma 4, is left
@@ -73,8 +73,7 @@ class Collator:
 
     def prefix_length(self, key: tuple, prefix: str, image) -> int:
         if key not in self.prefix_len:
-            kwargs = {"images": [image]} if image is not None else {}
-            self.prefix_len[key] = int(self.processor(text=[prefix], return_tensors="pt", **kwargs)["input_ids"].shape[1])
+            self.prefix_len[key] = int(encode(self.processor, [prefix], [image])["input_ids"].shape[1])
         return self.prefix_len[key]
 
     def __call__(self, pairs: list) -> dict:
@@ -84,11 +83,9 @@ class Collator:
             messages, answer = conversation(it, form, image, self.system)
             prefix = self.processor.apply_chat_template(messages, add_generation_prompt=True, tokenize=False, enable_thinking=False)
             texts.append(prefix + answer + self.turn_end)
-            if image is not None:
-                images.append(image)
+            images.append(image)                      # one slot per text: None for a specification row
             lengths.append(self.prefix_length((it["id"], form), prefix, image))
-        kwargs = {"images": images} if images else {}
-        batch = self.processor(text=texts, padding=True, return_tensors="pt", **kwargs)
+        batch = encode(self.processor, texts, images, padding=True)
         labels = batch["input_ids"].clone()
         labels[batch["attention_mask"] == 0] = -100
         for i, n in enumerate(lengths):
@@ -257,7 +254,13 @@ def run(model_id: str = "Qwen/Qwen3.5-9B", inputs="hub:sft/sft_v1.json", out_dir
                 model.save_pretrained(adapter_dir)
                 ship(adapter_dir, f"{path_in_repo}/step_{state.global_step}", f"{short} r{rank} {stamp}: step {state.global_step}", repo)
 
-    trainer = Trainer(model=model, args=args, train_dataset=Pairs(pairs), data_collator=Collator(processor, pictures, max_len, system_text),
+    collate = Collator(processor, pictures, max_len, system_text)
+    pic = next((p for p in pairs if p[1] in PICTURE_FORMS and pictures.get(p[0]["id"]) is not None), None)
+    spc = next((p for p in pairs if p[1] in SPEC_FORMS), None)
+    if pic and spc:   # a mixed batch encodes before the first step (a family whose processor takes pictures differently fails here, not at step 1)
+        probe = collate([pic, spc])
+        print(f"  a mixed batch (a picture row, a specification row) encodes: input_ids {tuple(probe['input_ids'].shape)}", flush=True)
+    trainer = Trainer(model=model, args=args, train_dataset=Pairs(pairs), data_collator=collate,
                       optimizers=(optimizer, None), callbacks=[Progress()])
     result = trainer.train()
     if full:   # the whole model in bf16, with its processor, so the folder loads on its own
