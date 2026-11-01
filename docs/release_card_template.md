@@ -112,4 +112,4 @@ the trainer are in [qwen-symbolic-thinking](https://github.com/AbstractEyes/qwen
 
 ## License
 
-Apache-2.0, the base model's licence. The rows she was taught come from the datasets above under their own terms.
+Apache-2.0, the base model's licence. The rows {{SHE}} was taught come from the datasets above under their own terms.
