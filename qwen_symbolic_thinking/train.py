@@ -23,6 +23,7 @@ from . import REPO, __version__, chain, prompts
 from .hub import model_short, resolve_model, ship
 from .extract import fetch_images                # by url list or by locator (a pretrain shard row, a Hub file, a zip member)
 from .screen import load_inputs, preflight, vlm_class
+from .template import stop_ids, turn_end                 # the template's turn end (training examples end with it) and the stop ids
 
 # The language model's projections, by name (the vision side, under `visual` in Qwen3.5 or `embed_vision` in Gemma 4, is left
 # alone): the attention layers' q/k/v/o, every layer's MLP, and Qwen3.5's linear-attention token/value projections (in_proj_qkv,
@@ -31,21 +32,6 @@ from .screen import load_inputs, preflight, vlm_class
 TARGETS = (r".*language_model.*\.(q_proj|k_proj|v_proj|o_proj|gate_proj|up_proj|down_proj|in_proj_qkv|in_proj_z|in_proj_qkvz|out_proj)$")
 PICTURE_FORMS = ("short", "full")
 SPEC_FORMS = ("spec_short", "spec_full")
-
-
-def turn_end(processor) -> str:
-    """What the chat template writes after an assistant turn's text ("<|im_end|>\\n" for Qwen3.5, "<turn|>\\n" for Gemma 4), read
-    from the template itself: a two-turn conversation is rendered without a generation prompt and the text after the answer is
-    taken. A training example is the generation prompt (thinking off) + the answer + this, so the model learns to write the row
-    exactly where it will be asked to at inference."""
-    marker = "ANSWERMARKER"
-    text = processor.apply_chat_template([{"role": "user", "content": [{"type": "text", "text": "q"}]},
-                                          {"role": "assistant", "content": [{"type": "text", "text": marker}]}],
-                                         add_generation_prompt=False, tokenize=False)
-    assert marker in text, "the chat template did not render the assistant turn's text"
-    end = text[text.rindex(marker) + len(marker):]
-    assert end.strip(), f"the chat template writes nothing after an assistant turn: {text[-80:]!r}"
-    return end
 
 
 def conversation(it: dict, form: str, image=None, system: str | None = None) -> tuple:
@@ -275,6 +261,12 @@ def run(model_id: str = "Qwen/Qwen3.5-9B", inputs="hub:sft/sft_v1.json", out_dir
                       optimizers=(optimizer, None), callbacks=[Progress()])
     result = trainer.train()
     if full:   # the whole model in bf16, with its processor, so the folder loads on its own
+        from transformers import GenerationConfig
+        stops = stop_ids(processor, model)      # the saved model stops on the turn end under a plain generate(), not only under ours
+        gen = model.generation_config.to_dict() if model.generation_config is not None else {}
+        gen.update(eos_token_id=stops, _from_model_config=False)   # not re-derived from the model config at generation time
+        model.generation_config = GenerationConfig.from_dict(gen)
+        print(f"  generation stops on {stops}", flush=True)
         model.to(torch.bfloat16).save_pretrained(adapter_dir, safe_serialization=True)
         processor.save_pretrained(adapter_dir)
     else:

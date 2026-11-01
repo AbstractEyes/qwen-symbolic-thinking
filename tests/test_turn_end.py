@@ -1,5 +1,39 @@
-"""The turn end comes from the chat template, so a training example ends the way the model's own template ends an answer."""
-from qwen_symbolic_thinking.train import turn_end
+"""The turn end comes from the chat template, so a training example ends the way the model's own template ends an answer; the
+stop ids at generation include that turn end beside the model's and the tokenizer's end ids."""
+from qwen_symbolic_thinking.template import stop_ids, turn_end
+from qwen_symbolic_thinking import train
+
+
+class Tokens:
+    """A tokenizer over a fixed vocabulary of special tokens: text is split into those tokens and newlines."""
+
+    def __init__(self, vocab: dict, eos: str, pad: str):
+        self.vocab, self.eos_token_id, self.pad_token_id = vocab, vocab[eos], vocab[pad]
+        self.back = {v: k for k, v in vocab.items()}
+
+    def __call__(self, text, add_special_tokens=False):
+        ids, rest = [], text
+        while rest:
+            for tok in sorted(self.vocab, key=len, reverse=True):
+                if rest.startswith(tok):
+                    ids.append(self.vocab[tok]); rest = rest[len(tok):]; break
+            else:
+                raise ValueError(rest)
+        return {"input_ids": ids}
+
+    def decode(self, ids):
+        return "".join(self.back[i] for i in ids)
+
+
+class Gen:
+    def __init__(self, eos):
+        self.eos_token_id = eos
+
+
+class Model:
+    def __init__(self, gen_eos=None, config_eos=None):
+        self.generation_config = Gen(gen_eos) if gen_eos is not None else None
+        self.config = Gen(config_eos)
 
 
 class QwenLike:
@@ -62,3 +96,34 @@ def test_training_text_matches_the_generation_prompt():
     prefix = p.apply_chat_template(msgs, add_generation_prompt=True)
     text = prefix + "see: a lamp." + turn_end(p)
     assert text.endswith("<|turn>model\n<|channel>thought\n<channel|>see: a lamp.<turn|>\n")
+
+
+class QwenProc(QwenLike):
+    tokenizer = Tokens({"<|endoftext|>": 248044, "<|im_start|>": 248045, "<|im_end|>": 248046, "\n": 198},
+                       eos="<|im_end|>", pad="<|endoftext|>")
+
+
+class GemmaProc(GemmaLike):
+    tokenizer = Tokens({"<pad>": 0, "<eos>": 1, "<|turn>": 105, "<turn|>": 106, "\n": 107}, eos="<eos>", pad="<pad>")
+
+
+class NewlineEnd(QwenLike):
+    """A template that closes an answer with a bare newline: no vocabulary token to stop on, so only the end ids remain."""
+    tokenizer = QwenProc.tokenizer
+
+    def apply_chat_template(self, messages, add_generation_prompt=False, tokenize=False, **kw):
+        return "".join(f"{m['role']}: " + "".join(c["text"] for c in m["content"]) + "\n" for m in messages)
+
+
+def test_stop_ids_qwen_adds_the_turn_end_to_the_model_config_end():
+    """Qwen3.5 ships no generation config and its model config names <|endoftext|>; the stop ids add <|im_end|> from the template."""
+    assert stop_ids(QwenProc(), Model(config_eos=248044)) == [248044, 248046]
+    assert train.turn_end is turn_end
+
+
+def test_stop_ids_gemma_keeps_the_generation_config_list():
+    assert stop_ids(GemmaProc(), Model(gen_eos=[1, 106, 50])) == [1, 50, 106]
+
+
+def test_stop_ids_never_a_newline():
+    assert stop_ids(NewlineEnd(), Model(gen_eos=248044)) == [248044, 248046]   # the model's and the tokenizer's, not "\n"

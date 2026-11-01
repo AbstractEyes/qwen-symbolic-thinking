@@ -20,6 +20,7 @@ from datetime import datetime, timezone
 
 from . import REPO, __version__, chain, prompts
 from .hub import fetch, ship, token
+from .template import stop_ids
 
 FORMS = ("bare", "shown", "spec")                        # the base model's screen
 TRAINED_FORMS = ("full", "short", "spec_full")           # the trained model's screen: the whole row, the chain, a specification
@@ -168,7 +169,7 @@ def generate(processor, model, convs: list, images: list, max_new_tokens: int, t
         kwargs["images"] = [im for im in images if im is not None]
     inputs = processor(**kwargs).to(model.device)
     pad = processor.tokenizer.pad_token_id   # Gemma's pad id is 0: a falsy id is still an id
-    gen = {"max_new_tokens": max_new_tokens, "do_sample": False,
+    gen = {"max_new_tokens": max_new_tokens, "do_sample": False, "eos_token_id": stop_ids(processor, model),
            "pad_token_id": pad if pad is not None else processor.tokenizer.eos_token_id}
     if sampling:
         gen.update(sampling, do_sample=True)
