@@ -26,9 +26,11 @@ def test_tool_kind_runs_the_named_module_with_tag_and_repo(monkeypatch):
 def test_picture_probe_names_resolve():
     """The probe imports lazily inside run(); the names it takes from the package exist where it looks for them."""
     from qwen_symbolic_thinking.hub import resolve_model
-    from qwen_symbolic_thinking.screen import vlm_class
-    from qwen_symbolic_thinking.train import TARGETS, Collator, fetch_images, load_items
-    assert callable(resolve_model) and callable(vlm_class) and callable(fetch_images) and callable(load_items) and TARGETS
+    from qwen_symbolic_thinking.screen import encode, load_model, vlm_class
+    from qwen_symbolic_thinking.template import stop_ids, turn_end
+    from qwen_symbolic_thinking.train import TARGETS, Collator, conversation, fetch_images, load_items
+    assert all(callable(f) for f in (resolve_model, vlm_class, load_model, encode, stop_ids, turn_end, conversation, fetch_images, load_items))
+    assert TARGETS
     assert Collator.__call__ and picture_probe.run.__code__.co_varnames[:2] == ("model_id", "n_rows")
 
 

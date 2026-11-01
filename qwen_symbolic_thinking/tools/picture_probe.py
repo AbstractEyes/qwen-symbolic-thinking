@@ -165,13 +165,15 @@ def trace(model, processor, it: dict, form: str, image, n: int = 16, new_tokens:
 
 def run(model_id: str, n_rows: int = 3, inputs: str = "hub:sft/pictures_v2.json", form: str = "full", max_len: int = 2048,
         rank: int = 32, alpha: int = 64, dropout: float = 0.05, mode: str = "loss", n_trace: int = 16,
+        adapter: str | None = None, adapter_subfolder: str | None = None,
         out_dir: str = "/content/runs", tag: str = "", repo: str = REPO) -> dict:
     """mode "loss": the configuration table over the trainer's batch; mode "trace": per row, the single forward against generation's
-    two phases (see trace)."""
+    two phases (see trace). With adapter (a Hub repo or a folder, and adapter_subfolder under it) the LoRA is merged into the model
+    first, so a trained arm or one of its step checkpoints is probed instead of the base."""
     import torch
     from transformers import AutoProcessor
     from ..hub import resolve_model
-    from ..screen import vlm_class
+    from ..screen import load_model, vlm_class
     from ..train import TARGETS, Collator, fetch_images, load_items
     t0 = time.time()
     src = resolve_model(model_id, repo)
@@ -180,10 +182,14 @@ def run(model_id: str, n_rows: int = 3, inputs: str = "hub:sft/pictures_v2.json"
     items = [it for it in items if it["id"] in pictures][:n_rows]
     assert len(items) >= 2, f"{len(items)} picture rows fetched; the rolled picture needs two"
     pairs = [(it, form) for it in items]
-    processor = AutoProcessor.from_pretrained(src)
-    model = vlm_class().from_pretrained(src, dtype=torch.bfloat16, device_map="cuda")
+    if adapter:
+        processor, model = load_model(model_id, False, adapter=adapter, adapter_subfolder=adapter_subfolder)
+    else:
+        processor = AutoProcessor.from_pretrained(src)
+        model = vlm_class().from_pretrained(src, dtype=torch.bfloat16, device_map="cuda")
     image_token_id = getattr(model.config, "image_token_id", None)
-    result = {"model": model_id, "rows": [it["id"] for it in items], "form": form, "image_token_id": image_token_id, "mode": mode}
+    result = {"model": model_id, "adapter": adapter, "adapter_subfolder": adapter_subfolder, "rows": [it["id"] for it in items],
+              "form": form, "image_token_id": image_token_id, "mode": mode}
     if mode == "trace":
         model.eval()
         print(f"picture trace on {model_id}: {len(items)} rows of the form {form}", flush=True)
