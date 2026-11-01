@@ -54,8 +54,8 @@ time; nothing is redistributed here. The specification rows are the dataset's ow
 ## Install
 
 ```
-pip install git+https://github.com/AbstractEyes/qwen-symbolic-thinking@v0.1.16
-pip install "qwen-symbolic-thinking[screen] @ git+https://github.com/AbstractEyes/qwen-symbolic-thinking@v0.1.16"   # with torch, transformers 5, accelerate, peft
+pip install git+https://github.com/AbstractEyes/qwen-symbolic-thinking@v0.1.17
+pip install "qwen-symbolic-thinking[screen] @ git+https://github.com/AbstractEyes/qwen-symbolic-thinking@v0.1.17"   # with torch, transformers 5, accelerate, peft
 ```
 
 Qwen3.5 needs transformers 5 (the model code lives under `transformers.models.qwen3_5`); the preflight says so if it is missing.
@@ -84,7 +84,9 @@ through pictures no row was written about; a chain passes the audit when it hold
 remarks on nothing, strays nowhere, and both says and is backed by the picture's own captions (0.2 each); the passing chains
 ship as short-form items under `synth/`. `qwen_symbolic_thinking.queue.run_queue(lane)` lets a card work unattended through
 `runs/queue_<lane>.json` on the Hub (fine-tunes, each followed by its screen; synthetic generation; throughput sweeps;
-extractions), leaving `runs/done/<name>.json` per run; `notebooks/lane1.ipynb` to `lane3.ipynb` run it.
+extractions), leaving `runs/done/<name>.json` per run; `notebooks/lane1.ipynb` to `lane3.ipynb` run it. A train spec may name
+runs under `after`: extract specs (the held-out probe split, the museum pictures) that run as soon as its screen ends, reading the
+adapter it trained with the model it trained, so one queue entry trains, screens and reads an arm.
 
 ## Extraction
 
@@ -141,6 +143,19 @@ calm, plain), a defining pattern (means, is a, refers to) in a thought.
   [AbstractPhil/qwen3.5-9b-think-symbolic-image](https://huggingface.co/AbstractPhil/qwen3.5-9b-think-symbolic-image), also at the
   tag `lucia-v1`; the original release (2026-10-30) is kept under `legacy/E_all_2ep/` and at the tag `legacy-e-all-2ep`. The card
   gives her held-out reads. `extract.run` and the lane notebooks use the root adapter by default.
+
+## Lucia at every size
+
+The same recipe is trained on each dense Qwen3.5 base, one notebook and one queue a size, each queue entry training, screening
+and reading its arm on the two held-out sets (`after`). Each size is released as its own adapter repository with the same card
+and its own reads; the sizes differ in what they can hold, and the cards say so.
+
+| size | base | notebook | queue | notes |
+|---|---|---|---|---|
+| 9B | Qwen/Qwen3.5-9B | `lane1.ipynb` to `lane3.ipynb` | `runs/queue_lane<n>.json` | Lucia v1 |
+| 4B | Qwen/Qwen3.5-4B | [`lucia_4b.ipynb`](https://colab.research.google.com/github/AbstractEyes/qwen-symbolic-thinking/blob/main/notebooks/lucia_4b.ipynb) | `runs/queue_lucia_4b.json` | the recipe verbatim |
+| 2B | Qwen/Qwen3.5-2B | [`lucia_2b.ipynb`](https://colab.research.google.com/github/AbstractEyes/qwen-symbolic-thinking/blob/main/notebooks/lucia_2b.ipynb) | `runs/queue_lucia_2b.json` | the recipe verbatim; answers without thinking by default, as every Lucia is trained and read |
+| 0.8B | Qwen/Qwen3.5-0.8B | [`lucia_0.8b.ipynb`](https://colab.research.google.com/github/AbstractEyes/qwen-symbolic-thinking/blob/main/notebooks/lucia_0.8b.ipynb) | `runs/queue_lucia_0.8b.json` | two arms, the recipe verbatim and a set tweaked for a small model (three epochs, lr 3e-4); the release takes the better by the held-out reads |
 
 ## The prompt enhancers of Qwen-Image 2.1
 

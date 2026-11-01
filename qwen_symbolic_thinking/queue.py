@@ -9,9 +9,12 @@ to screen.run, with the trained model's forms by default). A synth spec generate
 throughput spec measures rows an hour by batch size (screen.throughput, with an adapter when given). An extract spec writes
 whole rows for a manifest's pictures with the trained model (extract.run; its "extract" keys). A pe spec has one of the Qwen-Image 2.1
 prompt enhancers read a manifest's pictures or rewrite the seeds' prompts (pe.run; its "pe" keys). A screen spec screens a model, with
-an adapter when given, without training (screen.run; its "screen" keys: models, adapter, forms, ...). Each run leaves runs/done/<name>.json
-on the Hub (started, then done or failed, with the summaries); a spec whose marker exists is skipped unless it says "retry".
-When the queue is empty the lane waits for new specs, polling every minute, and leaves after idle_minutes without any."""
+an adapter when given, without training (screen.run; its "screen" keys: models, adapter, forms, ...). A train spec may name runs
+under "after": extract specs run as soon as its screen ends, each reading the adapter it trained (the project repo,
+<path_in_repo>/final) with the trained model, so a card can train, screen and take the held-out reads unattended. Each run
+leaves runs/done/<name>.json on the Hub (started, then done or failed, with the summaries); a spec whose marker exists is
+skipped unless it says "retry". When the queue is empty the lane waits for new specs, polling every minute, and leaves after
+idle_minutes without any."""
 from __future__ import annotations
 
 import json
@@ -111,6 +114,38 @@ def run_spec(spec: dict, lane: str, repo: str, out_dir: str) -> dict:
     return result
 
 
+def after_specs(spec: dict, path_in_repo: str, repo: str = REPO) -> list:
+    """The runs a train spec names under "after", made whole: each an extract spec reading the adapter the training shipped
+    (adapter = the project repo, adapter_subfolder = <path_in_repo>/final) with the model it trained (and its system prompt,
+    when it had one); a key the entry sets itself is kept. Only extract runs may follow a training."""
+    out = []
+    train = spec.get("train") or {}
+    for entry in spec.get("after") or []:
+        if entry.get("kind") != "extract":
+            raise ValueError(f"after {entry.get('name')!r}: only extract runs follow a training, not {entry.get('kind')!r}")
+        x = dict(entry["extract"])
+        x.setdefault("model_id", train.get("model_id", "Qwen/Qwen3.5-9B"))
+        x.setdefault("adapter", repo)
+        x.setdefault("adapter_subfolder", f"{path_in_repo.strip('/')}/final")
+        if train.get("system") is not None:
+            x.setdefault("system", train["system"])
+        out.append({**entry, "extract": x})
+    return out
+
+
+def _run_marked(spec: dict, lane: str, repo: str, out_dir: str) -> dict:
+    """One spec, start to marker: started, then done (with the summaries) or failed (with the error)."""
+    print(f"\n[{lane}] == {spec['name']} ({spec['kind']}) at {datetime.now(timezone.utc).strftime('%H:%M:%S')} UTC", flush=True)
+    try:
+        result = run_spec(spec, lane, repo, out_dir)
+    except Exception as e:
+        result = {"status": "failed", "lane": lane, "spec": spec, "error": f"{type(e).__name__}: {str(e)[:500]}",
+                  "traceback": traceback.format_exc()[-3000:]}
+        print(f"[{lane}] FAILED {spec['name']}: {result['error']}", flush=True)
+    _mark(spec["name"], result, repo, out_dir)
+    return result
+
+
 def run_queue(lane: str, repo: str = REPO, out_dir: str = "/content/runs", idle_minutes: int = 45, poll_s: int = 60) -> list:
     """Work through runs/queue_<lane>.json until it is empty for idle_minutes; returns the names run."""
     ran, idle_since = [], None
@@ -129,12 +164,13 @@ def run_queue(lane: str, repo: str = REPO, out_dir: str = "/content/runs", idle_
             continue
         idle_since = None
         spec = todo[0]
-        print(f"\n[{lane}] == {spec['name']} ({spec['kind']}) at {datetime.now(timezone.utc).strftime('%H:%M:%S')} UTC", flush=True)
-        try:
-            result = run_spec(spec, lane, repo, out_dir)
-        except Exception as e:
-            result = {"status": "failed", "lane": lane, "spec": spec, "error": f"{type(e).__name__}: {str(e)[:500]}",
-                      "traceback": traceback.format_exc()[-3000:]}
-            print(f"[{lane}] FAILED {spec['name']}: {result['error']}", flush=True)
-        _mark(spec["name"], result, repo, out_dir)
+        result = _run_marked(spec, lane, repo, out_dir)
         ran.append(spec["name"])
+        if result["status"] == "done" and spec["kind"] == "train" and spec.get("after"):
+            markers = _markers(repo)
+            for follow in after_specs(spec, result["train"]["path_in_repo"], repo):
+                if follow["name"] in markers and not follow.get("retry"):
+                    print(f"[{lane}] {follow['name']} already has a marker; skipped", flush=True)
+                    continue
+                _run_marked(follow, lane, repo, out_dir)
+                ran.append(follow["name"])
