@@ -93,8 +93,81 @@ def verdict(true: float, rolled_loss, blank: float) -> str:
     return "partial"
 
 
+def _mean(xs: list) -> float:
+    return sum(xs) / len(xs) if xs else float("nan")
+
+
+def trace(model, processor, it: dict, form: str, image, n: int = 16, new_tokens: int = 48) -> dict:
+    """One row, batch of one, the plain model in eval mode: does the answer's likelihood depend on the picture the same way in the
+    trainer's single forward (prompt + answer in one pass, the token types given) as in generation's two phases (the prompt with
+    its token types, then the answer against the cache without them, as generate() decodes)? Reports, for the true picture and
+    for a blank one: the greedy continuation of the prompt, the NLL of the answer's first n tokens through each path (and the
+    single forward without the token types), and the first predicted token of each path."""
+    import torch
+    from ..screen import encode
+    from ..template import stop_ids, turn_end
+    from ..train import conversation
+    messages, answer = conversation(it, form, image)
+    prefix = processor.apply_chat_template(messages, add_generation_prompt=True, tokenize=False, enable_thinking=False)
+    device = next(model.parameters()).device
+    prompt = {k: v.to(device) for k, v in encode(processor, [prefix], [image]).items()}
+    full = {k: v.to(device) for k, v in encode(processor, [prefix + answer + turn_end(processor)], [image]).items()}
+    n_prompt = int(prompt["input_ids"].shape[1])
+    same = int((full["input_ids"][0, :n_prompt] == prompt["input_ids"][0]).all())
+    if not same:                               # the tokenizer split the boundary differently: take the common prefix
+        n_prompt = int((full["input_ids"][0, :n_prompt] != prompt["input_ids"][0]).nonzero().flatten()[0])
+    answer_ids = full["input_ids"][:, n_prompt:]
+    n = min(n, int(answer_ids.shape[1]))
+    out = {"row": it["id"], "prompt_tokens": n_prompt, "answer_tokens": int(answer_ids.shape[1]), "prompt_tokens_unchanged_by_answer": bool(same),
+           "scored_tokens": n}
+
+    def nll_full(inputs: dict) -> tuple:
+        with torch.no_grad(), torch.autocast("cuda", dtype=torch.bfloat16):
+            logits = model(**inputs).logits
+        step = logits[0, n_prompt - 1: n_prompt - 1 + n, :].float()           # the positions that predict answer tokens 0..n-1
+        lp = torch.log_softmax(step, -1)
+        return (-lp.gather(-1, answer_ids[0, :n, None])).flatten().tolist(), int(step[0].argmax())
+
+    def nll_cached(prompt_inputs: dict) -> tuple:
+        with torch.no_grad(), torch.autocast("cuda", dtype=torch.bfloat16):
+            first = model(**prompt_inputs, use_cache=True)
+            att = torch.ones(1, n_prompt + n, dtype=torch.long, device=device)
+            second = model(input_ids=answer_ids[:, :n], attention_mask=att, past_key_values=first.past_key_values, use_cache=True)
+        step = torch.cat([first.logits[:, -1:, :], second.logits[:, :-1, :]], 1)[0].float()
+        lp = torch.log_softmax(step, -1)
+        return (-lp.gather(-1, answer_ids[0, :n, None])).flatten().tolist(), int(step[0].argmax())
+
+    def generated(inputs: dict) -> str:
+        with torch.no_grad():
+            g = model.generate(**inputs, max_new_tokens=new_tokens, do_sample=False, eos_token_id=stop_ids(processor, model),
+                               pad_token_id=processor.tokenizer.pad_token_id)
+        return processor.tokenizer.decode(g[0, n_prompt:], skip_special_tokens=True)[:240]
+
+    tok = processor.tokenizer
+    for name, make in (("true", lambda b: b), ("blank", blanked)):
+        p, f = make(prompt), make(full)
+        full_nll, full_top = nll_full(f)
+        cached_nll, cached_top = nll_cached(p)
+        no_types_nll, _ = nll_full({k: v for k, v in f.items() if k not in TYPE_KEYS})
+        out[name] = {"generated": generated(p), "nll_full": [round(x, 3) for x in full_nll], "nll_cached": [round(x, 3) for x in cached_nll],
+                     "nll_full_no_types": [round(x, 3) for x in no_types_nll], "first_token_full": tok.decode([full_top]),
+                     "first_token_cached": tok.decode([cached_top])}
+    t, b = out["true"], out["blank"]
+    out["summary"] = {"single forward: blank - true": round(_mean(b["nll_full"]) - _mean(t["nll_full"]), 3),
+                      "two phases (generate's way): blank - true": round(_mean(b["nll_cached"]) - _mean(t["nll_cached"]), 3),
+                      "single forward without token types: blank - true": round(_mean(b["nll_full_no_types"]) - _mean(t["nll_full_no_types"]), 3),
+                      "true: single forward - two phases": round(_mean(t["nll_full"]) - _mean(t["nll_cached"]), 3),
+                      "generation changes with the picture": t["generated"] != b["generated"]}
+    print(f"  {it['id']}: {out['summary']}", flush=True)
+    print(f"     true : {t['generated'][:120]!r}\n     blank: {b['generated'][:120]!r}", flush=True)
+    return out
+
+
 def run(model_id: str, n_rows: int = 3, inputs: str = "hub:sft/pictures_v2.json", form: str = "full", max_len: int = 2048,
-        rank: int = 32, alpha: int = 64, dropout: float = 0.05, out_dir: str = "/content/runs", tag: str = "", repo: str = REPO) -> dict:
+        rank: int = 32, alpha: int = 64, dropout: float = 0.05, mode: str = "loss", n_trace: int = 16,
+        out_dir: str = "/content/runs", tag: str = "", repo: str = REPO) -> dict:
+    """mode "loss": the configuration table over the trainer's batch; mode "trace": per row, the single forward against generation's
+    two phases (see trace)."""
     import torch
     from transformers import AutoProcessor
     from ..hub import resolve_model
@@ -110,17 +183,24 @@ def run(model_id: str, n_rows: int = 3, inputs: str = "hub:sft/pictures_v2.json"
     processor = AutoProcessor.from_pretrained(src)
     model = vlm_class().from_pretrained(src, dtype=torch.bfloat16, device_map="cuda")
     image_token_id = getattr(model.config, "image_token_id", None)
+    result = {"model": model_id, "rows": [it["id"] for it in items], "form": form, "image_token_id": image_token_id, "mode": mode}
+    if mode == "trace":
+        model.eval()
+        print(f"picture trace on {model_id}: {len(items)} rows of the form {form}", flush=True)
+        result["trace"] = [trace(model, processor, it, form, pictures[it["id"]], n_trace) for it in items]
+        result["seconds"] = round(time.time() - t0, 1)
+        print(f"\n{result['seconds']} s", flush=True)
+        return result
 
     def batch_for(side: str) -> dict:
         processor.tokenizer.padding_side = side
         return Collator(processor, pictures, max_len)(pairs)
 
     left, right = batch_for("left"), batch_for("right")
-    result = {"model": model_id, "rows": [it["id"] for it in items], "form": form, "image_token_id": image_token_id,
-              "anatomy_right": anatomy(right, image_token_id), "anatomy_left": anatomy(left, image_token_id), "table": []}
+    result.update(anatomy_right=anatomy(right, image_token_id), anatomy_left=anatomy(left, image_token_id), table=[])
     counts = {r["image_tokens"] for r in result["anatomy_right"]["rows"]}
-    result["rolled_available"] = len(counts) == 1
-    variants = {"true": lambda b: b, "rolled": rolled, "blank": blanked}
+    result["rolled_available"] = len(counts) == 1     # a rolled picture must fit its new row's placeholders
+    variants = {"true": lambda b: b, "rolled": (rolled if result["rolled_available"] else (lambda b: None)), "blank": blanked}
 
     def measure(name: str, m, batch: dict, train_mode: bool, grad: bool, drop_types: bool = False):
         row = {"config": name}
