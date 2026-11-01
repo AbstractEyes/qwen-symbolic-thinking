@@ -173,7 +173,12 @@ with a vision encoder, and `gemma4_unified`, the encoder-free 12B). The Gemma li
 and `runs/queue_gemma.json`: first the base models' screens, as the Qwen bases were screened before any training (the bare,
 shown and specification forms over the same 60 pictures and 40 specifications, thinking off and on), then the arms under Lucia
 v1's recipe verbatim (`google/gemma-4-E4B-it`, `google/gemma-4-12B-it`; Apache-2.0; 280 image tokens a picture by default),
-screened and read on the same held-out sets so the two families are read on one ruler.
+screened and read on the same held-out sets so the two families are read on one ruler. One setting differs by architecture: the
+encoder-free 12B trains at a learning rate of 5e-5 in place of 2e-4. Its early language-model layers are its vision encoder and sit
+under the adapter, and at 2e-4 a divergent step cost the first arm its dependence on the picture between steps 300 and 400 (it then
+wrote one caption for every picture); two seeds at 5e-5 keep that dependence through training. `tools/picture_probe.py` (the queue's
+`tool` kind) measures a checkpoint's dependence on the picture as the loss gap between the true picture and a blank one, so a new
+architecture is read for its sight at its early checkpoints before its reads.
 
 ## The prompt enhancers of Qwen-Image 2.1
 
