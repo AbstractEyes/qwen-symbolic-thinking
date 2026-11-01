@@ -4,12 +4,14 @@
     run_queue("lane1")
 
 The queue is runs/queue_<lane>.json in the project repo: a list of specs, each {"name", "kind": "train" | "synth" |
-"throughput" | "extract" | "pe", ...}. A train spec trains (its "train" keys go to train.run) and then screens the adapter (its "screen" keys go
+"throughput" | "extract" | "pe" | "screen" | "tool", ...}. A train spec trains (its "train" keys go to train.run) and then screens the adapter (its "screen" keys go
 to screen.run, with the trained model's forms by default). A synth spec generates synthetic items (synth.generate). A
 throughput spec measures rows an hour by batch size (screen.throughput, with an adapter when given). An extract spec writes
 whole rows for a manifest's pictures with the trained model (extract.run; its "extract" keys). A pe spec has one of the Qwen-Image 2.1
 prompt enhancers read a manifest's pictures or rewrite the seeds' prompts (pe.run; its "pe" keys). A screen spec screens a model, with
-an adapter when given, without training (screen.run; its "screen" keys: models, adapter, forms, ...). A train spec may name runs
+an adapter when given, without training (screen.run; its "screen" keys: models, adapter, forms, ...). A tool spec runs a diagnostic of
+the tools package by name ({"module": <name under tools/>, "args": {...}}; its run() takes the args, the run's name as tag and the
+repo, and its result goes into the marker). A train spec may name runs
 under "after": extract specs run as soon as its screen ends, each reading the adapter it trained (the project repo,
 <path_in_repo>/final) with the trained model, so a card can train, screen and take the held-out reads unattended. Each run
 leaves runs/done/<name>.json on the Hub (started, then done or failed, with the summaries); a spec whose marker exists is
@@ -111,6 +113,11 @@ def run_spec(spec: dict, lane: str, repo: str, out_dir: str) -> dict:
             if key in p and p[key] is not None:
                 p[key] = tuple(p[key])
         result["pe"] = {k: v for k, v in pe.run(**p, tag=name).items() if k not in ("env", "library_notes")}
+    elif spec["kind"] == "tool":      # a diagnostic of the tools package: {"module": <name under tools/>, "args": {...}}
+        from importlib import import_module
+        t = spec["tool"]
+        module = import_module(f".tools.{t['module']}", package=__package__)
+        result["tool"] = module.run(**t.get("args", {}), tag=name, repo=repo)
     else:
         raise ValueError(f"unknown kind {spec['kind']!r}")
     result["finished"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
