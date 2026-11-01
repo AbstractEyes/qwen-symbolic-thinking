@@ -54,8 +54,8 @@ time; nothing is redistributed here. The specification rows are the dataset's ow
 ## Install
 
 ```
-pip install git+https://github.com/AbstractEyes/qwen-symbolic-thinking@v0.1.17
-pip install "qwen-symbolic-thinking[screen] @ git+https://github.com/AbstractEyes/qwen-symbolic-thinking@v0.1.17"   # with torch, transformers 5, accelerate, peft
+pip install git+https://github.com/AbstractEyes/qwen-symbolic-thinking@v0.1.18
+pip install "qwen-symbolic-thinking[screen] @ git+https://github.com/AbstractEyes/qwen-symbolic-thinking@v0.1.18"   # with torch, transformers 5, accelerate, peft
 ```
 
 Qwen3.5 needs transformers 5 (the model code lives under `transformers.models.qwen3_5`); the preflight says so if it is missing.
@@ -77,7 +77,10 @@ assistant turn only. Each training item is taught under the one-line prompt form
 | `spec_short`, `spec_full` | the specification as records instead of a picture | the same two answers |
 
 The adapter ships to the Hub during training under `lora/<model>/r<rank>/<stamp>_<tag>/`, and the trained model is read with
-the same screen in the trained forms (`full`, `short`, `spec_full`).
+the same screen in the trained forms (`full`, `short`, `spec_full`). Rank 0 is a full fine-tune: the language model's weights
+train in fp32 under bf16 autocast (plain Adam at a full fine-tune's rate, 1e-5 to 2e-5; the vision tower frozen as under the
+LoRA), and the model ships in bf16 with its processor under `full/<model>/<stamp>_<tag>/final`, which every loader takes as the
+model id `hub:full/<model>/<stamp>_<tag>/final`. A queue spec that says `"needs": "0.1.18"` waits for a lane with that package.
 
 `qwen_symbolic_thinking.synth.generate` makes synthetic picture items: the base model, shown two worked examples, thinks
 through pictures no row was written about; a chain passes the audit when it holds the form and the depth, defines nothing,
@@ -147,8 +150,10 @@ calm, plain), a defining pattern (means, is a, refers to) in a thought.
 ## Lucia at every size
 
 The same recipe is trained on each dense Qwen3.5 base, one notebook and one queue a size, each queue entry training, screening
-and reading its arm on the two held-out sets (`after`). Each size is released as its own adapter repository with the same card
-and its own reads; the sizes differ in what they can hold, and the cards say so.
+and reading its arm on the two held-out sets (`after`); the sizes that fit one card also get a full fine-tune of the same
+recipe (rank 0). Each size is released as its own repositories, the adapter and the full fine-tune, with one card
+(`docs/release_card_template.md`: the loading of either variant side by side, the reads, the training properties) and its own
+reads; the sizes differ in what they can hold, and the cards say so.
 
 | size | base | notebook | queue | notes |
 |---|---|---|---|---|

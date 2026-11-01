@@ -6,7 +6,9 @@
 Each item becomes one conversation per form it carries: the picture (or the specification) with the form's one-line prompt as
 the user turn, the row's chain (short) or the whole row (full) as the assistant turn. The loss is on the assistant turn only.
 Plain Adam with a cosine schedule and warmup. The adapter ships to the project repo during training and at the end, under
-lora/<model>/r<rank>/<stamp>_<tag>/."""
+lora/<model>/r<rank>/<stamp>_<tag>/. Rank 0 is a full fine-tune: the language model's weights train in fp32 under bf16
+autocast (the vision tower frozen, as for the LoRA), and the model ships in bf16 with its processor under
+full/<model>/<stamp>_<tag>/final, loadable afterwards by the model id hub:full/<model>/<stamp>_<tag>/final."""
 from __future__ import annotations
 
 import inspect
@@ -18,7 +20,7 @@ import time
 from datetime import datetime, timezone
 
 from . import REPO, __version__, chain, prompts
-from .hub import ship
+from .hub import model_short, resolve_model, ship
 from .extract import fetch_images                # by url list or by locator (a pretrain shard row, a Hub file, a zip member)
 from .screen import load_inputs, preflight, vlm_class
 
@@ -109,6 +111,12 @@ class Pairs:
         return self.pairs[i]
 
 
+def trains_in_full(name: str) -> bool:
+    """Whether a parameter trains in a full fine-tune: the language model (its embeddings included) and the output head; the
+    vision tower and its merger stay frozen, as under the LoRA."""
+    return "language_model" in name or name.startswith("lm_head") or ".lm_head." in name
+
+
 def lora_report(model) -> dict:
     """How many modules each target name matched; the names that matched nothing are reported, not assumed."""
     from collections import Counter
@@ -137,25 +145,32 @@ def adapter_source(spec: str, repo: str = REPO) -> tuple:
 
 def run(model_id: str = "Qwen/Qwen3.5-9B", inputs="hub:sft/sft_v1.json", out_dir: str = "/content/train",
         rank: int = 32, alpha: int = 64, dropout: float = 0.05, lr: float = 2e-4, epochs: float = 1.0, batch: int = 8,
-        grad_accum: int = 2, max_len: int = 2048, warmup: float = 0.03, n_items: int | None = None, ship_every: int = 100,
+        grad_accum: int = 2, max_len: int = 2048, warmup: float = 0.03, n_items: int | None = None, ship_every: int | None = None,
         repo: str = REPO, do_ship: bool = True, seed: int = 20261030, tag: str = "", init_adapter: str | None = None,
         system: str | None = None) -> dict:
     """Train the adapter; return {adapter_dir, path_in_repo, steps, s_per_step, train_loss, ...}. With init_adapter (see
     adapter_source) training continues from that trained adapter instead of a fresh LoRA; its rank and alpha must be the ones passed.
-    With system (see prompts.system) every example carries that system turn before its user turn."""
-    from .checks import peft_beside_torchao
-    peft_check = peft_beside_torchao()
-    assert peft_check["peft_lora_ok"], f"PEFT cannot build a LoRA here: {peft_check.get('error')}; {peft_check.get('advice', '')}"
+    With system (see prompts.system) every example carries that system turn before its user turn. Rank 0 is a full fine-tune of
+    the language model (fp32 weights under bf16 autocast; the vision tower frozen); adapter_dir then holds the whole model in bf16
+    with its processor. ship_every: the adapter ships every so many steps (100 by default; a full model ships only at the end)."""
+    full = rank == 0
     import torch
-    from peft import LoraConfig, TaskType, get_peft_model
     from transformers import AutoProcessor, Trainer, TrainerCallback, TrainingArguments
+    if not full:
+        from .checks import peft_beside_torchao
+        peft_check = peft_beside_torchao()
+        assert peft_check["peft_lora_ok"], f"PEFT cannot build a LoRA here: {peft_check.get('error')}; {peft_check.get('advice', '')}"
+        from peft import LoraConfig, TaskType, get_peft_model
+    if ship_every is None:
+        ship_every = 0 if full else 100
     stamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S") + (f"_{tag}" if tag else "")
-    short = model_id.split("/")[-1]
-    path_in_repo = f"lora/{short}/r{rank}/{stamp}"
-    run_dir = os.path.join(out_dir, f"{short}_r{rank}_{stamp}")
+    short = model_short(model_id)
+    path_in_repo = f"full/{short}/{stamp}" if full else f"lora/{short}/r{rank}/{stamp}"
+    run_dir = os.path.join(out_dir, f"{short}_{'full' if full else f'r{rank}'}_{stamp}")
     adapter_dir = os.path.join(run_dir, "adapter")
     os.makedirs(adapter_dir, exist_ok=True)
     env = preflight()
+    src = resolve_model(model_id, repo)
     items = load_items(inputs)[:n_items]
     t0 = time.time()
     pictures = fetch_images(items, os.path.join(out_dir, "images"))
@@ -169,17 +184,24 @@ def run(model_id: str = "Qwen/Qwen3.5-9B", inputs="hub:sft/sft_v1.json", out_dir
     print(f"train {stamp}: {len(items)} items ({n_img} with a picture), {len(pairs)} examples by form {forms}; images fetched in "
           f"{time.time() - t0:.0f} s", flush=True)
 
-    processor = AutoProcessor.from_pretrained(model_id)
+    processor = AutoProcessor.from_pretrained(src)
     processor.tokenizer.padding_side = "right"
     system_text = prompts.system(system)
     system_tokens = len(processor.tokenizer(system_text)["input_ids"]) if system_text else 0
     if system_text:
         print(f"system prompt {system!r}: {system_tokens} tokens before every example", flush=True)
-    model = vlm_class().from_pretrained(model_id, dtype=torch.bfloat16, device_map="cuda")
+    model = vlm_class().from_pretrained(src, dtype=torch.float32 if full else torch.bfloat16, device_map="cuda")
     model.config.use_cache = False
     model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
     model.enable_input_require_grads()
-    if init_adapter:
+    if full:
+        n_train = 0
+        for name, p in model.named_parameters():
+            p.requires_grad = trains_in_full(name)
+            n_train += p.numel() if p.requires_grad else 0
+        report = {"full": n_train}
+        print(f"full fine-tune: {n_train / 1e9:.2f}B parameters train (the language model), the vision tower frozen", flush=True)
+    elif init_adapter:
         from peft import PeftModel
         from .hub import token
         src, sub = adapter_source(init_adapter, repo)
@@ -191,10 +213,11 @@ def run(model_id: str = "Qwen/Qwen3.5-9B", inputs="hub:sft/sft_v1.json", out_dir
         config = LoraConfig(r=rank, lora_alpha=alpha, lora_dropout=dropout, bias="none", target_modules=TARGETS,
                             task_type=TaskType.CAUSAL_LM)
         model = get_peft_model(model, config)
-    report = lora_report(model)
-    print("LoRA modules by name:", report, flush=True)
-    assert report, "no module matched the LoRA targets; read the model's module names"
-    model.print_trainable_parameters()
+    if not full:
+        report = lora_report(model)
+        print("LoRA modules by name:", report, flush=True)
+        assert report, "no module matched the LoRA targets; read the model's module names"
+        model.print_trainable_parameters()
 
     steps_per_epoch = math.ceil(len(pairs) / (batch * grad_accum))
     total = math.ceil(steps_per_epoch * epochs)
@@ -235,8 +258,12 @@ def run(model_id: str = "Qwen/Qwen3.5-9B", inputs="hub:sft/sft_v1.json", out_dir
     trainer = Trainer(model=model, args=args, train_dataset=Pairs(pairs), data_collator=Collator(processor, pictures, max_len, system_text),
                       optimizers=(optimizer, None), callbacks=[Progress()])
     result = trainer.train()
-    model.save_pretrained(adapter_dir)
-    summary = {"package": __version__, "model": model_id, "tag": tag, "rank": rank, "alpha": alpha, "dropout": dropout, "lr": lr,
+    if full:   # the whole model in bf16, with its processor, so the folder loads on its own
+        model.to(torch.bfloat16).save_pretrained(adapter_dir, safe_serialization=True)
+        processor.save_pretrained(adapter_dir)
+    else:
+        model.save_pretrained(adapter_dir)
+    summary = {"package": __version__, "model": model_id, "full": full, "tag": tag, "rank": rank, "alpha": alpha, "dropout": dropout, "lr": lr,
                "epochs": epochs, "batch": batch, "grad_accum": grad_accum, "max_len": max_len, "items": len(items),
                "items_with_picture": n_img, "examples": len(pairs), "examples_by_form": forms, "steps": result.global_step,
                "train_loss": result.training_loss, "s_per_step": round((time.time() - t0) / max(result.global_step, 1), 2),
@@ -248,7 +275,7 @@ def run(model_id: str = "Qwen/Qwen3.5-9B", inputs="hub:sft/sft_v1.json", out_dir
     print(f"\ntrained in {summary['train_min']} min: {summary['steps']} steps, loss {summary['train_loss']:.4f}, "
           f"{summary['s_per_step']} s/step", flush=True)
     if do_ship:
-        url = ship(adapter_dir, f"{path_in_repo}/final", f"{short} r{rank} {stamp}: final ({summary['steps']} steps)", repo)
+        url = ship(adapter_dir, f"{path_in_repo}/final", f"{short} {'full' if full else f'r{rank}'} {stamp}: final ({summary['steps']} steps)", repo)
         print(f"  shipped: {url}", flush=True)
     summary["adapter_dir"] = adapter_dir
     del trainer, model, processor

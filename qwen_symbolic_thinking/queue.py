@@ -23,7 +23,7 @@ import time
 import traceback
 from datetime import datetime, timezone
 
-from . import REPO
+from . import REPO, __version__
 from .hub import token
 
 DEFAULT_SCREEN = {"inputs": "hub:screens/inputs/screen_v1.json", "forms": ("full", "short", "spec_full"), "batch": 4,
@@ -78,7 +78,10 @@ def run_spec(spec: dict, lane: str, repo: str, out_dir: str) -> dict:
         s = dict(DEFAULT_SCREEN, **spec.get("screen", {}))
         s["forms"] = tuple(s["forms"])
         s.setdefault("system", spec["train"].get("system"))     # an arm trained with a system prompt is screened with it
-        result["screen"] = screen.run(models=[spec["train"].get("model_id", "Qwen/Qwen3.5-9B")], adapter=t["adapter_dir"], tag=name, repo=repo, **s)
+        if t.get("full"):                                        # a full fine-tune: the trained folder is the model
+            result["screen"] = screen.run(models=[t["adapter_dir"]], tag=name, repo=repo, **s)
+        else:
+            result["screen"] = screen.run(models=[spec["train"].get("model_id", "Qwen/Qwen3.5-9B")], adapter=t["adapter_dir"], tag=name, repo=repo, **s)
     elif spec["kind"] == "synth":
         from . import synth
         s = synth.generate(**spec["synth"], tag=name, repo=repo)
@@ -115,22 +118,43 @@ def run_spec(spec: dict, lane: str, repo: str, out_dir: str) -> dict:
 
 
 def after_specs(spec: dict, path_in_repo: str, repo: str = REPO) -> list:
-    """The runs a train spec names under "after", made whole: each an extract spec reading the adapter the training shipped
-    (adapter = the project repo, adapter_subfolder = <path_in_repo>/final) with the model it trained (and its system prompt,
-    when it had one); a key the entry sets itself is kept. Only extract runs may follow a training."""
+    """The runs a train spec names under "after", made whole: each an extract spec reading what the training shipped, with
+    its system prompt when it had one: for a LoRA, adapter = the project repo and adapter_subfolder = <path_in_repo>/final
+    on the model it trained; for a full fine-tune (rank 0), model_id = hub:<path_in_repo>/final and no adapter. A key the
+    entry sets itself is kept. Only extract runs may follow a training."""
     out = []
     train = spec.get("train") or {}
+    full = train.get("rank", 32) == 0
+    final = f"{path_in_repo.strip('/')}/final"
     for entry in spec.get("after") or []:
         if entry.get("kind") != "extract":
             raise ValueError(f"after {entry.get('name')!r}: only extract runs follow a training, not {entry.get('kind')!r}")
         x = dict(entry["extract"])
-        x.setdefault("model_id", train.get("model_id", "Qwen/Qwen3.5-9B"))
-        x.setdefault("adapter", repo)
-        x.setdefault("adapter_subfolder", f"{path_in_repo.strip('/')}/final")
+        if full:
+            x.setdefault("model_id", f"hub:{final}")
+            x.setdefault("adapter", None)
+        else:
+            x.setdefault("model_id", train.get("model_id", "Qwen/Qwen3.5-9B"))
+            x.setdefault("adapter", repo)
+            x.setdefault("adapter_subfolder", final)
         if train.get("system") is not None:
             x.setdefault("system", train["system"])
         out.append({**entry, "extract": x})
     return out
+
+
+def _version(text: str) -> tuple:
+    return tuple(int(x) for x in str(text).strip().lstrip("v").split(".")[:3])
+
+
+def runnable_here(spec: dict) -> bool:
+    """Whether this package can run a spec: one that says it "needs" a newer package version is left in the queue for a lane
+    that has it (no marker is written, so nothing is burnt)."""
+    needs = spec.get("needs")
+    try:
+        return needs is None or _version(needs) <= _version(__version__)
+    except ValueError:
+        return True
 
 
 def _run_marked(spec: dict, lane: str, repo: str, out_dir: str) -> dict:
@@ -152,7 +176,7 @@ def run_queue(lane: str, repo: str = REPO, out_dir: str = "/content/runs", idle_
     while True:
         specs = _fresh(f"runs/queue_{lane}.json", repo) or []
         markers = _markers(repo)
-        todo = [s for s in specs if s["name"] not in markers or s.get("retry")]
+        todo = [s for s in specs if (s["name"] not in markers or s.get("retry")) and runnable_here(s)]
         if not todo:
             if idle_since is None:
                 idle_since = time.time()

@@ -27,6 +27,27 @@ def fetch(path_in_repo: str, repo: str = REPO) -> str:
     return hf_hub_download(repo, path_in_repo, repo_type="model", token=token())
 
 
+def fetch_folder(path_in_repo: str, repo: str = REPO) -> str:
+    """A folder of the project repo (a full fine-tune under full/<model>/<stamp>_<tag>/final), downloaded (cached) and
+    returned as a local path."""
+    from huggingface_hub import snapshot_download
+    path = path_in_repo.strip("/")
+    root = snapshot_download(repo, repo_type="model", allow_patterns=[f"{path}/*"], token=token())
+    return os.path.join(root, *path.split("/"))
+
+
+def resolve_model(model_id: str, repo: str = REPO) -> str:
+    """A model id as the loaders take it: a Hub repo id or a local folder as given; 'hub:<path>' (a full fine-tune shipped
+    under the project repo) downloaded to its folder."""
+    return fetch_folder(model_id[4:], repo) if model_id.startswith("hub:") else model_id
+
+
+def model_short(model_id: str) -> str:
+    """The model's short name for paths: Qwen/Qwen3.5-4B -> Qwen3.5-4B; hub:full/Qwen3.5-4B/<stamp>/final -> Qwen3.5-4B."""
+    parts = model_id[4:].strip("/").split("/") if model_id.startswith("hub:") else model_id.rstrip("/").split("/")
+    return parts[1] if model_id.startswith("hub:") and len(parts) > 1 else parts[-1]
+
+
 def ship(folder: str, path_in_repo: str, message: str, repo: str = REPO, retries: int = 4) -> str | None:
     """Upload a folder under a path of the project repo, with backoff retries; returns the commit url or None."""
     from huggingface_hub import HfApi

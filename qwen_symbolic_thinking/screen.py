@@ -139,10 +139,12 @@ def messages(form: str, it: dict, examples: dict, image=None, system: str | None
 
 def load_model(model_id: str, thinking: bool, adapter: str | None = None, adapter_subfolder: str | None = None):
     """The processor and the model on the card; with an adapter (a local folder or a Hub repo, with a subfolder), the LoRA
-    weights are merged into the model."""
+    weights are merged into the model. A 'hub:<path>' model id is a full fine-tune shipped under the project repo."""
     import torch
     from transformers import AutoProcessor
+    from .hub import resolve_model
     _listen()
+    model_id = resolve_model(model_id)
     processor = AutoProcessor.from_pretrained(model_id)
     processor.tokenizer.padding_side = "left"
     model = vlm_class().from_pretrained(model_id, dtype=torch.bfloat16, device_map="cuda")
