@@ -97,7 +97,8 @@ def run(model_id: str, n_rows: int = 3, inputs: str = "hub:sft/pictures_v2.json"
         rank: int = 32, alpha: int = 64, dropout: float = 0.05, out_dir: str = "/content/runs", tag: str = "", repo: str = REPO) -> dict:
     import torch
     from transformers import AutoProcessor
-    from ..screen import resolve_model, vlm_class
+    from ..hub import resolve_model
+    from ..screen import vlm_class
     from ..train import TARGETS, Collator, fetch_images, load_items
     t0 = time.time()
     src = resolve_model(model_id, repo)
