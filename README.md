@@ -54,8 +54,8 @@ time; nothing is redistributed here. The specification rows are the dataset's ow
 ## Install
 
 ```
-pip install git+https://github.com/AbstractEyes/qwen-symbolic-thinking@v0.1.19
-pip install "qwen-symbolic-thinking[screen] @ git+https://github.com/AbstractEyes/qwen-symbolic-thinking@v0.1.19"   # with torch, transformers 5, accelerate, peft
+pip install git+https://github.com/AbstractEyes/qwen-symbolic-thinking@v0.1.20
+pip install "qwen-symbolic-thinking[screen] @ git+https://github.com/AbstractEyes/qwen-symbolic-thinking@v0.1.20"   # with torch, transformers 5, accelerate, peft
 ```
 
 Qwen3.5 needs transformers 5 (the model code lives under `transformers.models.qwen3_5`); the preflight says so if it is missing.
@@ -161,6 +161,17 @@ reads; the sizes differ in what they can hold, and the cards say so.
 | 4B | Qwen/Qwen3.5-4B | [`lucia_4b.ipynb`](https://colab.research.google.com/github/AbstractEyes/qwen-symbolic-thinking/blob/main/notebooks/lucia_4b.ipynb) | `runs/queue_lucia_4b.json` | the recipe verbatim |
 | 2B | Qwen/Qwen3.5-2B | [`lucia_2b.ipynb`](https://colab.research.google.com/github/AbstractEyes/qwen-symbolic-thinking/blob/main/notebooks/lucia_2b.ipynb) | `runs/queue_lucia_2b.json` | the recipe verbatim; answers without thinking by default, as every Lucia is trained and read |
 | 0.8B | Qwen/Qwen3.5-0.8B | [`lucia_0.8b.ipynb`](https://colab.research.google.com/github/AbstractEyes/qwen-symbolic-thinking/blob/main/notebooks/lucia_0.8b.ipynb) | `runs/queue_lucia_0.8b.json` | two arms, the recipe verbatim and a set tweaked for a small model (three epochs, lr 3e-4); the release takes the better by the held-out reads |
+
+## Other families: Gemma 4
+
+The trainer, the screen and the extraction are written against the chat template, not against one model: the prompt is rendered
+with the template's own thinking switch off, the training text is the generation prompt + the row + whatever the template writes
+after an answer (`train.turn_end`, read from the template itself: `<|im_end|>` for Qwen3.5, `<turn|>` for Gemma 4), and the
+LoRA targets are the language model's projection names, which Gemma 4 shares. The first expert outside the Qwen line is Google's
+Gemma 4 12B (`google/gemma-4-12B-it`, the unified encoder-free vision-language model, Apache-2.0, 280 image tokens a picture by
+default): [`gemma_12b.ipynb`](https://colab.research.google.com/github/AbstractEyes/qwen-symbolic-thinking/blob/main/notebooks/gemma_12b.ipynb)
+works through `runs/queue_gemma_12b.json`, Lucia v1's recipe verbatim, screened and read on the same held-out sets so the two
+families are read on one ruler.
 
 ## The prompt enhancers of Qwen-Image 2.1
 

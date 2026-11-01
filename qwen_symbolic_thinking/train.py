@@ -1,4 +1,4 @@
-"""The fine-tune: a LoRA on a Qwen3.5 vision-language model, taught the rows under their prompt forms.
+"""The fine-tune: a LoRA on a vision-language model (Qwen3.5, Gemma 4), taught the rows under their prompt forms.
 
     from qwen_symbolic_thinking.train import run
     run(model_id="Qwen/Qwen3.5-9B", inputs=["hub:sft/pictures_v2.json"], epochs=3, tag="pictures")
@@ -24,13 +24,28 @@ from .hub import model_short, resolve_model, ship
 from .extract import fetch_images                # by url list or by locator (a pretrain shard row, a Hub file, a zip member)
 from .screen import load_inputs, preflight, vlm_class
 
-# The language model's projections, by name (the vision tower, under `visual`, is left alone): the full-attention layers'
-# q/k/v/o, every layer's MLP, and the linear-attention layers' token/value projections (in_proj_qkv, in_proj_z, out_proj in
-# Qwen3.5; in_proj_qkvz in the Qwen3-Next naming). The tiny gate projections (in_proj_a, in_proj_b) are not adapted.
+# The language model's projections, by name (the vision side, under `visual` in Qwen3.5 or `embed_vision` in Gemma 4, is left
+# alone): the attention layers' q/k/v/o, every layer's MLP, and Qwen3.5's linear-attention token/value projections (in_proj_qkv,
+# in_proj_z, out_proj; in_proj_qkvz in the Qwen3-Next naming). The tiny gate projections (in_proj_a, in_proj_b) are not adapted.
+# Gemma 4's language model (model.language_model.layers.N.self_attn / .mlp) carries the same seven names, so one pattern serves both.
 TARGETS = (r".*language_model.*\.(q_proj|k_proj|v_proj|o_proj|gate_proj|up_proj|down_proj|in_proj_qkv|in_proj_z|in_proj_qkvz|out_proj)$")
-TURN_END = "<|im_end|>\n"
 PICTURE_FORMS = ("short", "full")
 SPEC_FORMS = ("spec_short", "spec_full")
+
+
+def turn_end(processor) -> str:
+    """What the chat template writes after an assistant turn's text ("<|im_end|>\\n" for Qwen3.5, "<turn|>\\n" for Gemma 4), read
+    from the template itself: a two-turn conversation is rendered without a generation prompt and the text after the answer is
+    taken. A training example is the generation prompt (thinking off) + the answer + this, so the model learns to write the row
+    exactly where it will be asked to at inference."""
+    marker = "ANSWERMARKER"
+    text = processor.apply_chat_template([{"role": "user", "content": [{"type": "text", "text": "q"}]},
+                                          {"role": "assistant", "content": [{"type": "text", "text": marker}]}],
+                                         add_generation_prompt=False, tokenize=False)
+    assert marker in text, "the chat template did not render the assistant turn's text"
+    end = text[text.rindex(marker) + len(marker):]
+    assert end.strip(), f"the chat template writes nothing after an assistant turn: {text[-80:]!r}"
+    return end
 
 
 def conversation(it: dict, form: str, image=None, system: str | None = None) -> tuple:
@@ -68,6 +83,7 @@ class Collator:
 
     def __init__(self, processor, pictures: dict, max_len: int, system: str | None = None):
         self.processor, self.pictures, self.max_len, self.prefix_len, self.system = processor, pictures, max_len, {}, system
+        self.turn_end = turn_end(processor)
 
     def prefix_length(self, key: tuple, prefix: str, image) -> int:
         if key not in self.prefix_len:
@@ -81,7 +97,7 @@ class Collator:
             image = self.pictures.get(it["id"]) if it["kind"] == "image" else None
             messages, answer = conversation(it, form, image, self.system)
             prefix = self.processor.apply_chat_template(messages, add_generation_prompt=True, tokenize=False, enable_thinking=False)
-            texts.append(prefix + answer + TURN_END)
+            texts.append(prefix + answer + self.turn_end)
             if image is not None:
                 images.append(image)
             lengths.append(self.prefix_length((it["id"], form), prefix, image))

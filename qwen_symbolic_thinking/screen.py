@@ -167,8 +167,9 @@ def generate(processor, model, convs: list, images: list, max_new_tokens: int, t
     if any(im is not None for im in images):
         kwargs["images"] = [im for im in images if im is not None]
     inputs = processor(**kwargs).to(model.device)
+    pad = processor.tokenizer.pad_token_id   # Gemma's pad id is 0: a falsy id is still an id
     gen = {"max_new_tokens": max_new_tokens, "do_sample": False,
-           "pad_token_id": processor.tokenizer.pad_token_id or processor.tokenizer.eos_token_id}
+           "pad_token_id": pad if pad is not None else processor.tokenizer.eos_token_id}
     if sampling:
         gen.update(sampling, do_sample=True)
     with torch.no_grad():
