@@ -21,7 +21,7 @@ tags:
 
 # {{TITLE}}
 
-**{{NAME}}** is the {{SIZE_WORDS}} of the Lucia family, the thinking lookers: {{VARIANT_SENTENCE}} of
+**{{NAME}}** is {{FAMILY_INTRO}}: {{VARIANT_SENTENCE}} of
 [{{BASE}}](https://huggingface.co/{{BASE}}) that looks at a picture and writes the row of
 [thought-symbolic-image-captions](https://huggingface.co/datasets/AbstractPhil/thought-symbolic-image-captions): a short chain
 of plain-language thoughts, one named step per line, then the wordings (a caption, a prompt, tags, a critique, by depth), then
@@ -49,9 +49,7 @@ line's first term names the kind of picture (painting, print, drawing, photograp
 
 ## Loading
 
-{{VARIANT_NOTE}} Every Lucia loads the same way and is run the same way: thinking off, greedy decoding, no system prompt (the
-row's form is learned, and a system turn she was not trained with makes her over-write). Needs transformers 5; the adapter also
-needs peft 0.18 or newer.
+{{VARIANT_NOTE}} {{LOADS_NOTE}}
 
 **The LoRA adapter** ([{{LORA_REPO}}](https://huggingface.co/{{LORA_REPO}})): the base model, the adapter merged into it, the
 processor from the adapter repository (the base processor's files are kept there).
@@ -100,7 +98,7 @@ the trainer are in [qwen-symbolic-thinking](https://github.com/AbstractEyes/qwen
 
 {{READS}}
 
-## How she was trained
+## How {{SHE}} was trained
 
 {{TRAINING}}
 
