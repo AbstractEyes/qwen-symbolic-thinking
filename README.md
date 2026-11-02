@@ -54,8 +54,8 @@ time; nothing is redistributed here. The specification rows are the dataset's ow
 ## Install
 
 ```
-pip install git+https://github.com/AbstractEyes/qwen-symbolic-thinking@v0.1.36
-pip install "qwen-symbolic-thinking[screen] @ git+https://github.com/AbstractEyes/qwen-symbolic-thinking@v0.1.36"   # with torch, transformers 5, accelerate, peft
+pip install git+https://github.com/AbstractEyes/qwen-symbolic-thinking@v0.1.37
+pip install "qwen-symbolic-thinking[screen] @ git+https://github.com/AbstractEyes/qwen-symbolic-thinking@v0.1.37"   # with torch, transformers 5, accelerate, peft
 ```
 
 Qwen3.5 needs transformers 5 (the model code lives under `transformers.models.qwen3_5`); the preflight says so if it is missing.
@@ -239,6 +239,9 @@ Molmo2:
   requiring grad. PEFT installs that mark (transformers' input-embedding grad hook) when it wraps a model whose layers checkpoint, so
   the trainer removes the hook after building the LoRA (`family.drop_input_grads`); non-reentrant checkpointing trains the adapter
   without it.
+- Its image batching (`build_batched_images`) fails its own check on a batch that mixes picture rows with text-only rows (the
+  specification rows): an example without a picture gets a one-item offset list. `family.prepare_model` runs that function on the
+  picture rows and gives the text-only rows its own padding (-1), which the vision backbone masks out.
 
 Neither family keeps its language model inside a `language_model` module, so the LoRA pattern names their layers from the root:
 `model.layers.N` (a fused `qkv_proj`) for Phi-4, and `model.transformer.blocks.N` (`att_proj`, `attn_out`, `ff_proj`, `ff_out`)

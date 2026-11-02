@@ -242,6 +242,8 @@ def run(model_id: str = "Qwen/Qwen3.5-9B", inputs="hub:sft/sft_v1.json", out_dir
         print(f"system prompt {system!r}: {system_tokens} tokens before every example", flush=True)
     model = load_vlm(src, trust_remote_code=trust_remote_code, dtype=torch.float32 if full else torch.bfloat16, device_map="cuda")
     family.prepare_processor(processor, model)
+    if family.prepare_model(model):
+        print("  batches that mix picture rows and text-only rows go through this family's own image batching per picture row", flush=True)
     family.apply_image_settings(processor, image_settings)
     mark = family.marker(model)
     targets = targets or TARGETS

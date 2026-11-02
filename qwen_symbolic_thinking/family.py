@@ -56,6 +56,37 @@ def input_grads(model_or_config) -> bool:
     return model_type(model_or_config) != MOLMO2
 
 
+def prepare_model(model) -> bool:
+    """Molmo2's build_batched_images fails its own check on a batch that mixes picture rows with text-only rows: for an example
+    without a picture it builds a one-item offset list where the example has no picture to offset. Training batches mix them (the
+    specification rows carry no picture), so the call runs on the picture rows and the text-only rows get the padding the function
+    uses for missing crops and patches (-1), which the vision backbone masks out. Returns whether the model was patched."""
+    if model_type(model) != MOLMO2:
+        return False
+    inner = next((m for m in model.modules() if hasattr(type(m), "build_batched_images")), None)
+    if inner is None or getattr(inner, "_mixed_batches", False):
+        return False
+    original, end_id = inner.build_batched_images, inner.config.image_end_token_id
+
+    def build_batched_images(input_ids, pixel_values, image_token_pooling, image_grids, image_num_crops):
+        has = (input_ids == end_id).sum(1) > 0
+        if bool(has.all()):
+            return original(input_ids=input_ids, pixel_values=pixel_values, image_token_pooling=image_token_pooling,
+                            image_grids=image_grids, image_num_crops=image_num_crops)
+        images, pooling = original(input_ids=input_ids[has], pixel_values=pixel_values, image_token_pooling=image_token_pooling,
+                                   image_grids=image_grids, image_num_crops=image_num_crops)
+        n = input_ids.shape[0]
+        full_images = images.new_full((n, *images.shape[1:]), -1)
+        full_pooling = pooling.new_full((n, *pooling.shape[1:]), -1)
+        full_images[has] = images
+        full_pooling[has] = pooling
+        return full_images, full_pooling
+
+    inner.build_batched_images = build_batched_images
+    inner._mixed_batches = True
+    return True
+
+
 def drop_input_grads(model) -> bool:
     """Remove the input-embedding grad hook (transformers' enable_input_require_grads) from a model that must train without it
     (input_grads False). Skipping our own call is not enough: PEFT installs the same hook when it wraps a model whose layers already

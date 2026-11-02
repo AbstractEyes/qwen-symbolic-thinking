@@ -202,6 +202,45 @@ def test_input_grads_except_molmo2():
     assert family.input_grads("phi4-siglip") and family.input_grads("qwen3_5") and family.input_grads(Model("gemma4"))
 
 
+def test_prepare_model_leaves_other_families_alone():
+    from qwen_symbolic_thinking import family
+    assert family.prepare_model(Model("qwen3_5")) is False and family.prepare_model(Model("phi4-siglip")) is False
+
+
+def test_prepare_model_lets_molmo2_batch_text_only_rows_beside_pictures():
+    """Molmo2's image batching fails on an example without a picture; the wrapped call runs it on the picture rows and pads the
+    rest with -1 (its own padding). The stand-in original refuses any row without the picture end token, as the real one does."""
+    import types
+    import pytest
+    torch = pytest.importorskip("torch")
+    from qwen_symbolic_thinking import family
+    end = 7
+
+    class Inner(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.config = types.SimpleNamespace(image_end_token_id=end, model_type="molmo2")
+
+        def build_batched_images(self, input_ids, pixel_values, image_token_pooling, image_grids, image_num_crops):
+            assert bool(((input_ids == end).sum(1) > 0).all())
+            n = input_ids.shape[0]
+            return torch.arange(n * 2.0).view(n, 2), torch.arange(n * 3).view(n, 3)
+
+    class Top(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.model = Inner()
+            self.config = self.model.config
+
+    top = Top()
+    ids = torch.tensor([[1, end, end], [1, 2, 3], [4, end, end]])
+    kw = dict(pixel_values=None, image_token_pooling=None, image_grids=None, image_num_crops=None)
+    assert family.prepare_model(top) is True and family.prepare_model(top) is False
+    images, pooling = top.model.build_batched_images(input_ids=ids, **kw)
+    assert images.tolist() == [[0.0, 1.0], [-1.0, -1.0], [2.0, 3.0]]
+    assert pooling.tolist() == [[0, 1, 2], [-1, -1, -1], [3, 4, 5]]
+
+
 def test_drop_input_grads_removes_the_hook_peft_installs():
     """PEFT installs transformers' input-embedding grad hook (_require_grads_hook) on a model whose layers checkpoint; for Molmo2
     it is removed from the wrapped model, once."""
