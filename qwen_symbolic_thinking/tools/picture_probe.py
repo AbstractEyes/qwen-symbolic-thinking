@@ -173,7 +173,7 @@ def run(model_id: str, n_rows: int = 3, inputs: str = "hub:sft/pictures_v2.json"
     import torch
     from transformers import AutoProcessor
     from ..hub import resolve_model
-    from ..screen import load_model, vlm_class
+    from ..screen import load_model, load_vlm
     from ..train import TARGETS, Collator, fetch_images, load_items
     t0 = time.time()
     src = resolve_model(model_id, repo)
@@ -186,7 +186,7 @@ def run(model_id: str, n_rows: int = 3, inputs: str = "hub:sft/pictures_v2.json"
         processor, model = load_model(model_id, False, adapter=adapter, adapter_subfolder=adapter_subfolder)
     else:
         processor = AutoProcessor.from_pretrained(src)
-        model = vlm_class().from_pretrained(src, dtype=torch.bfloat16, device_map="cuda")
+        model = load_vlm(src, dtype=torch.bfloat16, device_map="cuda")
     image_token_id = getattr(model.config, "image_token_id", None)
     result = {"model": model_id, "adapter": adapter, "adapter_subfolder": adapter_subfolder, "rows": [it["id"] for it in items],
               "form": form, "image_token_id": image_token_id, "mode": mode}

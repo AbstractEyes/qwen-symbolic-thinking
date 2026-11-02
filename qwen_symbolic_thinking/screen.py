@@ -77,6 +77,28 @@ def vlm_class():
     return cls
 
 
+def load_vlm(src: str, classes: list | None = None, **kwargs):
+    """The model through the multimodal auto class, or through the image-text-to-text class for a configuration the first does
+    not map (which families each class maps differs between transformers versions); any other error surfaces as it is."""
+    if classes is None:
+        classes = [vlm_class()]
+        try:
+            from transformers import AutoModelForImageTextToText
+            if AutoModelForImageTextToText not in classes:
+                classes.append(AutoModelForImageTextToText)
+        except ImportError:
+            pass
+    first = None
+    for cls in classes:
+        try:
+            return cls.from_pretrained(src, **kwargs)
+        except ValueError as e:
+            if "Unrecognized configuration class" not in str(e):
+                raise
+            first = first or e
+    raise first
+
+
 def load_inputs(inputs: str) -> dict:
     path = fetch(inputs[4:]) if inputs.startswith("hub:") else inputs
     with open(path, encoding="utf-8") as fh:
@@ -149,7 +171,7 @@ def load_model(model_id: str, thinking: bool, adapter: str | None = None, adapte
     model_id = resolve_model(model_id)
     processor = AutoProcessor.from_pretrained(model_id)
     processor.tokenizer.padding_side = "left"
-    model = vlm_class().from_pretrained(model_id, dtype=torch.bfloat16, device_map="cuda")
+    model = load_vlm(model_id, dtype=torch.bfloat16, device_map="cuda")
     if adapter:
         from peft import PeftModel
         kwargs = {"subfolder": adapter_subfolder} if adapter_subfolder else {}
@@ -162,7 +184,8 @@ def encode(processor, texts: list, images: list | None = None, **kwargs):
     """The processor over a batch of texts with at most one picture each (images aligned with texts, None where a text has none).
     Qwen3.5's processor takes the pictures as one flat list, matched to the placeholders in order; Gemma 4's takes one list of
     pictures per text and reads a flat list as a single text with several pictures ("Received inconsistently sized batches of
-    images (1) and text (4)"): the flat form is tried first, the per-text form on that error."""
+    images (1) and text (4)"); other processors refuse a flat list with errors worded their own way. The flat form is tried
+    first, the per-text form on any ValueError; when the per-text form fails too, the first error surfaces."""
     images = list(images or [])
     flat = [im for im in images if im is not None]
     kwargs = dict(text=texts, return_tensors="pt", **kwargs)
@@ -170,11 +193,13 @@ def encode(processor, texts: list, images: list | None = None, **kwargs):
         return processor(**kwargs)
     try:
         return processor(images=flat, **kwargs)
-    except ValueError as e:
-        if "inconsistently sized" not in str(e):
+    except ValueError as first:
+        if len(images) != len(texts):   # one picture slot per text (None where a text has no picture) is what the per-text form needs
             raise
-        assert len(images) == len(texts), "one picture slot per text (None where a text has no picture)"
-        return processor(images=[[im] if im is not None else [] for im in images], **kwargs)
+        try:
+            return processor(images=[[im] if im is not None else [] for im in images], **kwargs)
+        except ValueError:
+            raise first from None
 
 
 _CHANNEL = re.compile(r"<\|channel>thought\n?(.*?)(?:<channel\|>|$)", re.S)   # Gemma 4's thought channel

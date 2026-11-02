@@ -22,14 +22,16 @@ from datetime import datetime, timezone
 from . import REPO, __version__, chain, prompts
 from .hub import model_short, resolve_model, ship
 from .extract import fetch_images                # by url list or by locator (a pretrain shard row, a Hub file, a zip member)
-from .screen import encode, load_inputs, preflight, vlm_class
+from .screen import encode, load_inputs, load_vlm, preflight
 from .template import stop_ids, turn_end                 # the template's turn end (training examples end with it) and the stop ids
 
 # The language model's projections, by name (the vision side, under `visual` in Qwen3.5 or `embed_vision` in Gemma 4, is left
 # alone): the attention layers' q/k/v/o, every layer's MLP, and Qwen3.5's linear-attention token/value projections (in_proj_qkv,
 # in_proj_z, out_proj; in_proj_qkvz in the Qwen3-Next naming). The tiny gate projections (in_proj_a, in_proj_b) are not adapted.
-# Gemma 4's language model (model.language_model.layers.N.self_attn / .mlp) carries the same seven names, so one pattern serves both.
-TARGETS = (r".*language_model.*\.(q_proj|k_proj|v_proj|o_proj|gate_proj|up_proj|down_proj|in_proj_qkv|in_proj_z|in_proj_qkvz|out_proj)$")
+# Gemma 4's language model (model.language_model.layers.N.self_attn / .mlp) carries the same seven names, so one pattern serves both;
+# GLM-4V's MLP fuses the gate and up projections into one (gate_up_proj), named here so the whole MLP adapts there too.
+TARGETS = (r".*language_model.*\.(q_proj|k_proj|v_proj|o_proj|gate_proj|up_proj|gate_up_proj|down_proj|in_proj_qkv|in_proj_z|"
+           r"in_proj_qkvz|out_proj)$")
 PICTURE_FORMS = ("short", "full")
 SPEC_FORMS = ("spec_short", "spec_full")
 
@@ -189,7 +191,7 @@ def run(model_id: str = "Qwen/Qwen3.5-9B", inputs="hub:sft/sft_v1.json", out_dir
     system_tokens = len(processor.tokenizer(system_text)["input_ids"]) if system_text else 0
     if system_text:
         print(f"system prompt {system!r}: {system_tokens} tokens before every example", flush=True)
-    model = vlm_class().from_pretrained(src, dtype=torch.float32 if full else torch.bfloat16, device_map="cuda")
+    model = load_vlm(src, dtype=torch.float32 if full else torch.bfloat16, device_map="cuda")
     model.config.use_cache = False
     model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
     model.enable_input_require_grads()
