@@ -10,7 +10,7 @@ huggingface.co/datasets/AbstractPhil/thought-symbolic-image-captions do.
 Weights and results: huggingface.co/AbstractPhil/qwen-symbolic-thinking-image-training."""
 import os
 
-__version__ = "0.1.26"
+__version__ = "0.1.27"
 
 # The CUDA caching allocator grows by expandable segments, so a long batch late in a run does not fail on memory the process
 # already holds in fragments (a 4B full fine-tune died at step 1,220 of 2,724 asking for 5 GB with 15 GB reserved but unusable).

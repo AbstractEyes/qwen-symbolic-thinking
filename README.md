@@ -54,8 +54,8 @@ time; nothing is redistributed here. The specification rows are the dataset's ow
 ## Install
 
 ```
-pip install git+https://github.com/AbstractEyes/qwen-symbolic-thinking@v0.1.26
-pip install "qwen-symbolic-thinking[screen] @ git+https://github.com/AbstractEyes/qwen-symbolic-thinking@v0.1.26"   # with torch, transformers 5, accelerate, peft
+pip install git+https://github.com/AbstractEyes/qwen-symbolic-thinking@v0.1.27
+pip install "qwen-symbolic-thinking[screen] @ git+https://github.com/AbstractEyes/qwen-symbolic-thinking@v0.1.27"   # with torch, transformers 5, accelerate, peft
 ```
 
 Qwen3.5 needs transformers 5 (the model code lives under `transformers.models.qwen3_5`); the preflight says so if it is missing.
@@ -139,6 +139,22 @@ The probe counts, per kind, the rows whose prompt line's first term names the ki
 National Gallery's convention, and a few object and print lines match the painting pattern; `museum_mismatch` shows which. The
 conflicts counted on every row: an unknown question, a thought about light, a stock mood word (gentle, quiet, everyday, unhurried,
 calm, plain), a defining pattern (means, is a, refers to) in a thought.
+
+## Mixing the lookers
+
+When several lookers have written the same pictures, `tools.mix` builds the mixes from the pool of their rows, with no reference
+text: per picture the agreement pick (the row, among those that hold the form, whose words the other lookers' rows share most:
+a weighted mean Jaccard), the caption and the prompt line the others agree with most, a vote of the prompt lines' first terms,
+and the pools of every distinct caption and prompt line for caption sets that feed a picture generator (there the whole words boy,
+boys, girl and girls become young man, young men, young woman and young women, counted). Lookers are weighed by family by default,
+each family one share, so a family of many sizes trained on the same rows does not outvote another by its member count. It writes
+one table per looker in the `rows` columns, the agreement pick as a split of its own, the mixed table, and a read that sets every
+looker, the picks, a random looker and the oracle side by side (said / backed by source with standard errors, the probe's kinds,
+the pick's backing by agreement decile). It runs as a queue `tool` run on a lane (the rows are many) or from the command line:
+
+```
+python -m qwen_symbolic_thinking.tools.mix lookers.json --manifest <manifest> --out mix_out [--ship]
+```
 
 ## Releases
 
