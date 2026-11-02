@@ -165,6 +165,28 @@ def adapter_source(spec: str, repo: str = REPO) -> tuple:
     return spec, None
 
 
+def name_base(folder: str, local: str, model_id: str, repo: str = REPO) -> list:
+    """Make a saved adapter name its base model by the Hub id. A model whose repository code runs loads from a local snapshot
+    (a 'hub:' model from its downloaded folder), and PEFT writes that folder into adapter_config.json and the card's metadata;
+    the Hub refuses a card whose base model is a local path, so every ship of such an adapter failed. Returns the files changed."""
+    hub_id = repo if model_id.startswith("hub:") else model_id
+    if not local or local == hub_id:
+        return []
+    changed = []
+    for name in ("adapter_config.json", "README.md"):
+        p = os.path.join(folder, name)
+        if not os.path.isfile(p):
+            continue
+        with open(p, encoding="utf-8", newline="") as fh:
+            text = fh.read()
+        new = text.replace(json.dumps(local)[1:-1], json.dumps(hub_id)[1:-1]).replace(local, hub_id)   # escaped (JSON), then plain
+        if new != text:
+            with open(p, "w", encoding="utf-8", newline="") as fh:
+                fh.write(new)
+            changed.append(name)
+    return changed
+
+
 def run(model_id: str = "Qwen/Qwen3.5-9B", inputs="hub:sft/sft_v1.json", out_dir: str = "/content/train",
         rank: int = 32, alpha: int = 64, dropout: float = 0.05, lr: float = 2e-4, epochs: float = 1.0, batch: int = 8,
         grad_accum: int = 2, max_len: int = 2048, warmup: float = 0.03, n_items: int | None = None, ship_every: int | None = None,
@@ -211,6 +233,7 @@ def run(model_id: str = "Qwen/Qwen3.5-9B", inputs="hub:sft/sft_v1.json", out_dir
         from huggingface_hub import snapshot_download
         from .hub import token as hub_token
         src = snapshot_download(src, revision=revision, token=hub_token() or None)
+    base_dir = src            # where the weights load from; the saved adapter names the Hub id instead (name_base)
     processor = AutoProcessor.from_pretrained(src, trust_remote_code=trust_remote_code)
     processor.tokenizer.padding_side = "right"
     system_text = prompts.system(system)
@@ -289,6 +312,7 @@ def run(model_id: str = "Qwen/Qwen3.5-9B", inputs="hub:sft/sft_v1.json", out_dir
                   f"{rec['left_s']} s left, {rec['s_per_step']} s/step", flush=True)
             if do_ship and ship_every and state.global_step and state.global_step % ship_every == 0 and state.global_step < total:
                 model.save_pretrained(adapter_dir)
+                name_base(adapter_dir, base_dir, model_id, repo)
                 ship(adapter_dir, f"{path_in_repo}/step_{state.global_step}", f"{short} r{rank} {stamp}: step {state.global_step}", repo)
 
     collate = Collator(processor, pictures, max_len, system_text, mark, family.model_type(model))
@@ -312,6 +336,9 @@ def run(model_id: str = "Qwen/Qwen3.5-9B", inputs="hub:sft/sft_v1.json", out_dir
         processor.save_pretrained(adapter_dir)
     else:
         model.save_pretrained(adapter_dir)
+    named = name_base(adapter_dir, base_dir, model_id, repo)
+    if named:
+        print(f"  {', '.join(named)} name the Hub id as the base (the weights loaded from {base_dir})", flush=True)
     summary = {"package": __version__, "model": model_id, "full": full, "tag": tag, "rank": rank, "alpha": alpha, "dropout": dropout, "lr": lr,
                "epochs": epochs, "batch": batch, "grad_accum": grad_accum, "max_len": max_len, "items": len(items),
                "items_with_picture": n_img, "examples": len(pairs), "examples_by_form": forms, "steps": result.global_step,

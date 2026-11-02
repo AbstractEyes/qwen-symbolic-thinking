@@ -54,8 +54,8 @@ time; nothing is redistributed here. The specification rows are the dataset's ow
 ## Install
 
 ```
-pip install git+https://github.com/AbstractEyes/qwen-symbolic-thinking@v0.1.34
-pip install "qwen-symbolic-thinking[screen] @ git+https://github.com/AbstractEyes/qwen-symbolic-thinking@v0.1.34"   # with torch, transformers 5, accelerate, peft
+pip install git+https://github.com/AbstractEyes/qwen-symbolic-thinking@v0.1.35
+pip install "qwen-symbolic-thinking[screen] @ git+https://github.com/AbstractEyes/qwen-symbolic-thinking@v0.1.35"   # with torch, transformers 5, accelerate, peft
 ```
 
 Qwen3.5 needs transformers 5 (the model code lives under `transformers.models.qwen3_5`); the preflight says so if it is missing.
@@ -213,7 +213,9 @@ snapshot at that commit. That code was written against transformers 4.56 and 4.5
 transformers 5 rewrote. So these runs carry `"transformers": "==4.57.6"` and go to their own queue, `runs/queue_remote_code.json`,
 run by [`remote_code.ipynb`](https://colab.research.google.com/github/AbstractEyes/qwen-symbolic-thinking/blob/main/notebooks/remote_code.ipynb)
 on that release. The queue checks each spec against the installed transformers (`queue.transformers_fits`); a spec without the
-field runs on transformers 5 or later, so neither kind of card takes the other's runs. `family.py` holds what differs.
+field runs on transformers 5 or later, so neither kind of card takes the other's runs. `family.py` holds what differs. Because
+the weights load from a snapshot folder, PEFT would name that folder as the adapter's base model, and the Hub refuses such a card;
+the trainer rewrites the saved adapter's config and card to the Hub id before every upload (`train.name_base`, from 0.1.35).
 
 Phi-4-reasoning-vision:
 

@@ -364,6 +364,29 @@ def test_after_specs_and_the_arm_screen_carry_the_repository_code_settings():
     assert x["adapter_subfolder"] == "lora/molmo2/r32/stamp/final"
 
 
+def test_a_saved_adapter_names_the_hub_id_not_the_snapshot_folder(tmp_path):
+    """A model whose repository code runs loads from a local snapshot; PEFT writes that folder into the adapter's config and
+    card, which the Hub refuses, so the saved files are rewritten to the Hub id (a Windows path is escaped inside the JSON)."""
+    import json
+    from qwen_symbolic_thinking.train import name_base
+    for local in ("/root/.cache/huggingface/hub/models--org--m/snapshots/c3e4", r"C:\cache\models--org--m\snapshots\c3e4"):
+        folder = tmp_path / str(abs(hash(local)))
+        folder.mkdir()
+        (folder / "adapter_config.json").write_text(json.dumps({"base_model_name_or_path": local, "r": 32}, indent=2), encoding="utf-8")
+        (folder / "README.md").write_text(f"---\nbase_model: {local}\nlibrary_name: peft\ntags:\n- base_model:adapter:{local}\n---\n",
+                                          encoding="utf-8")
+        assert name_base(str(folder), local, "org/m") == ["adapter_config.json", "README.md"]
+        assert json.loads((folder / "adapter_config.json").read_text(encoding="utf-8"))["base_model_name_or_path"] == "org/m"
+        card = (folder / "README.md").read_text(encoding="utf-8")
+        assert "base_model: org/m\n" in card and "base_model:adapter:org/m" in card and local not in card
+        assert name_base(str(folder), local, "org/m") == []          # nothing left to change
+    plain = tmp_path / "plain"
+    plain.mkdir()
+    (plain / "README.md").write_text("---\nbase_model: Qwen/Qwen3.5-9B\n---\n", encoding="utf-8")
+    assert name_base(str(plain), "Qwen/Qwen3.5-9B", "Qwen/Qwen3.5-9B") == []   # loaded by its Hub id: untouched
+    assert name_base(str(plain), "/tmp/full", "hub:full/Qwen3.5-4B/s/final", repo="me/project") == []   # no such path in the files
+
+
 def test_targets_take_the_fused_mlp_and_leave_the_vision_tower():
     assert re.fullmatch(TARGETS, "model.language_model.layers.3.mlp.gate_up_proj")
     assert re.fullmatch(TARGETS, "model.language_model.layers.3.mlp.down_proj")
