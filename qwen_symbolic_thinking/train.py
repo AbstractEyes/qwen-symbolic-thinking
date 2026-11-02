@@ -33,6 +33,14 @@ from .template import stop_ids, turn_end                 # the template's turn e
 TARGETS = (r".*language_model.*\.(q_proj|k_proj|v_proj|o_proj|gate_proj|up_proj|gate_up_proj|down_proj|in_proj_qkv|in_proj_z|"
            r"in_proj_qkvz|out_proj)$")
 PICTURE_FORMS = ("short", "full")
+
+
+def overrun(attention_mask, max_len: int) -> tuple:
+    """(examples, examples longer than max_len, the longest example's tokens) for one batch's attention mask. An example longer
+    than max_len loses the tail of its answer and its turn end to the cut, so a family whose pictures take more tokens than
+    Qwen's is read for it in the training summary."""
+    real = [int(x) for x in attention_mask.sum(dim=1).tolist()]
+    return len(real), sum(1 for x in real if x > max_len), max(real, default=0)
 SPEC_FORMS = ("spec_short", "spec_full")
 
 
@@ -72,6 +80,7 @@ class Collator:
     def __init__(self, processor, pictures: dict, max_len: int, system: str | None = None):
         self.processor, self.pictures, self.max_len, self.prefix_len, self.system = processor, pictures, max_len, {}, system
         self.turn_end = turn_end(processor)
+        self.collated = self.cut = self.longest = 0   # examples collated, examples longer than max_len (tail cut), the longest
 
     def prefix_length(self, key: tuple, prefix: str, image) -> int:
         if key not in self.prefix_len:
@@ -88,6 +97,8 @@ class Collator:
             images.append(image)                      # one slot per text: None for a specification row
             lengths.append(self.prefix_length((it["id"], form), prefix, image))
         batch = encode(self.processor, texts, images, padding=True)
+        n, cut, longest = overrun(batch["attention_mask"], self.max_len)
+        self.collated, self.cut, self.longest = self.collated + n, self.cut + cut, max(self.longest, longest)
         labels = batch["input_ids"].clone()
         labels[batch["attention_mask"] == 0] = -100
         for i, n in enumerate(lengths):
@@ -262,6 +273,7 @@ def run(model_id: str = "Qwen/Qwen3.5-9B", inputs="hub:sft/sft_v1.json", out_dir
     if pic and spc:   # a mixed batch encodes before the first step (a family whose processor takes pictures differently fails here, not at step 1)
         probe = collate([pic, spc])
         print(f"  a mixed batch (a picture row, a specification row) encodes: input_ids {tuple(probe['input_ids'].shape)}", flush=True)
+        collate.collated = collate.cut = collate.longest = 0   # the counts are the training batches'
     trainer = Trainer(model=model, args=args, train_dataset=Pairs(pairs), data_collator=collate,
                       optimizers=(optimizer, None), callbacks=[Progress()])
     result = trainer.train()
@@ -282,7 +294,10 @@ def run(model_id: str = "Qwen/Qwen3.5-9B", inputs="hub:sft/sft_v1.json", out_dir
                "train_loss": result.training_loss, "s_per_step": round((time.time() - t0) / max(result.global_step, 1), 2),
                "train_min": round((time.time() - t0) / 60, 1), "lora_modules": report, "targets": TARGETS, "inputs": inputs,
                "init_adapter": init_adapter, "system": system, "system_tokens": system_tokens, "path_in_repo": path_in_repo,
+               "collated_examples": collate.collated, "examples_cut_at_max_len": collate.cut, "longest_example_tokens": collate.longest,
                "env": env, "log": log}
+    print(f"  examples longer than max_len {max_len} (answer tail cut): {collate.cut} of {collate.collated} collated "
+          f"(the longest {collate.longest} tokens)", flush=True)
     with open(os.path.join(adapter_dir, "train_summary.json"), "w", encoding="utf-8") as fh:
         json.dump(summary, fh, indent=1)
     print(f"\ntrained in {summary['train_min']} min: {summary['steps']} steps, loss {summary['train_loss']:.4f}, "

@@ -84,6 +84,33 @@ def test_load_vlm_surfaces_other_errors_and_the_last_unmapped():
         raise AssertionError("no class mapped the configuration")
 
 
+class Mask:
+    """An attention mask's interface as the collator uses it: per-row sums as a list."""
+
+    def __init__(self, rows):
+        self.rows = rows
+
+    def sum(self, dim):
+        assert dim == 1
+        return Rows([sum(r) for r in self.rows])
+
+
+class Rows:
+    def __init__(self, values):
+        self.values = values
+
+    def tolist(self):
+        return self.values
+
+
+def test_overrun_counts_the_examples_past_max_len():
+    from qwen_symbolic_thinking.train import overrun
+    mask = Mask([[1, 1, 1, 0, 0], [1, 1, 1, 1, 1], [1, 1, 1, 1, 0]])
+    assert overrun(mask, 4) == (3, 1, 5)
+    assert overrun(mask, 5) == (3, 0, 5)
+    assert overrun(Mask([]), 5) == (0, 0, 0)
+
+
 def test_targets_take_the_fused_mlp_and_leave_the_vision_tower():
     assert re.fullmatch(TARGETS, "model.language_model.layers.3.mlp.gate_up_proj")
     assert re.fullmatch(TARGETS, "model.language_model.layers.3.mlp.down_proj")
