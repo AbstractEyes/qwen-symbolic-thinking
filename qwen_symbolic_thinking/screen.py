@@ -19,7 +19,7 @@ import time
 from collections import defaultdict
 from datetime import datetime, timezone
 
-from . import REPO, __version__, chain, prompts
+from . import REPO, __version__, chain, family, prompts
 from .hub import fetch, ship, token
 from .template import stop_ids
 
@@ -77,9 +77,10 @@ def vlm_class():
     return cls
 
 
-def load_vlm(src: str, classes: list | None = None, **kwargs):
+def load_vlm(src: str, classes: list | None = None, trust_remote_code: bool = False, **kwargs):
     """The model through the multimodal auto class, or through the image-text-to-text class for a configuration the first does
-    not map (which families each class maps differs between transformers versions); any other error surfaces as it is."""
+    not map (which families each class maps differs between transformers versions); with trust_remote_code, the repository's
+    own classes, the causal-LM class last (Phi-4-reasoning-vision registers only that one). Any other error surfaces as it is."""
     if classes is None:
         classes = [vlm_class()]
         try:
@@ -88,6 +89,11 @@ def load_vlm(src: str, classes: list | None = None, **kwargs):
                 classes.append(AutoModelForImageTextToText)
         except ImportError:
             pass
+        if trust_remote_code:
+            from transformers import AutoModelForCausalLM
+            classes.append(AutoModelForCausalLM)
+    if trust_remote_code:
+        kwargs["trust_remote_code"] = True
     first = None
     for cls in classes:
         try:
@@ -138,9 +144,9 @@ def fetch_images(items: list, cache_dir: str, workers: int = 16) -> dict:
     return out
 
 
-def messages(form: str, it: dict, examples: dict, image=None, system: str | None = None) -> list:
+def messages(form: str, it: dict, examples: dict, image=None, system: str | None = None, mark: str | None = None) -> list:
     """The conversation of one screen row: the user turn (the picture, when the form takes one, and the form's text), after a
-    system turn when a system prompt is given."""
+    system turn when a system prompt is given. With a picture marker (family.marker) the content is one string."""
     if form == "bare":
         text = prompts.bare(it["depth"])
     elif form == "shown":
@@ -157,21 +163,34 @@ def messages(form: str, it: dict, examples: dict, image=None, system: str | None
         text = prompts.spec_full(it["depth"], it["spec"])
     else:
         raise ValueError(f"unknown form {form!r}")
-    content = ([{"type": "image", "image": image}] if image is not None else []) + [{"type": "text", "text": text}]
-    return ([{"role": "system", "content": system}] if system else []) + [{"role": "user", "content": content}]
+    return ([{"role": "system", "content": system}] if system else []) + [{"role": "user", "content": family.content(text, image, mark)}]
 
 
-def load_model(model_id: str, thinking: bool, adapter: str | None = None, adapter_subfolder: str | None = None):
+def model_source(model_id: str, trust_remote_code: bool = False, revision: str | None = None) -> str:
+    """Where the weights load from: the id as it is, or, for a model whose repository code runs (trust_remote_code), a local
+    snapshot at the pinned revision (Phi-4-reasoning-vision's loader reads its own vision weights only from a local folder)."""
+    from .hub import resolve_model
+    src = resolve_model(model_id)
+    if trust_remote_code and not os.path.isdir(src):
+        from huggingface_hub import snapshot_download
+        src = snapshot_download(src, revision=revision, token=token() or None)
+    return src
+
+
+def load_model(model_id: str, thinking: bool, adapter: str | None = None, adapter_subfolder: str | None = None,
+               trust_remote_code: bool = False, revision: str | None = None):
     """The processor and the model on the card; with an adapter (a local folder or a Hub repo, with a subfolder), the LoRA
-    weights are merged into the model. A 'hub:<path>' model id is a full fine-tune shipped under the project repo."""
+    weights are merged into the model. A 'hub:<path>' model id is a full fine-tune shipped under the project repo. With
+    trust_remote_code the repository's own code loads (from a snapshot at the pinned revision)."""
     import torch
     from transformers import AutoProcessor
-    from .hub import resolve_model
     _listen()
-    model_id = resolve_model(model_id)
-    processor = AutoProcessor.from_pretrained(model_id)
+    src = model_source(model_id, trust_remote_code, revision)
+    processor = AutoProcessor.from_pretrained(src, trust_remote_code=trust_remote_code)
     processor.tokenizer.padding_side = "left"
-    model = load_vlm(model_id, dtype=torch.bfloat16, device_map="cuda")
+    model = load_vlm(src, trust_remote_code=trust_remote_code, dtype=torch.bfloat16, device_map="cuda")
+    family.prepare_processor(processor, model)
+    family.prepare_inference(model)
     if adapter:
         from peft import PeftModel
         kwargs = {"subfolder": adapter_subfolder} if adapter_subfolder else {}
@@ -231,19 +250,21 @@ def generate(processor, model, convs: list, images: list, max_new_tokens: int, t
         texts = [processor.apply_chat_template(c, add_generation_prompt=True, tokenize=False, enable_thinking=thinking) for c in convs]
     except TypeError:  # a processor that takes no template switch; the parse strips any thinking and the summary counts it
         texts = [processor.apply_chat_template(c, add_generation_prompt=True, tokenize=False) for c in convs]
-    inputs = encode(processor, texts, images, padding=True).to(model.device)
+    inputs = encode(processor, texts, family.fill_images(model, images), padding=True).to(model.device)
     pad = processor.tokenizer.pad_token_id   # Gemma's pad id is 0: a falsy id is still an id
     gen = {"max_new_tokens": max_new_tokens, "do_sample": False, "eos_token_id": stop_ids(processor, model),
            "pad_token_id": pad if pad is not None else processor.tokenizer.eos_token_id}
     if sampling:
         gen.update(sampling, do_sample=True)
     with torch.no_grad():
-        out = model.generate(**inputs, **gen)
-    new = out[:, inputs["input_ids"].shape[1]:]
+        kwargs, start = family.generation_inputs(model, inputs)
+        out = model.generate(**kwargs, **gen)
+    new = out[:, start:]
     if thinking:
         decoded = [plain(t, processor.tokenizer) for t in processor.batch_decode(new, skip_special_tokens=False)]
     else:
         decoded = processor.batch_decode(new, skip_special_tokens=True)
+    decoded = [family.clean(t) for t in decoded]
     lengths = [int((row != gen["pad_token_id"]).sum()) for row in new]
     return decoded, lengths
 
@@ -308,9 +329,10 @@ def run(models: list, inputs: str = "hub:screens/inputs/screen_v1.json", out_dir
         forms: tuple = FORMS, n_images: int | None = None, n_specs: int | None = None, batch: int = 4,
         max_new_tokens: int = 700, thinking: bool = False, sampling: dict | None = None, repo: str = REPO,
         do_ship: bool = True, adapter: str | None = None, adapter_subfolder: str | None = None, tag: str = "",
-        system: str | None = None) -> dict:
+        system: str | None = None, trust_remote_code: bool = False, revision: str | None = None) -> dict:
     """The screen over every model and form; results and summaries on disk and on the Hub (screens/<stamp>[_<tag>]/). With
-    system (see prompts.system) every row's conversation opens with that system turn."""
+    system (see prompts.system) every row's conversation opens with that system turn. trust_remote_code / revision: for a
+    family whose repository code runs (see family), pinned to a revision."""
     stamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S") + (f"_{tag}" if tag else "")
     out_dir = os.path.join(out_dir, stamp)
     os.makedirs(out_dir, exist_ok=True)
@@ -336,8 +358,9 @@ def run(models: list, inputs: str = "hub:screens/inputs/screen_v1.json", out_dir
     for model_id in models:
         print(f"\n== {model_id}" + (f" + {adapter}/{adapter_subfolder or ''}" if adapter else ""), flush=True)
         t_load = time.time()
-        processor, model = load_model(model_id, thinking, adapter, adapter_subfolder)
-        print(f"  loaded in {time.time() - t_load:.0f} s", flush=True)
+        processor, model = load_model(model_id, thinking, adapter, adapter_subfolder, trust_remote_code, revision)
+        mark = family.marker(model)
+        print(f"  loaded in {time.time() - t_load:.0f} s" + (f" ({family.model_type(model)}: picture marker {mark})" if mark else ""), flush=True)
         if system_text:
             print(f"  system prompt {system!r}: {len(processor.tokenizer(system_text)['input_ids'])} tokens before every row", flush=True)
         results = []
@@ -346,7 +369,7 @@ def run(models: list, inputs: str = "hub:screens/inputs/screen_v1.json", out_dir
             jobs = []
             for it in todo:
                 im = None if form in SPEC_FORMS else pictures[it["id"]]
-                jobs.append((it, messages(form, it, data.get("examples", {}), im, system_text), im))
+                jobs.append((it, messages(form, it, data.get("examples", {}), im, system_text, mark), im))
             t_form, done = time.time(), 0
             for start in range(0, len(jobs), batch):
                 group = jobs[start:start + batch]

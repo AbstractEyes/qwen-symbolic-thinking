@@ -10,9 +10,16 @@ def turn_end(processor) -> str:
     taken. A training example is the generation prompt (thinking off) + the answer + this, so the model learns to write the row
     exactly where it will be asked to at inference."""
     marker = "ANSWERMARKER"
-    text = processor.apply_chat_template([{"role": "user", "content": [{"type": "text", "text": "q"}]},
-                                          {"role": "assistant", "content": [{"type": "text", "text": marker}]}],
-                                         add_generation_prompt=False, tokenize=False)
+    try:
+        text = processor.apply_chat_template([{"role": "user", "content": [{"type": "text", "text": "q"}]},
+                                              {"role": "assistant", "content": [{"type": "text", "text": marker}]}],
+                                             add_generation_prompt=False, tokenize=False)
+    except Exception as first:   # a template that concatenates the content as a string (Phi-4-reasoning-vision)
+        try:
+            text = processor.apply_chat_template([{"role": "user", "content": "q"}, {"role": "assistant", "content": marker}],
+                                                 add_generation_prompt=False, tokenize=False)
+        except Exception:
+            raise first from None
     assert marker in text, "the chat template did not render the assistant turn's text"
     end = text[text.rindex(marker) + len(marker):]
     if not end.strip():

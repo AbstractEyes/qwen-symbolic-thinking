@@ -21,6 +21,7 @@ dependencies = [
   "huggingface_hub>=0.24",
   "requests>=2.31",
   "pillow>=10",
+  "einops>=0.8",   # Molmo2's image processor (repository code) imports it
 ]
 
 [project.optional-dependencies]

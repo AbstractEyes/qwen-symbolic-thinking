@@ -54,8 +54,8 @@ time; nothing is redistributed here. The specification rows are the dataset's ow
 ## Install
 
 ```
-pip install git+https://github.com/AbstractEyes/qwen-symbolic-thinking@v0.1.30
-pip install "qwen-symbolic-thinking[screen] @ git+https://github.com/AbstractEyes/qwen-symbolic-thinking@v0.1.30"   # with torch, transformers 5, accelerate, peft
+pip install git+https://github.com/AbstractEyes/qwen-symbolic-thinking@v0.1.31
+pip install "qwen-symbolic-thinking[screen] @ git+https://github.com/AbstractEyes/qwen-symbolic-thinking@v0.1.31"   # with torch, transformers 5, accelerate, peft
 ```
 
 Qwen3.5 needs transformers 5 (the model code lives under `transformers.models.qwen3_5`); the preflight says so if it is missing.
@@ -204,6 +204,34 @@ takes, and the LoRA pattern also names the fused gate-and-up projection some lan
 a template writes nothing after an answer (GLM-4V opens the next turn instead), a training row ends with the tokenizer's
 end-of-sequence token, one of the ids generation stops on. A new family starts where Qwen and Gemma started: the base screens, then
 an arm under Lucia v1's recipe.
+
+Two families run their makers' repository code: Phi-4-reasoning-vision-15B and Molmo2-O-7B. A spec asks for it with
+`"trust_remote_code": true` and a pinned `"revision"` in its train, screen or extract settings, and the code loads from a local
+snapshot at that commit. That code was written against transformers 4.56 and 4.57; Phi-4's image processor subclasses a module that
+transformers 5 rewrote. So these runs carry `"transformers": "==4.57.6"` and go to their own queue, `runs/queue_remote_code.json`,
+run by [`remote_code.ipynb`](https://colab.research.google.com/github/AbstractEyes/qwen-symbolic-thinking/blob/main/notebooks/remote_code.ipynb)
+on that release. The queue checks each spec against the installed transformers (`queue.transformers_fits`); a spec without the
+field runs on transformers 5 or later, so neither kind of card takes the other's runs. `family.py` holds what differs.
+
+Phi-4-reasoning-vision:
+
+- Its processor has no chat template; the tokenizer's renders the conversation.
+- That template takes a message's content as one string, so a picture row is written `<image>`, a newline, then the text.
+- The model assigns a batch's pictures to its rows in order, one per row, so in a batch with any picture, each row without one
+  gets a blank picture whose features go unused.
+- Its own generation from token ids keeps the text attention mask after the first step, which is wrong for every padded row. The
+  multimodal embeddings are built first (left-padded), and batched generation runs from those.
+- A leading `<nothink>` tag is dropped from its answers.
+
+Molmo2:
+
+- Its processor inserts its start token assuming left padding.
+- Under the right padding of a training batch, the processor marks the padding as attended, so the mask is rebuilt from the pad
+  id.
+
+Neither family keeps its language model inside a `language_model` module, so the LoRA pattern names their layers from the root:
+`model.layers.N` (a fused `qkv_proj`) for Phi-4, and `model.transformer.blocks.N` (`att_proj`, `attn_out`, `ff_proj`, `ff_out`)
+for Molmo2.
 
 ## The prompt enhancers of Qwen-Image 2.1
 

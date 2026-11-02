@@ -19,7 +19,7 @@ import random
 import time
 from datetime import datetime, timezone
 
-from . import REPO, __version__, chain, prompts
+from . import REPO, __version__, chain, family, prompts
 from .hub import model_short, resolve_model, ship
 from .extract import fetch_images                # by url list or by locator (a pretrain shard row, a Hub file, a zip member)
 from .screen import encode, load_inputs, load_vlm, preflight
@@ -30,8 +30,13 @@ from .template import stop_ids, turn_end                 # the template's turn e
 # in_proj_z, out_proj; in_proj_qkvz in the Qwen3-Next naming). The tiny gate projections (in_proj_a, in_proj_b) are not adapted.
 # Gemma 4's language model (model.language_model.layers.N.self_attn / .mlp) carries the same seven names, so one pattern serves both;
 # GLM-4V's MLP fuses the gate and up projections into one (gate_up_proj), named here so the whole MLP adapts there too.
-TARGETS = (r".*language_model.*\.(q_proj|k_proj|v_proj|o_proj|gate_proj|up_proj|gate_up_proj|down_proj|in_proj_qkv|in_proj_z|"
-           r"in_proj_qkvz|out_proj)$")
+# Two families keep their language model outside a `language_model` module, so their layers are named from the root: Phi-4-
+# reasoning-vision (model.layers.N: a fused qkv_proj, o_proj, gate_up_proj, down_proj) and Molmo2 (model.transformer.blocks.N:
+# att_proj, attn_out, ff_proj, ff_out); their vision towers (model.vision_tower..., model.vision_backbone...) stay out.
+TARGETS = (r"(.*language_model.*\.(q_proj|k_proj|v_proj|o_proj|gate_proj|up_proj|gate_up_proj|down_proj|in_proj_qkv|in_proj_z|"
+           r"in_proj_qkvz|out_proj)"
+           r"|model\.layers\.\d+\.(self_attn\.(qkv_proj|o_proj)|mlp\.(gate_up_proj|down_proj))"
+           r"|model\.transformer\.blocks\.\d+\.(self_attn\.(att_proj|attn_out)|mlp\.(ff_proj|ff_out)))$")
 PICTURE_FORMS = ("short", "full")
 
 
@@ -44,17 +49,18 @@ def overrun(attention_mask, max_len: int) -> tuple:
 SPEC_FORMS = ("spec_short", "spec_full")
 
 
-def conversation(it: dict, form: str, image=None, system: str | None = None) -> tuple:
-    """(the messages, the answer text) of one item under one form: the user turn, after a system turn when a system prompt is given."""
+def conversation(it: dict, form: str, image=None, system: str | None = None, mark: str | None = None) -> tuple:
+    """(the messages, the answer text) of one item under one form: the user turn, after a system turn when a system prompt is given.
+    With a picture marker (family.marker) the user content is one string."""
     depth = it["depth"]
     if form == "short":
-        user, answer = [{"type": "image", "image": image}, {"type": "text", "text": prompts.short(depth)}], chain.render(it)
+        user, answer = family.content(prompts.short(depth), image, mark), chain.render(it)
     elif form == "full":
-        user, answer = [{"type": "image", "image": image}, {"type": "text", "text": prompts.full(depth)}], chain.render(it, full=True)
+        user, answer = family.content(prompts.full(depth), image, mark), chain.render(it, full=True)
     elif form == "spec_short":
-        user, answer = [{"type": "text", "text": prompts.spec_short(depth, it["spec"])}], chain.render(it)
+        user, answer = family.content(prompts.spec_short(depth, it["spec"]), None, mark), chain.render(it)
     elif form == "spec_full":
-        user, answer = [{"type": "text", "text": prompts.spec_full(depth, it["spec"])}], chain.render(it, full=True)
+        user, answer = family.content(prompts.spec_full(depth, it["spec"]), None, mark), chain.render(it, full=True)
     else:
         raise ValueError(f"unknown form {form!r}")
     return ([{"role": "system", "content": system}] if system else []) + [{"role": "user", "content": user}], answer
@@ -77,8 +83,10 @@ class Collator:
     """A batch from (item, form) pairs: the prompt rendered through the chat template (thinking off), the answer and the turn end
     appended, the images beside; labels cover the answer only. The prompt length of each pair is cached across epochs."""
 
-    def __init__(self, processor, pictures: dict, max_len: int, system: str | None = None):
+    def __init__(self, processor, pictures: dict, max_len: int, system: str | None = None, mark: str | None = None,
+                 kind: str = ""):
         self.processor, self.pictures, self.max_len, self.prefix_len, self.system = processor, pictures, max_len, {}, system
+        self.mark, self.kind = mark, kind   # the picture marker and the family key (family.marker, family.model_type)
         self.turn_end = turn_end(processor)
         self.collated = self.cut = self.longest = 0   # examples collated, examples longer than max_len (tail cut), the longest
 
@@ -91,12 +99,13 @@ class Collator:
         texts, images, lengths = [], [], []
         for it, form in pairs:
             image = self.pictures.get(it["id"]) if it["kind"] == "image" else None
-            messages, answer = conversation(it, form, image, self.system)
+            messages, answer = conversation(it, form, image, self.system, self.mark)
             prefix = self.processor.apply_chat_template(messages, add_generation_prompt=True, tokenize=False, enable_thinking=False)
             texts.append(prefix + answer + self.turn_end)
             images.append(image)                      # one slot per text: None for a specification row
             lengths.append(self.prefix_length((it["id"], form), prefix, image))
-        batch = encode(self.processor, texts, images, padding=True)
+        batch = encode(self.processor, texts, family.fill_images(self.kind, images), padding=True)
+        family.fix_padding(self.kind, batch, self.processor.tokenizer.pad_token_id)
         n, cut, longest = overrun(batch["attention_mask"], self.max_len)
         self.collated, self.cut, self.longest = self.collated + n, self.cut + cut, max(self.longest, longest)
         labels = batch["input_ids"].clone()
@@ -159,7 +168,8 @@ def run(model_id: str = "Qwen/Qwen3.5-9B", inputs="hub:sft/sft_v1.json", out_dir
         rank: int = 32, alpha: int = 64, dropout: float = 0.05, lr: float = 2e-4, epochs: float = 1.0, batch: int = 8,
         grad_accum: int = 2, max_len: int = 2048, warmup: float = 0.03, n_items: int | None = None, ship_every: int | None = None,
         repo: str = REPO, do_ship: bool = True, seed: int = 20261030, tag: str = "", init_adapter: str | None = None,
-        system: str | None = None) -> dict:
+        system: str | None = None, trust_remote_code: bool = False, revision: str | None = None,
+        targets: str | None = None) -> dict:
     """Train the adapter; return {adapter_dir, path_in_repo, steps, s_per_step, train_loss, ...}. With init_adapter (see
     adapter_source) training continues from that trained adapter instead of a fresh LoRA; its rank and alpha must be the ones passed.
     With system (see prompts.system) every example carries that system turn before its user turn. Rank 0 is a full fine-tune of
@@ -196,13 +206,23 @@ def run(model_id: str = "Qwen/Qwen3.5-9B", inputs="hub:sft/sft_v1.json", out_dir
     print(f"train {stamp}: {len(items)} items ({n_img} with a picture), {len(pairs)} examples by form {forms}; images fetched in "
           f"{time.time() - t0:.0f} s", flush=True)
 
-    processor = AutoProcessor.from_pretrained(src)
+    if trust_remote_code and not os.path.isdir(src):   # the repository's code runs from a snapshot at the pinned revision
+        from huggingface_hub import snapshot_download
+        from .hub import token as hub_token
+        src = snapshot_download(src, revision=revision, token=hub_token() or None)
+    processor = AutoProcessor.from_pretrained(src, trust_remote_code=trust_remote_code)
     processor.tokenizer.padding_side = "right"
     system_text = prompts.system(system)
     system_tokens = len(processor.tokenizer(system_text)["input_ids"]) if system_text else 0
     if system_text:
         print(f"system prompt {system!r}: {system_tokens} tokens before every example", flush=True)
-    model = load_vlm(src, dtype=torch.float32 if full else torch.bfloat16, device_map="cuda")
+    model = load_vlm(src, trust_remote_code=trust_remote_code, dtype=torch.float32 if full else torch.bfloat16, device_map="cuda")
+    family.prepare_processor(processor, model)
+    mark = family.marker(model)
+    targets = targets or TARGETS
+    if trust_remote_code or mark:
+        print(f"  {family.model_type(model)}" + (f": picture marker {mark}" if mark else "")
+              + (f"; repository code at {revision}" if trust_remote_code else ""), flush=True)
     model.config.use_cache = False
     model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
     model.enable_input_require_grads()
@@ -222,7 +242,7 @@ def run(model_id: str = "Qwen/Qwen3.5-9B", inputs="hub:sft/sft_v1.json", out_dir
         cfg = model.peft_config["default"]
         assert (cfg.r, cfg.lora_alpha) == (rank, alpha), f"the adapter is r{cfg.r} alpha {cfg.lora_alpha}; pass its own rank and alpha"
     else:
-        config = LoraConfig(r=rank, lora_alpha=alpha, lora_dropout=dropout, bias="none", target_modules=TARGETS,
+        config = LoraConfig(r=rank, lora_alpha=alpha, lora_dropout=dropout, bias="none", target_modules=targets,
                             task_type=TaskType.CAUSAL_LM)
         model = get_peft_model(model, config)
     if not full:
@@ -267,7 +287,7 @@ def run(model_id: str = "Qwen/Qwen3.5-9B", inputs="hub:sft/sft_v1.json", out_dir
                 model.save_pretrained(adapter_dir)
                 ship(adapter_dir, f"{path_in_repo}/step_{state.global_step}", f"{short} r{rank} {stamp}: step {state.global_step}", repo)
 
-    collate = Collator(processor, pictures, max_len, system_text)
+    collate = Collator(processor, pictures, max_len, system_text, mark, family.model_type(model))
     pic = next((p for p in pairs if p[1] in PICTURE_FORMS and pictures.get(p[0]["id"]) is not None), None)
     spc = next((p for p in pairs if p[1] in SPEC_FORMS), None)
     if pic and spc:   # a mixed batch encodes before the first step (a family whose processor takes pictures differently fails here, not at step 1)
@@ -292,7 +312,8 @@ def run(model_id: str = "Qwen/Qwen3.5-9B", inputs="hub:sft/sft_v1.json", out_dir
                "epochs": epochs, "batch": batch, "grad_accum": grad_accum, "max_len": max_len, "items": len(items),
                "items_with_picture": n_img, "examples": len(pairs), "examples_by_form": forms, "steps": result.global_step,
                "train_loss": result.training_loss, "s_per_step": round((time.time() - t0) / max(result.global_step, 1), 2),
-               "train_min": round((time.time() - t0) / 60, 1), "lora_modules": report, "targets": TARGETS, "inputs": inputs,
+               "train_min": round((time.time() - t0) / 60, 1), "lora_modules": report, "targets": targets, "inputs": inputs,
+               "model_type": family.model_type(model), "trust_remote_code": trust_remote_code, "revision": revision,
                "init_adapter": init_adapter, "system": system, "system_tokens": system_tokens, "path_in_repo": path_in_repo,
                "collated_examples": collate.collated, "examples_cut_at_max_len": collate.cut, "longest_example_tokens": collate.longest,
                "env": env, "log": log}

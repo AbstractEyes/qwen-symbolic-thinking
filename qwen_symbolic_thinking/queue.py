@@ -80,6 +80,9 @@ def run_spec(spec: dict, lane: str, repo: str, out_dir: str) -> dict:
         s = dict(DEFAULT_SCREEN, **spec.get("screen", {}))
         s["forms"] = tuple(s["forms"])
         s.setdefault("system", spec["train"].get("system"))     # an arm trained with a system prompt is screened with it
+        for key in ("trust_remote_code", "revision"):              # and an arm on a family's repository code is screened on the same code
+            if spec["train"].get(key) is not None:
+                s.setdefault(key, spec["train"][key])
         if t.get("full"):                                        # a full fine-tune: the trained folder is the model
             result["screen"] = screen.run(models=[t["adapter_dir"]], tag=name, repo=repo, **s)
         else:
@@ -144,8 +147,9 @@ def after_specs(spec: dict, path_in_repo: str, repo: str = REPO) -> list:
             x.setdefault("model_id", train.get("model_id", "Qwen/Qwen3.5-9B"))
             x.setdefault("adapter", repo)
             x.setdefault("adapter_subfolder", final)
-        if train.get("system") is not None:
-            x.setdefault("system", train["system"])
+        for key in ("system", "trust_remote_code", "revision"):
+            if train.get(key) is not None:
+                x.setdefault(key, train[key])
         out.append({**entry, "extract": x})
     return out
 
@@ -155,12 +159,36 @@ def _version(text: str) -> tuple:
 
 
 def runnable_here(spec: dict) -> bool:
-    """Whether this package can run a spec: one that says it "needs" a newer package version is left in the queue for a lane
-    that has it (no marker is written, so nothing is burnt)."""
+    """Whether this lane can run a spec: one that says it "needs" a newer package version, or a transformers release this lane
+    does not have (transformers_fits), is left in the queue for a lane that has it (no marker is written, so nothing is burnt)."""
     needs = spec.get("needs")
     try:
-        return needs is None or _version(needs) <= _version(__version__)
+        fits = needs is None or _version(needs) <= _version(__version__)
     except ValueError:
+        fits = True
+    return fits and transformers_fits(spec)
+
+
+def _transformers_version() -> str:
+    try:
+        from importlib.metadata import version
+        return version("transformers")
+    except Exception:
+        return ""
+
+
+def transformers_fits(spec: dict, installed: str | None = None) -> bool:
+    """Whether the installed transformers (or installed, when given) fits a spec's "transformers" requirement, a version
+    specifier: "==4.57.6" for the families whose repository code was built on that release (see family). A spec without one
+    runs on transformers 5 or later, so a lane installed on the older release takes only the runs that ask for it. Without
+    transformers installed, or with a specifier that does not parse, nothing holds the spec back."""
+    installed = installed or _transformers_version()
+    if not installed:
+        return True
+    try:
+        from packaging.specifiers import SpecifierSet
+        return SpecifierSet(spec.get("transformers") or ">=5").contains(installed, prereleases=True)
+    except Exception:
         return True
 
 
