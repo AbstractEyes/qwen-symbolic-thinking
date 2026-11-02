@@ -158,6 +158,12 @@ def test_family_hooks_by_model_type():
         raise AssertionError("only Phi-4's processor renders through its tokenizer")
 
 
+def test_input_grads_except_molmo2():
+    from qwen_symbolic_thinking import family
+    assert not family.input_grads("molmo2")
+    assert family.input_grads("phi4-siglip") and family.input_grads("qwen3_5") and family.input_grads(Model("gemma4"))
+
+
 def test_prepare_processor_pads_ministral3_pictures():
     from qwen_symbolic_thinking import family
 

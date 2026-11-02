@@ -10,7 +10,9 @@ processor's picture handling) is shared.
   wrong for every padded row of a batch, so batched generation runs from embeddings built here, left-padded; its answers may
   open with a mode tag, <nothink>, which is not part of the row.
 - molmo2 (Molmo2): the processor inserts the start token assuming left padding (generation pads left); under the right padding
-  of a training batch it marks the padding as attended, so the training mask is rebuilt from the pad id.
+  of a training batch it marks the padding as attended, so the training mask is rebuilt from the pad id; the model adds its
+  picture features into the embedding output in place, which torch refuses on an output marked as requiring grad, so it trains
+  without that mark (input_grads).
 - mistral3 (Ministral 3): the processor config leaves do_pad null, which transformers 5 reads as no padding, so pictures of
   different sizes cannot share a batch ("stack expects each tensor to be equal size"); the image processor pads, its class
   default (the model crops each picture back by image_sizes).
@@ -45,6 +47,13 @@ def content(text: str, image=None, mark: str | None = None):
     if mark:
         return (mark + "\n" if image is not None else "") + text
     return ([{"type": "image", "image": image}] if image is not None else []) + [{"type": "text", "text": text}]
+
+
+def input_grads(model_or_config) -> bool:
+    """Whether training marks the input embeddings' output as requiring grad (the usual companion of gradient checkpointing over
+    a frozen embedding table; the checkpointing here is non-reentrant, which does not need it). Not for Molmo2: its in-place
+    picture add on that output fails ("a view of a leaf Variable that requires grad is being used in an in-place operation")."""
+    return model_type(model_or_config) != MOLMO2
 
 
 def fix_padding(model_or_config, batch, pad_id) -> None:

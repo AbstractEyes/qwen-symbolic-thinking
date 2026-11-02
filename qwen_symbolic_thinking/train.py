@@ -225,7 +225,8 @@ def run(model_id: str = "Qwen/Qwen3.5-9B", inputs="hub:sft/sft_v1.json", out_dir
               + (f"; repository code at {revision}" if trust_remote_code else ""), flush=True)
     model.config.use_cache = False
     model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
-    model.enable_input_require_grads()
+    if family.input_grads(model):
+        model.enable_input_require_grads()
     if full:
         n_train = 0
         for name, p in model.named_parameters():
