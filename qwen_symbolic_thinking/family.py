@@ -56,6 +56,19 @@ def input_grads(model_or_config) -> bool:
     return model_type(model_or_config) != MOLMO2
 
 
+def drop_input_grads(model) -> bool:
+    """Remove the input-embedding grad hook (transformers' enable_input_require_grads) from a model that must train without it
+    (input_grads False). Skipping our own call is not enough: PEFT installs the same hook when it wraps a model whose layers already
+    checkpoint. Returns whether a hook was removed."""
+    base = model.get_base_model() if hasattr(model, "get_base_model") else model
+    hook = getattr(base, "_require_grads_hook", None)
+    if hook is None:
+        return False
+    hook.remove()
+    del base._require_grads_hook
+    return True
+
+
 def fix_padding(model_or_config, batch, pad_id) -> None:
     """A right-padded training batch whose processor marked the padding as attended (Molmo2): the mask is rebuilt from the pad
     id, which no text token takes."""

@@ -202,6 +202,36 @@ def test_input_grads_except_molmo2():
     assert family.input_grads("phi4-siglip") and family.input_grads("qwen3_5") and family.input_grads(Model("gemma4"))
 
 
+def test_drop_input_grads_removes_the_hook_peft_installs():
+    """PEFT installs transformers' input-embedding grad hook (_require_grads_hook) on a model whose layers checkpoint; for Molmo2
+    it is removed from the wrapped model, once."""
+    from qwen_symbolic_thinking import family
+
+    class Hook:
+        removed = 0
+
+        def remove(self):
+            Hook.removed += 1
+
+    class Base:
+        pass
+
+    class Wrapped:
+        def __init__(self, base):
+            self.base = base
+
+        def get_base_model(self):
+            return self.base
+
+    base = Base()
+    base._require_grads_hook = Hook()
+    assert family.drop_input_grads(Wrapped(base)) is True and Hook.removed == 1 and not hasattr(base, "_require_grads_hook")
+    assert family.drop_input_grads(Wrapped(base)) is False and Hook.removed == 1
+    plain = Base()
+    plain._require_grads_hook = Hook()
+    assert family.drop_input_grads(plain) is True and Hook.removed == 2
+
+
 def test_prepare_processor_pads_ministral3_pictures():
     from qwen_symbolic_thinking import family
 

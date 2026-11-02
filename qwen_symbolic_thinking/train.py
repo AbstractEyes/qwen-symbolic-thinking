@@ -251,7 +251,8 @@ def run(model_id: str = "Qwen/Qwen3.5-9B", inputs="hub:sft/sft_v1.json", out_dir
               + (f"; image processor {image_settings}" if image_settings else ""), flush=True)
     model.config.use_cache = False
     model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
-    if family.input_grads(model):
+    input_grads = family.input_grads(model)
+    if input_grads:
         model.enable_input_require_grads()
     if full:
         n_train = 0
@@ -272,6 +273,8 @@ def run(model_id: str = "Qwen/Qwen3.5-9B", inputs="hub:sft/sft_v1.json", out_dir
         config = LoraConfig(r=rank, lora_alpha=alpha, lora_dropout=dropout, bias="none", target_modules=targets,
                             task_type=TaskType.CAUSAL_LM)
         model = get_peft_model(model, config)
+    if not full and not input_grads and family.drop_input_grads(model):   # PEFT re-installs the hook on a checkpointing model
+        print("  the input-embedding grad hook PEFT installed is removed (this family adds its pictures to that output in place)", flush=True)
     if not full:
         report = lora_report(model)
         print("LoRA modules by name:", report, flush=True)
