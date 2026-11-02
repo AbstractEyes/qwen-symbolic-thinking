@@ -331,7 +331,7 @@ def run(manifest: str, out_repo: str = "AbstractPhil/qwen-thinking-images", mode
         n: int | None = None, batch: int = 64, max_new_tokens: int = 400, min_backed: float = 0.2, min_said: float = 0.1,
         chunk: int = 512, max_side: int = MAX_SIDE, out_dir: str = "/content/extract", repo_type: str = "dataset",
         do_ship: bool = True, tag: str = "pilot", system: str | None = None, trust_remote_code: bool = False,
-        revision: str | None = None) -> dict:
+        revision: str | None = None, image_settings: dict | None = None) -> dict:
     """Extract whole rows for the manifest's pictures (those of one split, of some sources or all but some); the next chunk's
     pictures are fetched while the current chunk generates (bounded to max_side); a batch that runs out of memory is retried
     in halves; ship extractions/<stamp>_<tag>/ (rows.jsonl, missing.jsonl, summary.json) to the dataset repo.
@@ -347,7 +347,7 @@ def run(manifest: str, out_repo: str = "AbstractPhil/qwen-thinking-images", mode
     system_text = prompts.system(system)
     print(f"extract {stamp}: {len(rows)} pictures from {len({r['source'] for r in rows})} sources; {model_id}"
           + (f" + {adapter}/{adapter_subfolder or ''}" if adapter else "") + (f"; system prompt {system!r}" if system_text else ""), flush=True)
-    processor, model = load_model(model_id, False, adapter, adapter_subfolder, trust_remote_code, revision)
+    processor, model = load_model(model_id, False, adapter, adapter_subfolder, trust_remote_code, revision, image_settings)
     mark = family.marker(model)
     results_path = os.path.join(out_dir, "rows.jsonl")
     counts, reasons, t0, n_done, n_tok, n_missing = collections.Counter(), collections.Counter(), time.time(), 0, 0, 0
@@ -432,7 +432,7 @@ def run(manifest: str, out_repo: str = "AbstractPhil/qwen-thinking-images", mode
                           "said": (sum(said[src]) / len(said[src])) if said[src] else None,
                           "backed": (sum(backed[src]) / len(backed[src])) if backed[src] else None}
     summary = {"package": __version__, "model": model_id, "adapter": adapter, "adapter_subfolder": adapter_subfolder, "system": system,
-               "trust_remote_code": trust_remote_code, "revision": revision,
+               "trust_remote_code": trust_remote_code, "revision": revision, "image_settings": image_settings,
                "manifest": manifest, "split": split, "sources": list(sources) if sources else None, "exclude": list(exclude) if exclude else None,
                "batch": batch, "chunk": chunk, "max_side": max_side, "max_new_tokens": max_new_tokens, "floors": {"min_backed": min_backed, "min_said": min_said},
                "rows": len(rows), "pictures_missing": n_missing, "pictures_missing_by_source": dict(missing_by_source), "oom": dict(oom),

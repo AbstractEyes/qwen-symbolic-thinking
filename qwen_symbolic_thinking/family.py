@@ -74,6 +74,30 @@ def prepare_processor(processor, model_or_config) -> None:
         images.do_pad = True
 
 
+def apply_image_settings(processor, settings: dict | None) -> dict:
+    """Settings a spec gives the processor's image processor (attributes it already has), returned as applied: a picture budget,
+    e.g. {"max_num_patches": 1024} for Phi-4, whose pictures otherwise expand to up to 3,600 tokens. An unknown name is an error."""
+    if not settings:
+        return {}
+    images = getattr(processor, "image_processor", None)
+    for key, value in settings.items():
+        assert images is not None and hasattr(images, key), f"the image processor has no setting {key!r}"
+        setattr(images, key, value)
+    return dict(settings)
+
+
+def thinking_kwargs(processor, thinking: bool) -> dict:
+    """The thinking switch for apply_chat_template when the template reads one (enable_thinking: Qwen3.5, Gemma 4, GLM-4V);
+    nothing when the template text is readable and never names it (Ministral, North, Molmo2), so transformers does not warn on
+    every row that an unused keyword reached the processor."""
+    for owner in (processor, getattr(processor, "tokenizer", None)):
+        template = getattr(owner, "chat_template", None)
+        if template:
+            text = template if isinstance(template, str) else " ".join(str(v) for v in dict(template).values())
+            return {"enable_thinking": thinking} if "enable_thinking" in text else {}
+    return {"enable_thinking": thinking}
+
+
 def prepare_inference(model) -> None:
     """Settings a family needs for batched generation: Phi-4 re-pads its multimodal sequence on the side its config names."""
     if model_type(model) == PHI4:

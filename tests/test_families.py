@@ -158,6 +158,44 @@ def test_family_hooks_by_model_type():
         raise AssertionError("only Phi-4's processor renders through its tokenizer")
 
 
+def test_image_settings_and_thinking_kwargs():
+    from qwen_symbolic_thinking import family
+
+    class Images:
+        max_num_patches = 3600
+
+    p = Proc()
+    p.image_processor = Images()
+    assert family.apply_image_settings(p, {"max_num_patches": 1024}) == {"max_num_patches": 1024}
+    assert p.image_processor.max_num_patches == 1024
+    assert family.apply_image_settings(p, None) == {} and p.image_processor.max_num_patches == 1024
+    try:
+        family.apply_image_settings(p, {"no_such_setting": 1})
+    except AssertionError:
+        pass
+    else:
+        raise AssertionError("an unknown setting must fail")
+    q = Proc()
+    q.chat_template = "{% if enable_thinking is defined and enable_thinking is false %}<think></think>{% endif %}"
+    assert family.thinking_kwargs(q, False) == {"enable_thinking": False}
+    q.chat_template = "{% for m in messages %}{{ m['content'] }}{% endfor %}"
+    assert family.thinking_kwargs(q, False) == {}
+    q.chat_template = {"default": "{{ enable_thinking }}", "tool_use": "x"}
+    assert family.thinking_kwargs(q, True) == {"enable_thinking": True}
+    r = Proc()                                   # no template on the processor: the tokenizer's is read
+    r.tokenizer.chat_template = "<|im_start|>{{ m }}"
+    assert family.thinking_kwargs(r, False) == {}
+    assert family.thinking_kwargs(Proc(), False) == {"enable_thinking": False}   # nothing readable: passed as before
+
+
+def test_after_specs_carry_the_image_settings():
+    from qwen_symbolic_thinking.queue import after_specs
+    spec = {"name": "G", "kind": "train",
+            "train": {"model_id": "m", "trust_remote_code": True, "revision": "r", "image_settings": {"max_num_patches": 1024}},
+            "after": [{"name": "P", "kind": "extract", "extract": {"manifest": "x", "split": "probe"}}]}
+    assert after_specs(spec, "lora/m/r32/s")[0]["extract"]["image_settings"] == {"max_num_patches": 1024}
+
+
 def test_input_grads_except_molmo2():
     from qwen_symbolic_thinking import family
     assert not family.input_grads("molmo2")

@@ -54,8 +54,8 @@ time; nothing is redistributed here. The specification rows are the dataset's ow
 ## Install
 
 ```
-pip install git+https://github.com/AbstractEyes/qwen-symbolic-thinking@v0.1.33
-pip install "qwen-symbolic-thinking[screen] @ git+https://github.com/AbstractEyes/qwen-symbolic-thinking@v0.1.33"   # with torch, transformers 5, accelerate, peft
+pip install git+https://github.com/AbstractEyes/qwen-symbolic-thinking@v0.1.34
+pip install "qwen-symbolic-thinking[screen] @ git+https://github.com/AbstractEyes/qwen-symbolic-thinking@v0.1.34"   # with torch, transformers 5, accelerate, peft
 ```
 
 Qwen3.5 needs transformers 5 (the model code lives under `transformers.models.qwen3_5`); the preflight says so if it is missing.
@@ -224,6 +224,9 @@ Phi-4-reasoning-vision:
 - Its own generation from token ids keeps the text attention mask after the first step, which is wrong for every padded row. The
   multimodal embeddings are built first (left-padded), and batched generation runs from those.
 - A leading `<nothink>` tag is dropped from its answers.
+- Each picture expands inside the model to up to 3,600 tokens (16-px patches, no merge), about three times Qwen's count. A spec's
+  `"image_settings"` (in its train, screen or extract settings) sets the image processor, e.g. `{"max_num_patches": 1024}` for a
+  picture budget near Qwen's. An arm's screen and reads take its training's settings.
 
 Molmo2:
 

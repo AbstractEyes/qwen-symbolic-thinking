@@ -178,10 +178,11 @@ def model_source(model_id: str, trust_remote_code: bool = False, revision: str |
 
 
 def load_model(model_id: str, thinking: bool, adapter: str | None = None, adapter_subfolder: str | None = None,
-               trust_remote_code: bool = False, revision: str | None = None):
+               trust_remote_code: bool = False, revision: str | None = None, image_settings: dict | None = None):
     """The processor and the model on the card; with an adapter (a local folder or a Hub repo, with a subfolder), the LoRA
     weights are merged into the model. A 'hub:<path>' model id is a full fine-tune shipped under the project repo. With
-    trust_remote_code the repository's own code loads (from a snapshot at the pinned revision)."""
+    trust_remote_code the repository's own code loads (from a snapshot at the pinned revision); image_settings go to the
+    image processor (family.apply_image_settings)."""
     import torch
     from transformers import AutoProcessor
     _listen()
@@ -190,6 +191,7 @@ def load_model(model_id: str, thinking: bool, adapter: str | None = None, adapte
     processor.tokenizer.padding_side = "left"
     model = load_vlm(src, trust_remote_code=trust_remote_code, dtype=torch.bfloat16, device_map="cuda")
     family.prepare_processor(processor, model)
+    family.apply_image_settings(processor, image_settings)
     family.prepare_inference(model)
     if adapter:
         from peft import PeftModel
@@ -247,7 +249,8 @@ def generate(processor, model, convs: list, images: list, max_new_tokens: int, t
     returns (texts, new_tokens). With thinking on, the text keeps the thinking as <think>...</think> for the parse."""
     import torch
     try:
-        texts = [processor.apply_chat_template(c, add_generation_prompt=True, tokenize=False, enable_thinking=thinking) for c in convs]
+        texts = [processor.apply_chat_template(c, add_generation_prompt=True, tokenize=False, **family.thinking_kwargs(processor, thinking))
+                 for c in convs]
     except TypeError:  # a processor that takes no template switch; the parse strips any thinking and the summary counts it
         texts = [processor.apply_chat_template(c, add_generation_prompt=True, tokenize=False) for c in convs]
     inputs = encode(processor, texts, family.fill_images(model, images), padding=True).to(model.device)
@@ -329,10 +332,12 @@ def run(models: list, inputs: str = "hub:screens/inputs/screen_v1.json", out_dir
         forms: tuple = FORMS, n_images: int | None = None, n_specs: int | None = None, batch: int = 4,
         max_new_tokens: int = 700, thinking: bool = False, sampling: dict | None = None, repo: str = REPO,
         do_ship: bool = True, adapter: str | None = None, adapter_subfolder: str | None = None, tag: str = "",
-        system: str | None = None, trust_remote_code: bool = False, revision: str | None = None) -> dict:
+        system: str | None = None, trust_remote_code: bool = False, revision: str | None = None,
+        image_settings: dict | None = None) -> dict:
     """The screen over every model and form; results and summaries on disk and on the Hub (screens/<stamp>[_<tag>]/). With
     system (see prompts.system) every row's conversation opens with that system turn. trust_remote_code / revision: for a
-    family whose repository code runs (see family), pinned to a revision."""
+    family whose repository code runs (see family), pinned to a revision; image_settings: the image processor's (a picture
+    budget)."""
     stamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S") + (f"_{tag}" if tag else "")
     out_dir = os.path.join(out_dir, stamp)
     os.makedirs(out_dir, exist_ok=True)
@@ -352,13 +357,14 @@ def run(models: list, inputs: str = "hub:screens/inputs/screen_v1.json", out_dir
         json.dump({**env, "models": models, "forms": list(forms), "inputs": inputs, "batch": batch,
                    "max_new_tokens": max_new_tokens, "thinking": thinking, "sampling": sampling,
                    "adapter": adapter, "adapter_subfolder": adapter_subfolder, "system": system,
+                   "trust_remote_code": trust_remote_code, "revision": revision, "image_settings": image_settings,
                    "n_images": len(image_items), "n_specs": len(spec_items)}, fh, indent=1)
     results_path = os.path.join(out_dir, "results.jsonl")
     all_results = []
     for model_id in models:
         print(f"\n== {model_id}" + (f" + {adapter}/{adapter_subfolder or ''}" if adapter else ""), flush=True)
         t_load = time.time()
-        processor, model = load_model(model_id, thinking, adapter, adapter_subfolder, trust_remote_code, revision)
+        processor, model = load_model(model_id, thinking, adapter, adapter_subfolder, trust_remote_code, revision, image_settings)
         mark = family.marker(model)
         print(f"  loaded in {time.time() - t_load:.0f} s" + (f" ({family.model_type(model)}: picture marker {mark})" if mark else ""), flush=True)
         if system_text:

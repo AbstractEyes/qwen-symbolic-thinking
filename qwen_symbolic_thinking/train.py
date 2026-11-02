@@ -100,7 +100,8 @@ class Collator:
         for it, form in pairs:
             image = self.pictures.get(it["id"]) if it["kind"] == "image" else None
             messages, answer = conversation(it, form, image, self.system, self.mark)
-            prefix = self.processor.apply_chat_template(messages, add_generation_prompt=True, tokenize=False, enable_thinking=False)
+            prefix = self.processor.apply_chat_template(messages, add_generation_prompt=True, tokenize=False,
+                                                        **family.thinking_kwargs(self.processor, False))
             texts.append(prefix + answer + self.turn_end)
             images.append(image)                      # one slot per text: None for a specification row
             lengths.append(self.prefix_length((it["id"], form), prefix, image))
@@ -169,7 +170,7 @@ def run(model_id: str = "Qwen/Qwen3.5-9B", inputs="hub:sft/sft_v1.json", out_dir
         grad_accum: int = 2, max_len: int = 2048, warmup: float = 0.03, n_items: int | None = None, ship_every: int | None = None,
         repo: str = REPO, do_ship: bool = True, seed: int = 20261030, tag: str = "", init_adapter: str | None = None,
         system: str | None = None, trust_remote_code: bool = False, revision: str | None = None,
-        targets: str | None = None) -> dict:
+        targets: str | None = None, image_settings: dict | None = None) -> dict:
     """Train the adapter; return {adapter_dir, path_in_repo, steps, s_per_step, train_loss, ...}. With init_adapter (see
     adapter_source) training continues from that trained adapter instead of a fresh LoRA; its rank and alpha must be the ones passed.
     With system (see prompts.system) every example carries that system turn before its user turn. Rank 0 is a full fine-tune of
@@ -218,11 +219,13 @@ def run(model_id: str = "Qwen/Qwen3.5-9B", inputs="hub:sft/sft_v1.json", out_dir
         print(f"system prompt {system!r}: {system_tokens} tokens before every example", flush=True)
     model = load_vlm(src, trust_remote_code=trust_remote_code, dtype=torch.float32 if full else torch.bfloat16, device_map="cuda")
     family.prepare_processor(processor, model)
+    family.apply_image_settings(processor, image_settings)
     mark = family.marker(model)
     targets = targets or TARGETS
-    if trust_remote_code or mark:
+    if trust_remote_code or mark or image_settings:
         print(f"  {family.model_type(model)}" + (f": picture marker {mark}" if mark else "")
-              + (f"; repository code at {revision}" if trust_remote_code else ""), flush=True)
+              + (f"; repository code at {revision}" if trust_remote_code else "")
+              + (f"; image processor {image_settings}" if image_settings else ""), flush=True)
     model.config.use_cache = False
     model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
     if family.input_grads(model):
@@ -315,6 +318,7 @@ def run(model_id: str = "Qwen/Qwen3.5-9B", inputs="hub:sft/sft_v1.json", out_dir
                "train_loss": result.training_loss, "s_per_step": round((time.time() - t0) / max(result.global_step, 1), 2),
                "train_min": round((time.time() - t0) / 60, 1), "lora_modules": report, "targets": targets, "inputs": inputs,
                "model_type": family.model_type(model), "trust_remote_code": trust_remote_code, "revision": revision,
+               "image_settings": image_settings,
                "init_adapter": init_adapter, "system": system, "system_tokens": system_tokens, "path_in_repo": path_in_repo,
                "collated_examples": collate.collated, "examples_cut_at_max_len": collate.cut, "longest_example_tokens": collate.longest,
                "env": env, "log": log}
