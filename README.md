@@ -54,8 +54,8 @@ time; nothing is redistributed here. The specification rows are the dataset's ow
 ## Install
 
 ```
-pip install git+https://github.com/AbstractEyes/qwen-symbolic-thinking@v0.1.28
-pip install "qwen-symbolic-thinking[screen] @ git+https://github.com/AbstractEyes/qwen-symbolic-thinking@v0.1.28"   # with torch, transformers 5, accelerate, peft
+pip install git+https://github.com/AbstractEyes/qwen-symbolic-thinking@v0.1.29
+pip install "qwen-symbolic-thinking[screen] @ git+https://github.com/AbstractEyes/qwen-symbolic-thinking@v0.1.29"   # with torch, transformers 5, accelerate, peft
 ```
 
 Qwen3.5 needs transformers 5 (the model code lives under `transformers.models.qwen3_5`); the preflight says so if it is missing.
@@ -200,8 +200,10 @@ architecture is read for its sight at its early checkpoints before its reads.
 
 Further families take the same path: the model loads through the multimodal auto class (or the image-text-to-text class where the
 first does not map its configuration), a batch's pictures go to the processor as one flat list or as one list per text, whichever it
-takes, and the LoRA pattern also names the fused gate-and-up projection some language models use (`gate_up_proj` in GLM-4V). A new
-family starts where Qwen and Gemma started: the base screens, then an arm under Lucia v1's recipe.
+takes, and the LoRA pattern also names the fused gate-and-up projection some language models use (`gate_up_proj` in GLM-4V). Where
+a template writes nothing after an answer (GLM-4V opens the next turn instead), a training row ends with the tokenizer's
+end-of-sequence token, one of the ids generation stops on. A new family starts where Qwen and Gemma started: the base screens, then
+an arm under Lucia v1's recipe.
 
 ## The prompt enhancers of Qwen-Image 2.1
 

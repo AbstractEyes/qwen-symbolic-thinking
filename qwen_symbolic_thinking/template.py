@@ -15,7 +15,12 @@ def turn_end(processor) -> str:
                                          add_generation_prompt=False, tokenize=False)
     assert marker in text, "the chat template did not render the assistant turn's text"
     end = text[text.rindex(marker) + len(marker):]
-    assert end.strip(), f"the chat template writes nothing after an assistant turn: {text[-80:]!r}"
+    if not end.strip():
+        # A template that writes nothing after an answer (GLM-4V opens the next turn instead): the answer ends with the tokenizer's
+        # end-of-sequence token, which is among the ids generation stops on.
+        eos = getattr(getattr(processor, "tokenizer", None), "eos_token", None)
+        assert eos, f"the chat template writes nothing after an assistant turn and the tokenizer names no end token: {text[-80:]!r}"
+        return eos
     return end
 
 

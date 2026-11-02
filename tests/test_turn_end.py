@@ -88,6 +88,38 @@ def test_turn_end_refuses_a_template_without_the_answer():
         raise AssertionError("a template that drops the answer must be refused")
 
 
+class GlmLike:
+    """Renders the way GLM-4V's template does: the answer, then nothing (the next turn would open with <|user|>)."""
+
+    class tokenizer:
+        eos_token = "<|endoftext|>"
+
+    def apply_chat_template(self, messages, add_generation_prompt=False, tokenize=False, **kw):
+        out = "[gMASK]<sop>"
+        for m in messages:
+            text = "".join(c["text"] for c in m["content"] if c["type"] == "text")
+            out += f"<|{m['role']}|>\n{text}"
+        if add_generation_prompt:
+            out += "<|assistant|>\n<think></think>\n"
+        return out
+
+
+def test_turn_end_glm_takes_the_end_of_sequence_token():
+    assert turn_end(GlmLike()) == "<|endoftext|>"
+
+
+def test_turn_end_refuses_nothing_after_the_answer_without_an_end_token():
+    class NoEos(GlmLike):
+        class tokenizer:
+            eos_token = None
+    try:
+        turn_end(NoEos())
+    except AssertionError as e:
+        assert "names no end token" in str(e)
+    else:
+        raise AssertionError("with nothing after the answer and no end token, the template must be refused")
+
+
 def test_training_text_matches_the_generation_prompt():
     """A training example is the generation prompt + the answer + the turn end: for Gemma the empty thought block the model will
     see at inference is inside the prompt, so the answer follows it in training too."""
