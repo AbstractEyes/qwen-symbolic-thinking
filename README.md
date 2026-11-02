@@ -162,9 +162,11 @@ reads; the sizes differ in what they can hold, and the cards say so.
 | 2B | Qwen/Qwen3.5-2B | [`lucia_2b.ipynb`](https://colab.research.google.com/github/AbstractEyes/qwen-symbolic-thinking/blob/main/notebooks/lucia_2b.ipynb) | `runs/queue_lucia_2b.json` | the recipe verbatim; answers without thinking by default, as every Lucia is trained and read |
 | 0.8B | Qwen/Qwen3.5-0.8B | [`lucia_0.8b.ipynb`](https://colab.research.google.com/github/AbstractEyes/qwen-symbolic-thinking/blob/main/notebooks/lucia_0.8b.ipynb) | `runs/queue_lucia_0.8b.json` | two arms, the recipe verbatim and a set tweaked for a small model (three epochs, lr 3e-4); the release takes the better by the held-out reads |
 
-## Other families: Gemma 4
+## Other families: Gemma 4 (the Ulisse line)
 
-The trainer, the screen and the extraction are written against the chat template, not against one model: the prompt is rendered
+The released Gemma 4 adapters are the Ulisse line ([Ulisse E4B](https://huggingface.co/AbstractPhil/gemma-4-e4b-think-symbolic-image),
+[Ulisse 12B](https://huggingface.co/AbstractPhil/gemma-4-12b-think-symbolic-image); tag `ulisse-v1`), beside the Lucia line on
+Qwen3.5. The trainer, the screen and the extraction are written against the chat template, not against one model: the prompt is rendered
 with the template's own thinking switch off, the training text is the generation prompt + the row + whatever the template writes
 after an answer (`train.turn_end`, read from the template itself: `<|im_end|>` for Qwen3.5, `<turn|>` for Gemma 4), and the
 LoRA targets are the language model's projection names, which Gemma 4 shares (both its architectures: `gemma4`, the E2B and E4B
