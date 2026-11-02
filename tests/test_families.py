@@ -158,6 +158,23 @@ def test_family_hooks_by_model_type():
         raise AssertionError("only Phi-4's processor renders through its tokenizer")
 
 
+def test_prepare_processor_pads_ministral3_pictures():
+    from qwen_symbolic_thinking import family
+
+    class Images:
+        do_pad = None
+
+    p = Proc()
+    p.image_processor = Images()
+    family.prepare_processor(p, "mistral3")
+    assert p.image_processor.do_pad is True
+    q = Proc()
+    q.image_processor = Images()
+    family.prepare_processor(q, "qwen3_5")
+    assert q.image_processor.do_pad is None
+    family.prepare_processor(Proc(), "mistral3")          # a processor without an image processor is left as it is
+
+
 def test_fill_images_gives_phi4_rows_a_slot_each():
     from qwen_symbolic_thinking import family
     a = Pic("a")

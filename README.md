@@ -54,8 +54,8 @@ time; nothing is redistributed here. The specification rows are the dataset's ow
 ## Install
 
 ```
-pip install git+https://github.com/AbstractEyes/qwen-symbolic-thinking@v0.1.31
-pip install "qwen-symbolic-thinking[screen] @ git+https://github.com/AbstractEyes/qwen-symbolic-thinking@v0.1.31"   # with torch, transformers 5, accelerate, peft
+pip install git+https://github.com/AbstractEyes/qwen-symbolic-thinking@v0.1.32
+pip install "qwen-symbolic-thinking[screen] @ git+https://github.com/AbstractEyes/qwen-symbolic-thinking@v0.1.32"   # with torch, transformers 5, accelerate, peft
 ```
 
 Qwen3.5 needs transformers 5 (the model code lives under `transformers.models.qwen3_5`); the preflight says so if it is missing.
@@ -202,8 +202,10 @@ Further families take the same path: the model loads through the multimodal auto
 first does not map its configuration), a batch's pictures go to the processor as one flat list or as one list per text, whichever it
 takes, and the LoRA pattern also names the fused gate-and-up projection some language models use (`gate_up_proj` in GLM-4V). Where
 a template writes nothing after an answer (GLM-4V opens the next turn instead), a training row ends with the tokenizer's
-end-of-sequence token, one of the ids generation stops on. A new family starts where Qwen and Gemma started: the base screens, then
-an arm under Lucia v1's recipe.
+end-of-sequence token, one of the ids generation stops on. Ministral 3's processor config leaves `do_pad` null. Transformers 5 reads
+that as no padding, so pictures of different sizes cannot share a batch. Its image processor is set to pad, which is the class
+default; the model crops each picture back by its size. A new family starts where Qwen and Gemma started: the base screens, then an
+arm under Lucia v1's recipe.
 
 Two families run their makers' repository code: Phi-4-reasoning-vision-15B and Molmo2-O-7B. A spec asks for it with
 `"trust_remote_code": true` and a pinned `"revision"` in its train, screen or extract settings, and the code loads from a local

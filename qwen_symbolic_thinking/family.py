@@ -11,6 +11,9 @@ processor's picture handling) is shared.
   open with a mode tag, <nothink>, which is not part of the row.
 - molmo2 (Molmo2): the processor inserts the start token assuming left padding (generation pads left); under the right padding
   of a training batch it marks the padding as attended, so the training mask is rebuilt from the pad id.
+- mistral3 (Ministral 3): the processor config leaves do_pad null, which transformers 5 reads as no padding, so pictures of
+  different sizes cannot share a batch ("stack expects each tensor to be equal size"); the image processor pads, its class
+  default (the model crops each picture back by image_sizes).
 
 The repository code of these families runs only when a spec asks for it (trust_remote_code), loaded from a local snapshot at a
 pinned revision (the Phi-4 loader reads its own vision weights only from a local folder), on the transformers release it was
@@ -20,6 +23,7 @@ import re
 
 PHI4 = "phi4-siglip"
 MOLMO2 = "molmo2"
+MISTRAL3 = "mistral3"
 _MODE_TAG = re.compile(r"^\s*<nothink>\s*")
 
 
@@ -51,9 +55,14 @@ def fix_padding(model_or_config, batch, pad_id) -> None:
 
 
 def prepare_processor(processor, model_or_config) -> None:
-    """A processor that renders the family's chat template: Phi-4's processor has none of its own, its tokenizer's renders."""
-    if model_type(model_or_config) == PHI4:
+    """A processor that renders the family's chat template and batches its pictures: Phi-4's processor has no chat template
+    of its own (its tokenizer's renders); Ministral 3's image processor is told to pad (its config leaves do_pad null)."""
+    kind = model_type(model_or_config)
+    if kind == PHI4:
         processor.apply_chat_template = processor.tokenizer.apply_chat_template
+    images = getattr(processor, "image_processor", None)
+    if kind == MISTRAL3 and images is not None and getattr(images, "do_pad", True) is None:
+        images.do_pad = True
 
 
 def prepare_inference(model) -> None:
