@@ -191,7 +191,9 @@ def load_model(model_id: str, thinking: bool, adapter: str | None = None, adapte
     processor.tokenizer.padding_side = "left"
     model = load_vlm(src, trust_remote_code=trust_remote_code, dtype=torch.bfloat16, device_map="cuda")
     family.prepare_processor(processor, model)
-    family.prepare_model(model)
+    note = family.prepare_model(model)
+    if note:
+        print(f"  {note}", flush=True)
     family.apply_image_settings(processor, image_settings)
     family.prepare_inference(model)
     if adapter:

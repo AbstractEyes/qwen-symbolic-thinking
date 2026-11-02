@@ -15,7 +15,9 @@ processor's picture handling) is shared.
   without that mark (input_grads).
 - mistral3 (Ministral 3): the processor config leaves do_pad null, which transformers 5 reads as no padding, so pictures of
   different sizes cannot share a batch ("stack expects each tensor to be equal size"); the image processor pads, its class
-  default (the model crops each picture back by image_sizes).
+  default (the model crops each picture back by image_sizes). Its vision tower packs every picture of a batch into one sequence
+  under a dense block mask; in a 64-picture batch on the card (bf16, about 250,000 patches) the pictures after the first few came
+  out wrong, while one at a time they read right, so the vision tower takes a batch's pictures one at a time (prepare_model).
 
 The repository code of these families runs only when a spec asks for it (trust_remote_code), loaded from a local snapshot at a
 pinned revision (the Phi-4 loader reads its own vision weights only from a local folder), on the transformers release it was
@@ -56,16 +58,26 @@ def input_grads(model_or_config) -> bool:
     return model_type(model_or_config) != MOLMO2
 
 
-def prepare_model(model) -> bool:
+def prepare_model(model) -> str | None:
+    """Patch a loaded model where its family's own code fails our batches; returns a one-line note of what changed (None when the
+    family needs nothing or the model is patched already). Molmo2: its image batching per picture row (mixed_batches). Ministral 3:
+    its vision tower one picture at a time (pictures_one_at_a_time)."""
+    kind = model_type(model)
+    if kind == MOLMO2:
+        return mixed_batches(model)
+    if kind == MISTRAL3:
+        return pictures_one_at_a_time(model)
+    return None
+
+
+def mixed_batches(model) -> str | None:
     """Molmo2's build_batched_images fails its own check on a batch that mixes picture rows with text-only rows: for an example
     without a picture it builds a one-item offset list where the example has no picture to offset. Training batches mix them (the
     specification rows carry no picture), so the call runs on the picture rows and the text-only rows get the padding the function
-    uses for missing crops and patches (-1), which the vision backbone masks out. Returns whether the model was patched."""
-    if model_type(model) != MOLMO2:
-        return False
+    uses for missing crops and patches (-1), which the vision backbone masks out."""
     inner = next((m for m in model.modules() if hasattr(type(m), "build_batched_images")), None)
     if inner is None or getattr(inner, "_mixed_batches", False):
-        return False
+        return None
     original, end_id = inner.build_batched_images, inner.config.image_end_token_id
 
     def build_batched_images(input_ids, pixel_values, image_token_pooling, image_grids, image_num_crops):
@@ -84,7 +96,41 @@ def prepare_model(model) -> bool:
 
     inner.build_batched_images = build_batched_images
     inner._mixed_batches = True
-    return True
+    return "batches that mix picture rows and text-only rows go through this family's own image batching per picture row"
+
+
+def pictures_one_at_a_time(model) -> str | None:
+    """Ministral 3's get_image_features runs the vision tower once over all of a batch's pictures, packed into one sequence whose
+    dense block mask keeps each picture to itself. In a 64-picture batch on the card (bf16, about 250,000 patches) the pictures after
+    the first few came out wrong, while one at a time they read right. The wrapped call runs the original once per picture and joins
+    the outputs in order (the per-picture features, and the hidden states along the sequence, as the packed call lays them out);
+    the batch stays whole for the language model. A call with one picture, or one that returns a tuple, goes through as it was."""
+    inner = next((m for m in model.modules()
+                  if "multi_modal_projector" in dict(m.named_children()) and hasattr(type(m), "get_image_features")), None)
+    if inner is None or getattr(inner, "_pictures_one_at_a_time", False):
+        return None
+    original = inner.get_image_features
+
+    def get_image_features(pixel_values, image_sizes, vision_feature_layer=None, **kwargs):
+        n = 0 if pixel_values is None else int(pixel_values.shape[0])
+        if n <= 1:
+            return original(pixel_values=pixel_values, image_sizes=image_sizes, vision_feature_layer=vision_feature_layer, **kwargs)
+        outs = [original(pixel_values=pixel_values[i:i + 1], image_sizes=image_sizes[i:i + 1],
+                         vision_feature_layer=vision_feature_layer, **kwargs) for i in range(n)]
+        if not all(hasattr(o, "pooler_output") for o in outs):
+            return original(pixel_values=pixel_values, image_sizes=image_sizes, vision_feature_layer=vision_feature_layer, **kwargs)
+        import torch
+        out = outs[0]
+        out.pooler_output = tuple(t for o in outs for t in o.pooler_output)
+        if all(getattr(o, "last_hidden_state", None) is not None for o in outs):
+            out.last_hidden_state = torch.cat([o.last_hidden_state for o in outs], dim=1)
+        if all(getattr(o, "hidden_states", None) for o in outs):
+            out.hidden_states = tuple(torch.cat(layer, dim=1) for layer in zip(*(o.hidden_states for o in outs)))
+        return out
+
+    inner.get_image_features = get_image_features
+    inner._pictures_one_at_a_time = True
+    return "the vision tower reads a batch's pictures one at a time (a packed batch of many pictures came out wrong on the card)"
 
 
 def drop_input_grads(model) -> bool:

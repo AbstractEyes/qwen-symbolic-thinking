@@ -204,7 +204,7 @@ def test_input_grads_except_molmo2():
 
 def test_prepare_model_leaves_other_families_alone():
     from qwen_symbolic_thinking import family
-    assert family.prepare_model(Model("qwen3_5")) is False and family.prepare_model(Model("phi4-siglip")) is False
+    assert family.prepare_model(Model("qwen3_5")) is None and family.prepare_model(Model("phi4-siglip")) is None
 
 
 def test_prepare_model_lets_molmo2_batch_text_only_rows_beside_pictures():
@@ -235,10 +235,52 @@ def test_prepare_model_lets_molmo2_batch_text_only_rows_beside_pictures():
     top = Top()
     ids = torch.tensor([[1, end, end], [1, 2, 3], [4, end, end]])
     kw = dict(pixel_values=None, image_token_pooling=None, image_grids=None, image_num_crops=None)
-    assert family.prepare_model(top) is True and family.prepare_model(top) is False
+    assert family.prepare_model(top) and family.prepare_model(top) is None
     images, pooling = top.model.build_batched_images(input_ids=ids, **kw)
     assert images.tolist() == [[0.0, 1.0], [-1.0, -1.0], [2.0, 3.0]]
     assert pooling.tolist() == [[0, 1, 2], [-1, -1, -1], [3, 4, 5]]
+
+
+def test_prepare_model_runs_ministral3_pictures_one_at_a_time():
+    """Ministral 3's vision tower takes a batch's pictures one at a time: the stand-in records each call's picture count and
+    returns, per picture, features and hidden states marked with the picture's index; the joined output keeps the batch's order
+    (features per picture, hidden states along the sequence) and a single picture goes through in one call."""
+    import types
+    import pytest
+    torch = pytest.importorskip("torch")
+    from qwen_symbolic_thinking import family
+    calls = []
+
+    class Inner(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.vision_tower, self.multi_modal_projector, self.language_model = (torch.nn.Identity() for _ in range(3))
+            self.config = types.SimpleNamespace(model_type="mistral3")
+
+        def get_image_features(self, pixel_values, image_sizes, vision_feature_layer=None, **kwargs):
+            calls.append(int(pixel_values.shape[0]))
+            marks = [float(v) for v in pixel_values[:, 0, 0, 0]]
+            seq = torch.tensor(marks).repeat_interleave(2).view(1, -1, 1)      # two patches a picture
+            return types.SimpleNamespace(pooler_output=tuple(torch.full((1, 3), m) for m in marks), last_hidden_state=seq,
+                                         hidden_states=(seq, seq + 10))
+
+    class Top(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.model = Inner()
+            self.config = self.model.config
+
+    top = Top()
+    pixels = torch.arange(3.0).view(3, 1, 1, 1).expand(3, 3, 4, 4).contiguous()
+    sizes = torch.tensor([[4, 4], [4, 2], [2, 4]])
+    assert family.prepare_model(top) and family.prepare_model(top) is None
+    out = top.model.get_image_features(pixel_values=pixels, image_sizes=sizes, return_dict=True)
+    assert calls == [1, 1, 1]
+    assert [float(t[0, 0]) for t in out.pooler_output] == [0.0, 1.0, 2.0]
+    assert out.last_hidden_state.flatten().tolist() == [0.0, 0.0, 1.0, 1.0, 2.0, 2.0]
+    assert out.hidden_states[1].flatten().tolist() == [10.0, 10.0, 11.0, 11.0, 12.0, 12.0]
+    top.model.get_image_features(pixel_values=pixels[:1], image_sizes=sizes[:1])
+    assert calls == [1, 1, 1, 1]
 
 
 def test_drop_input_grads_removes_the_hook_peft_installs():

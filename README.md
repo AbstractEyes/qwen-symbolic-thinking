@@ -54,8 +54,8 @@ time; nothing is redistributed here. The specification rows are the dataset's ow
 ## Install
 
 ```
-pip install git+https://github.com/AbstractEyes/qwen-symbolic-thinking@v0.1.37
-pip install "qwen-symbolic-thinking[screen] @ git+https://github.com/AbstractEyes/qwen-symbolic-thinking@v0.1.37"   # with torch, transformers 5, accelerate, peft
+pip install git+https://github.com/AbstractEyes/qwen-symbolic-thinking@v0.1.38
+pip install "qwen-symbolic-thinking[screen] @ git+https://github.com/AbstractEyes/qwen-symbolic-thinking@v0.1.38"   # with torch, transformers 5, accelerate, peft
 ```
 
 Qwen3.5 needs transformers 5 (the model code lives under `transformers.models.qwen3_5`); the preflight says so if it is missing.
@@ -204,8 +204,12 @@ takes, and the LoRA pattern also names the fused gate-and-up projection some lan
 a template writes nothing after an answer (GLM-4V opens the next turn instead), a training row ends with the tokenizer's
 end-of-sequence token, one of the ids generation stops on. Ministral 3's processor config leaves `do_pad` null. Transformers 5 reads
 that as no padding, so pictures of different sizes cannot share a batch. Its image processor is set to pad, which is the class
-default; the model crops each picture back by its size. A new family starts where Qwen and Gemma started: the base screens, then an
-arm under Lucia v1's recipe.
+default; the model crops each picture back by its size. Its vision tower packs all of a batch's pictures into one sequence; in a
+batch of 64 pictures on the card the pictures after the first few came out wrong (the held-out probe named the medium 322 times in
+500 at batch 64 and 415 one picture at a time), so from 0.1.38 the vision tower takes a batch's pictures one at a time
+(`family.prepare_model`) while the language model keeps the whole batch. A new family starts where Qwen and Gemma started: the
+base screens, then an arm under Lucia v1's recipe; read a new family's arm one picture at a time beside its batched read before
+trusting the batched one.
 
 Two families run their makers' repository code: Phi-4-reasoning-vision-15B and Molmo2-O-7B. A spec asks for it with
 `"trust_remote_code": true` and a pinned `"revision"` in its train, screen or extract settings, and the code loads from a local
