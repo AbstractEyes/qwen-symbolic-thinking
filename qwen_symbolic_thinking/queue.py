@@ -100,8 +100,9 @@ def run_spec(spec: dict, lane: str, repo: str, out_dir: str) -> dict:
     elif spec["kind"] == "extract":
         from . import extract
         x = dict(spec["extract"])
-        if "sources" in x and x["sources"] is not None:
-            x["sources"] = tuple(x["sources"])
+        for key in ("sources", "exclude", "helpers"):
+            if key in x and x[key] is not None:
+                x[key] = tuple(x[key])
         result["extract"] = {k: v for k, v in extract.run(**x, tag=name).items() if k not in ("env", "library_notes")}
     elif spec["kind"] == "screen":
         from . import screen

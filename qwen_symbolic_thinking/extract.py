@@ -29,6 +29,8 @@ from .synth import audit
 DEPTHS = {"quick": "simple", "closer": "medium", "long": "deep"}
 CAPTION_KEYS_IGNORED = ("vlm_0.8b_json", "animetimm_json")      # structured JSON captions are not grounding text
 MAX_SIDE = 1024          # a picture's longer side at most this many pixels before the processor (a 4,000 px portrait made batch 64 run out of memory)
+HELPERS = {"caption": "Helper caption", "tags": "Helper tags"}   # the lines an extraction may add after the ask, in this order
+TAGS_KEY = "animetimm_json"      # the booru tagger's structured caption, the source of the tags line
 
 
 def load_manifest(manifest: str) -> list:
@@ -45,6 +47,51 @@ def hint_of(row: dict) -> str:
     """The grounding text of a manifest row: every plain-text caption it carries, joined."""
     caps = row.get("captions") or {}
     return " ".join(str(v) for k, v in caps.items() if k not in CAPTION_KEYS_IGNORED and isinstance(v, str) and v.strip())
+
+
+def tag_line(raw) -> str:
+    """A structured caption (the booru tagger's JSON: subjects with their attributes, actions, setting) as one line,
+    'girl (solo) · pants (blue) · jeans · doing: standing'; empty when there is none or it does not parse."""
+    try:
+        d = json.loads(raw) if isinstance(raw, str) else raw
+    except ValueError:
+        return ""
+    if not isinstance(d, dict):
+        return ""
+    parts = []
+    for sub in d.get("subjects") or []:
+        if isinstance(sub, dict):
+            name = str(sub.get("name") or "").strip()
+            attrs = ", ".join(str(a).strip() for a in sub.get("attributes") or [] if str(a).strip())
+            if name:
+                parts.append(f"{name} ({attrs})" if attrs else name)
+        elif str(sub).strip():
+            parts.append(str(sub).strip())
+    actions = [str(a).strip() for a in d.get("actions") or [] if str(a).strip()]
+    if actions:
+        parts.append("doing: " + ", ".join(actions))
+    setting = str(d.get("setting") or "").strip()
+    if setting and setting != "unknown":
+        parts.append("setting: " + setting)
+    return " · ".join(parts)
+
+
+def helper_lines(row: dict, helpers: tuple) -> dict:
+    """The helper lines a manifest row gives, {kind: text}, for the kinds asked that it has: 'caption' (its plain-text captions,
+    as hint_of joins them) and 'tags' (the booru tagger's structured caption as one line)."""
+    out = {}
+    for kind in helpers:
+        if kind not in HELPERS:
+            raise ValueError(f"unknown helper {kind!r}: one of {sorted(HELPERS)}")
+        text = hint_of(row) if kind == "caption" else tag_line((row.get("captions") or {}).get(TAGS_KEY))
+        if text.strip():
+            out[kind] = text.strip()
+    return out
+
+
+def with_helpers(ask: str, lines: dict) -> str:
+    """The ask with the helper lines after it, one a line: 'Helper caption: ...', then 'Helper tags: ...'."""
+    return ask + "".join(f"\n{HELPERS[k]}: {lines[k]}" for k in HELPERS if k in lines)
 
 
 def bounded(im, max_side: int = MAX_SIDE):
@@ -331,11 +378,14 @@ def run(manifest: str, out_repo: str = "AbstractPhil/qwen-thinking-images", mode
         n: int | None = None, batch: int = 64, max_new_tokens: int = 400, min_backed: float = 0.2, min_said: float = 0.1,
         chunk: int = 512, max_side: int = MAX_SIDE, out_dir: str = "/content/extract", repo_type: str = "dataset",
         do_ship: bool = True, tag: str = "pilot", system: str | None = None, trust_remote_code: bool = False,
-        revision: str | None = None, image_settings: dict | None = None) -> dict:
+        revision: str | None = None, image_settings: dict | None = None, helpers: tuple | None = None) -> dict:
     """Extract whole rows for the manifest's pictures (those of one split, of some sources or all but some); the next chunk's
     pictures are fetched while the current chunk generates (bounded to max_side); a batch that runs out of memory is retried
     in halves; ship extractions/<stamp>_<tag>/ (rows.jsonl, missing.jsonl, summary.json) to the dataset repo.
-    trust_remote_code / revision: for a family whose repository code runs (see family), pinned to a revision."""
+    trust_remote_code / revision: for a family whose repository code runs (see family), pinned to a revision. helpers: kinds of
+    HELPERS ('caption', 'tags') whose lines follow the ask for each picture that has them (helper_lines); each row records the
+    lines it was given. A row's grounding read is against the same captions, so a helped extraction's said / backed are not
+    comparable to an unhelped one's."""
     from concurrent.futures import ThreadPoolExecutor
     import torch
     from huggingface_hub import HfApi
@@ -345,8 +395,14 @@ def run(manifest: str, out_repo: str = "AbstractPhil/qwen-thinking-images", mode
     env = preflight()
     rows = select_rows(load_manifest(manifest), split, sources, exclude, per_source, n)
     system_text = prompts.system(system)
+    helpers = tuple(helpers) if helpers else None
+    if helpers:
+        for kind in helpers:
+            if kind not in HELPERS:
+                raise ValueError(f"unknown helper {kind!r}: one of {sorted(HELPERS)}")
     print(f"extract {stamp}: {len(rows)} pictures from {len({r['source'] for r in rows})} sources; {model_id}"
-          + (f" + {adapter}/{adapter_subfolder or ''}" if adapter else "") + (f"; system prompt {system!r}" if system_text else ""), flush=True)
+          + (f" + {adapter}/{adapter_subfolder or ''}" if adapter else "") + (f"; system prompt {system!r}" if system_text else "")
+          + (f"; helper lines {list(helpers)}" if helpers else ""), flush=True)
     processor, model = load_model(model_id, False, adapter, adapter_subfolder, trust_remote_code, revision, image_settings)
     mark = family.marker(model)
     results_path = os.path.join(out_dir, "rows.jsonl")
@@ -362,10 +418,13 @@ def run(manifest: str, out_repo: str = "AbstractPhil/qwen-thinking-images", mode
         ims = fetch_images(group, img_dir, failures=fails, max_side=max_side)
         return ims, fails
 
+    def ask_of(r):
+        ask = prompts.full(DEPTHS.get(r.get("depth_plan"), "medium"))
+        return with_helpers(ask, helper_lines(r, helpers)) if helpers else ask
+
     def gen(part, pictures):
         head = [{"role": "system", "content": system_text}] if system_text else []
-        convs = [head + [{"role": "user", "content": family.content(prompts.full(DEPTHS.get(r.get("depth_plan"), "medium")),
-                                                                    pictures[r["sample_id"]], mark)}] for r in part]
+        convs = [head + [{"role": "user", "content": family.content(ask_of(r), pictures[r["sample_id"]], mark)}] for r in part]
         try:
             return generate(processor, model, convs, [pictures[r["sample_id"]] for r in part], max_new_tokens, False, None)
         except Exception as e:
@@ -415,10 +474,13 @@ def run(manifest: str, out_repo: str = "AbstractPhil/qwen-thinking-images", mode
                     if hint and scores.get("hint_said") is not None:
                         said[r["source"]].append(scores["hint_said"])
                         backed[r["source"]].append(scores["hint_backed"] or 0)
-                    fh.write(json.dumps({"sample_id": r["sample_id"], "source": r["source"], "group": r["group"], "depth": depth,
-                                         "text": text, "thoughts": parsed["thoughts"], "wordings": parsed["wordings"],
-                                         "questions": parsed["questions"], "scores": scores, "rejected": why,
-                                         "hinted": bool(hint), "image": r["image"]}, ensure_ascii=False) + "\n")
+                    out = {"sample_id": r["sample_id"], "source": r["source"], "group": r["group"], "depth": depth,
+                           "text": text, "thoughts": parsed["thoughts"], "wordings": parsed["wordings"],
+                           "questions": parsed["questions"], "scores": scores, "rejected": why,
+                           "hinted": bool(hint), "image": r["image"]}
+                    if helpers:
+                        out["helpers"] = helper_lines(r, helpers)
+                    fh.write(json.dumps(out, ensure_ascii=False) + "\n")
             n_done += len(part)
             spent = time.time() - t0
             print(f"  {n_done}/{len(rows)} rows, kept {counts['kept']} ({counts['kept'] / max(n_done, 1):.0%}), {spent:.0f} s spent, "
@@ -435,6 +497,7 @@ def run(manifest: str, out_repo: str = "AbstractPhil/qwen-thinking-images", mode
                "trust_remote_code": trust_remote_code, "revision": revision, "image_settings": image_settings,
                "manifest": manifest, "split": split, "sources": list(sources) if sources else None, "exclude": list(exclude) if exclude else None,
                "batch": batch, "chunk": chunk, "max_side": max_side, "max_new_tokens": max_new_tokens, "floors": {"min_backed": min_backed, "min_said": min_said},
+               "helpers": list(helpers) if helpers else None,
                "rows": len(rows), "pictures_missing": n_missing, "pictures_missing_by_source": dict(missing_by_source), "oom": dict(oom),
                "kept": counts["kept"], "rejected": dict(reasons),
                "s_per_row": round((time.time() - t0) / max(n_done, 1), 3), "tok_per_s": round(n_tok / max(time.time() - t0, 1e-9), 1),
