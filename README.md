@@ -54,8 +54,8 @@ time; nothing is redistributed here. The specification rows are the dataset's ow
 ## Install
 
 ```
-pip install git+https://github.com/AbstractEyes/qwen-symbolic-thinking@v0.1.39
-pip install "qwen-symbolic-thinking[screen] @ git+https://github.com/AbstractEyes/qwen-symbolic-thinking@v0.1.39"   # with torch, transformers 5, accelerate, peft
+pip install git+https://github.com/AbstractEyes/qwen-symbolic-thinking@v0.1.40
+pip install "qwen-symbolic-thinking[screen] @ git+https://github.com/AbstractEyes/qwen-symbolic-thinking@v0.1.40"   # with torch, transformers 5, accelerate, peft
 ```
 
 Qwen3.5 needs transformers 5 (the model code lives under `transformers.models.qwen3_5`); the preflight says so if it is missing.
@@ -81,6 +81,14 @@ the same screen in the trained forms (`full`, `short`, `spec_full`). Rank 0 is a
 train in fp32 under bf16 autocast (plain Adam at a full fine-tune's rate, 1e-5 to 2e-5; the vision tower frozen as under the
 LoRA), and the model ships in bf16 with its processor under `full/<model>/<stamp>_<tag>/final`, which every loader takes as the
 model id `hub:full/<model>/<stamp>_<tag>/final`. A queue spec that says `"needs": "0.1.18"` waits for a lane with that package.
+
+`keys` (from 0.1.40) sets how the answers' question keys and the specification forms' records are written. `"record"` (the
+default) keeps the dataset's record names (`thing position`; a relation's parts `rel1 a`, `rel1 rel`, `rel1 b`). `"relation"`
+writes every key as one word (`thing_position`), letters the things a row's relations join `relation_a`, `relation_b`,
+`relation_c`, ... in order of first appearance (a thing that recurs keeps its letter) and names a relation's word by its two ends
+(`relation_a_b`); the specification forms then list the records as `- key: value` under the same keys, so a key and its value are
+the same tokens in the prompt and in the answer's `question:` line. A train spec's `keys` reaches its screen. `max_steps` sets a
+run's length in steps instead of epochs (the cosine schedule and its warmup span those steps).
 
 `qwen_symbolic_thinking.synth.generate` makes synthetic picture items: the base model, shown two worked examples, thinks
 through pictures no row was written about; a chain passes the audit when it holds the form and the depth, defines nothing,

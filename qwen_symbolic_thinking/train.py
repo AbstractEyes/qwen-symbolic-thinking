@@ -49,18 +49,20 @@ def overrun(attention_mask, max_len: int) -> tuple:
 SPEC_FORMS = ("spec_short", "spec_full")
 
 
-def conversation(it: dict, form: str, image=None, system: str | None = None, mark: str | None = None) -> tuple:
+def conversation(it: dict, form: str, image=None, system: str | None = None, mark: str | None = None,
+                 keys: str = "record") -> tuple:
     """(the messages, the answer text) of one item under one form: the user turn, after a system turn when a system prompt is given.
-    With a picture marker (family.marker) the user content is one string."""
+    With a picture marker (family.marker) the user content is one string. keys (chain.KEYS): how the answer's question keys and
+    a specification's records are written, the same way on both sides."""
     depth = it["depth"]
     if form == "short":
-        user, answer = family.content(prompts.short(depth), image, mark), chain.render(it)
+        user, answer = family.content(prompts.short(depth), image, mark), chain.render(it, keys=keys)
     elif form == "full":
-        user, answer = family.content(prompts.full(depth), image, mark), chain.render(it, full=True)
+        user, answer = family.content(prompts.full(depth), image, mark), chain.render(it, full=True, keys=keys)
     elif form == "spec_short":
-        user, answer = family.content(prompts.spec_short(depth, it["spec"]), None, mark), chain.render(it)
+        user, answer = family.content(prompts.spec_short(depth, it["spec"], keys), None, mark), chain.render(it, keys=keys)
     elif form == "spec_full":
-        user, answer = family.content(prompts.spec_full(depth, it["spec"]), None, mark), chain.render(it, full=True)
+        user, answer = family.content(prompts.spec_full(depth, it["spec"], keys), None, mark), chain.render(it, full=True, keys=keys)
     else:
         raise ValueError(f"unknown form {form!r}")
     return ([{"role": "system", "content": system}] if system else []) + [{"role": "user", "content": user}], answer
@@ -84,9 +86,10 @@ class Collator:
     appended, the images beside; labels cover the answer only. The prompt length of each pair is cached across epochs."""
 
     def __init__(self, processor, pictures: dict, max_len: int, system: str | None = None, mark: str | None = None,
-                 kind: str = ""):
+                 kind: str = "", keys: str = "record"):
         self.processor, self.pictures, self.max_len, self.prefix_len, self.system = processor, pictures, max_len, {}, system
         self.mark, self.kind = mark, kind   # the picture marker and the family key (family.marker, family.model_type)
+        self.keys = keys                    # how question keys and records are written (chain.KEYS)
         self.turn_end = turn_end(processor)
         self.collated = self.cut = self.longest = 0   # examples collated, examples longer than max_len (tail cut), the longest
 
@@ -99,7 +102,7 @@ class Collator:
         texts, images, lengths = [], [], []
         for it, form in pairs:
             image = self.pictures.get(it["id"]) if it["kind"] == "image" else None
-            messages, answer = conversation(it, form, image, self.system, self.mark)
+            messages, answer = conversation(it, form, image, self.system, self.mark, self.keys)
             prefix = self.processor.apply_chat_template(messages, add_generation_prompt=True, tokenize=False,
                                                         **family.thinking_kwargs(self.processor, False))
             texts.append(prefix + answer + self.turn_end)
@@ -192,12 +195,18 @@ def run(model_id: str = "Qwen/Qwen3.5-9B", inputs="hub:sft/sft_v1.json", out_dir
         grad_accum: int = 2, max_len: int = 2048, warmup: float = 0.03, n_items: int | None = None, ship_every: int | None = None,
         repo: str = REPO, do_ship: bool = True, seed: int = 20261030, tag: str = "", init_adapter: str | None = None,
         system: str | None = None, trust_remote_code: bool = False, revision: str | None = None,
-        targets: str | None = None, image_settings: dict | None = None) -> dict:
+        targets: str | None = None, image_settings: dict | None = None, keys: str = "record",
+        max_steps: int | None = None) -> dict:
     """Train the adapter; return {adapter_dir, path_in_repo, steps, s_per_step, train_loss, ...}. With init_adapter (see
     adapter_source) training continues from that trained adapter instead of a fresh LoRA; its rank and alpha must be the ones passed.
     With system (see prompts.system) every example carries that system turn before its user turn. Rank 0 is a full fine-tune of
     the language model (fp32 weights under bf16 autocast; the vision tower frozen); adapter_dir then holds the whole model in bf16
-    with its processor. ship_every: the adapter ships every so many steps (100 by default; a full model ships only at the end)."""
+    with its processor. ship_every: the adapter ships every so many steps (100 by default; a full model ships only at the end).
+    keys (chain.KEYS): how the answers' question keys and the specification rows' records are written ("record", the dataset's
+    names, or "relation": relation_a, relation_b, ..., thing_position). max_steps: the run's length in steps instead of epochs (the
+    cosine schedule and its warmup span those steps)."""
+    if keys not in chain.KEYS:
+        raise ValueError(f"unknown keys {keys!r}: one of {chain.KEYS}")
     full = rank == 0
     import torch
     from transformers import AutoProcessor, Trainer, TrainerCallback, TrainingArguments
@@ -228,6 +237,8 @@ def run(model_id: str = "Qwen/Qwen3.5-9B", inputs="hub:sft/sft_v1.json", out_dir
         forms[form] = forms.get(form, 0) + 1
     print(f"train {stamp}: {len(items)} items ({n_img} with a picture), {len(pairs)} examples by form {forms}; images fetched in "
           f"{time.time() - t0:.0f} s", flush=True)
+    if keys != "record":
+        print(f"  question keys and records written as {keys!r} keys (thing_position; relation_a, relation_b, relation_a_b)", flush=True)
 
     if trust_remote_code and not os.path.isdir(src):   # the repository's code runs from a snapshot at the pinned revision
         from huggingface_hub import snapshot_download
@@ -285,7 +296,7 @@ def run(model_id: str = "Qwen/Qwen3.5-9B", inputs="hub:sft/sft_v1.json", out_dir
         model.print_trainable_parameters()
 
     steps_per_epoch = math.ceil(len(pairs) / (batch * grad_accum))
-    total = math.ceil(steps_per_epoch * epochs)
+    total = max_steps or math.ceil(steps_per_epoch * epochs)
     trainable = [p for p in model.parameters() if p.requires_grad]
     optimizer = torch.optim.Adam(trainable, lr=lr, betas=(0.9, 0.999))        # plain Adam, no weight decay
     wanted = dict(output_dir=run_dir, per_device_train_batch_size=batch, gradient_accumulation_steps=grad_accum,
@@ -293,6 +304,8 @@ def run(model_id: str = "Qwen/Qwen3.5-9B", inputs="hub:sft/sft_v1.json", out_dir
                   bf16=True, logging_steps=10, save_strategy="no", report_to=[], remove_unused_columns=False,
                   dataloader_num_workers=0, seed=seed, gradient_checkpointing=True,
                   gradient_checkpointing_kwargs={"use_reentrant": False})
+    if max_steps:
+        wanted["max_steps"] = max_steps                       # the Trainer stops here, whatever num_train_epochs says
     allowed = set(inspect.signature(TrainingArguments).parameters)
     dropped = [k for k in wanted if k not in allowed]
     if dropped:
@@ -306,7 +319,8 @@ def run(model_id: str = "Qwen/Qwen3.5-9B", inputs="hub:sft/sft_v1.json", out_dir
 
         def on_train_begin(self, args, state, control, **kw):
             self.t0 = time.time()
-            print(f"  {total} steps of {batch} x {grad_accum} sequences; {epochs} epoch(s)", flush=True)
+            print(f"  {total} steps of {batch} x {grad_accum} sequences; "
+                  + (f"max_steps {max_steps} ({total / steps_per_epoch:.2f} of an epoch)" if max_steps else f"{epochs} epoch(s)"), flush=True)
 
         def on_log(self, args, state, control, logs=None, **kw):
             spent = time.time() - self.t0
@@ -321,7 +335,7 @@ def run(model_id: str = "Qwen/Qwen3.5-9B", inputs="hub:sft/sft_v1.json", out_dir
                 name_base(adapter_dir, base_dir, model_id, repo)
                 ship(adapter_dir, f"{path_in_repo}/step_{state.global_step}", f"{short} r{rank} {stamp}: step {state.global_step}", repo)
 
-    collate = Collator(processor, pictures, max_len, system_text, mark, family.model_type(model))
+    collate = Collator(processor, pictures, max_len, system_text, mark, family.model_type(model), keys)
     pic = next((p for p in pairs if p[1] in PICTURE_FORMS and pictures.get(p[0]["id"]) is not None), None)
     spc = next((p for p in pairs if p[1] in SPEC_FORMS), None)
     if pic and spc:   # a mixed batch encodes before the first step (a family whose processor takes pictures differently fails here, not at step 1)
@@ -353,6 +367,7 @@ def run(model_id: str = "Qwen/Qwen3.5-9B", inputs="hub:sft/sft_v1.json", out_dir
                "model_type": family.model_type(model), "trust_remote_code": trust_remote_code, "revision": revision,
                "image_settings": image_settings,
                "init_adapter": init_adapter, "system": system, "system_tokens": system_tokens, "path_in_repo": path_in_repo,
+               "keys": keys, "max_steps": max_steps,
                "collated_examples": collate.collated, "examples_cut_at_max_len": collate.cut, "longest_example_tokens": collate.longest,
                "env": env, "log": log}
     print(f"  examples longer than max_len {max_len} (answer tail cut): {collate.cut} of {collate.collated} collated "

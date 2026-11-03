@@ -144,23 +144,25 @@ def fetch_images(items: list, cache_dir: str, workers: int = 16) -> dict:
     return out
 
 
-def messages(form: str, it: dict, examples: dict, image=None, system: str | None = None, mark: str | None = None) -> list:
+def messages(form: str, it: dict, examples: dict, image=None, system: str | None = None, mark: str | None = None,
+             keys: str = "record") -> list:
     """The conversation of one screen row: the user turn (the picture, when the form takes one, and the form's text), after a
-    system turn when a system prompt is given. With a picture marker (family.marker) the content is one string."""
+    system turn when a system prompt is given. With a picture marker (family.marker) the content is one string. keys
+    (chain.KEYS): how a specification's records are written, as the model was trained."""
     if form == "bare":
         text = prompts.bare(it["depth"])
     elif form == "shown":
         text = prompts.shown(it["depth"], examples.get(it["depth"]) or examples.get("medium") or [])
     elif form == "spec":
-        text = prompts.spec(it["depth"], it["spec"])
+        text = prompts.spec(it["depth"], it["spec"], keys)
     elif form == "short":
         text = prompts.short(it["depth"])
     elif form == "spec_short":
-        text = prompts.spec_short(it["depth"], it["spec"])
+        text = prompts.spec_short(it["depth"], it["spec"], keys)
     elif form == "full":
         text = prompts.full(it["depth"])
     elif form == "spec_full":
-        text = prompts.spec_full(it["depth"], it["spec"])
+        text = prompts.spec_full(it["depth"], it["spec"], keys)
     else:
         raise ValueError(f"unknown form {form!r}")
     return ([{"role": "system", "content": system}] if system else []) + [{"role": "user", "content": family.content(text, image, mark)}]
@@ -336,11 +338,13 @@ def run(models: list, inputs: str = "hub:screens/inputs/screen_v1.json", out_dir
         max_new_tokens: int = 700, thinking: bool = False, sampling: dict | None = None, repo: str = REPO,
         do_ship: bool = True, adapter: str | None = None, adapter_subfolder: str | None = None, tag: str = "",
         system: str | None = None, trust_remote_code: bool = False, revision: str | None = None,
-        image_settings: dict | None = None) -> dict:
+        image_settings: dict | None = None, keys: str = "record") -> dict:
     """The screen over every model and form; results and summaries on disk and on the Hub (screens/<stamp>[_<tag>]/). With
     system (see prompts.system) every row's conversation opens with that system turn. trust_remote_code / revision: for a
     family whose repository code runs (see family), pinned to a revision; image_settings: the image processor's (a picture
-    budget)."""
+    budget); keys (chain.KEYS): how the specification rows' records are written, as the model was trained."""
+    if keys not in chain.KEYS:
+        raise ValueError(f"unknown keys {keys!r}: one of {chain.KEYS}")
     stamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S") + (f"_{tag}" if tag else "")
     out_dir = os.path.join(out_dir, stamp)
     os.makedirs(out_dir, exist_ok=True)
@@ -361,7 +365,7 @@ def run(models: list, inputs: str = "hub:screens/inputs/screen_v1.json", out_dir
                    "max_new_tokens": max_new_tokens, "thinking": thinking, "sampling": sampling,
                    "adapter": adapter, "adapter_subfolder": adapter_subfolder, "system": system,
                    "trust_remote_code": trust_remote_code, "revision": revision, "image_settings": image_settings,
-                   "n_images": len(image_items), "n_specs": len(spec_items)}, fh, indent=1)
+                   "keys": keys, "n_images": len(image_items), "n_specs": len(spec_items)}, fh, indent=1)
     results_path = os.path.join(out_dir, "results.jsonl")
     all_results = []
     for model_id in models:
@@ -378,7 +382,7 @@ def run(models: list, inputs: str = "hub:screens/inputs/screen_v1.json", out_dir
             jobs = []
             for it in todo:
                 im = None if form in SPEC_FORMS else pictures[it["id"]]
-                jobs.append((it, messages(form, it, data.get("examples", {}), im, system_text, mark), im))
+                jobs.append((it, messages(form, it, data.get("examples", {}), im, system_text, mark, keys), im))
             t_form, done = time.time(), 0
             for start in range(0, len(jobs), batch):
                 group = jobs[start:start + batch]

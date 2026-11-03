@@ -43,11 +43,53 @@ _STEP_HEAD = re.compile(r"^(" + "|".join(STEPS) + r")\b[:,.\s—–-]*(.*)$", re
 _QUESTION = re.compile(r"^(.*?)\s*->\s*(.*?)\s*\[(record|chain|unknown)\]\s*$", re.I)
 GENERIC_LABELS = ("step", "thought")          # a label copied from the form line instead of a step name
 ECHOES = ("what you see or work out",)        # the form line's own body, echoed
+# How a question's key is written. "record": as the dataset names its records ("thing position"; a relation's parts "rel1 a",
+# "rel1 rel", "rel1 b"). "relation": one word a key, its spaces underscores ("thing_position"), the things a row's relations join
+# lettered relation_a, relation_b, relation_c, ... and a relation's word named by its two ends (relation_a_b).
+KEYS = ("record", "relation")
+_RELATION_KEY = re.compile(r"^rel(\d+) (a|rel|b)$")
+LETTERS = "abcdefghijklmnopqrstuvwxyz"
 
 
-def render(row: dict, wordings: tuple = ("caption",), full: bool = False) -> str:
+def relation_letters(relations: list) -> list:
+    """The letters of each relation's two ends: the things the relations join, lettered a, b, c, ... in order of first
+    appearance; a thing that recurs keeps its letter (man holding racket, man in front of fence -> (a, b), (a, c))."""
+    seen, out = {}, []
+    for r in relations or []:
+        pair = []
+        for end in ("a", "b"):
+            thing = r.get(end) if isinstance(r, dict) else None
+            if thing not in seen:
+                seen[thing] = LETTERS[len(seen)]
+            pair.append(seen[thing])
+        out.append(tuple(pair))
+    return out
+
+
+def relation_key(key: str, letters: list | None = None) -> str:
+    """A record key in the relation-keys form. A relation's part (rel<i> a / rel / b) takes the letters of relation i's ends
+    (relation_letters); a row without that relation's records reads relation i as joining the i-th and (i+1)-th things, each
+    relation adding one (so rel1 b is relation_b and rel2 b relation_c either way). Any other key: its spaces underscores."""
+    m = _RELATION_KEY.match(key.strip())
+    if not m:
+        return re.sub(r"\s+", "_", key.strip())
+    i, end = int(m.group(1)), m.group(2)
+    x, y = letters[i - 1] if letters and i <= len(letters) else (LETTERS[i - 1], LETTERS[i])
+    return f"relation_{x}_{y}" if end == "rel" else f"relation_{x if end == 'a' else y}"
+
+
+def keyed(key: str, row: dict, keys: str = "record") -> str:
+    """A question's key as the keys form writes it (KEYS); the row's own relations letter its relation keys."""
+    if keys == "record":
+        return key
+    if keys != "relation":
+        raise ValueError(f"unknown keys {keys!r}: one of {KEYS}")
+    return relation_key(key, relation_letters((row.get("spec") or {}).get("relation") or []))
+
+
+def render(row: dict, wordings: tuple = ("caption",), full: bool = False, keys: str = "record") -> str:
     """A row as `label: text` lines: the thoughts, then the wordings asked for (every one the row has, when full), then, when
-    full, the questions as `question: what -> answer [record, chain or unknown]`."""
+    full, the questions as `question: what -> answer [record, chain or unknown]`, each key as the keys form writes it."""
     lines = [f"{t['step']}: {str(t['text']).strip()}" for t in row.get("thoughts", [])]
     w = row.get("wordings") or {}
     for k in (WORDINGS if full else wordings):
@@ -58,7 +100,7 @@ def render(row: dict, wordings: tuple = ("caption",), full: bool = False) -> str
         for q in row.get("questions") or []:
             if isinstance(q, dict):
                 if q.get("key"):
-                    lines.append(f"question: {q['key']} -> {q.get('value')} [{q.get('needs') or 'unknown'}]")
+                    lines.append(f"question: {keyed(q['key'], row, keys)} -> {q.get('value')} [{q.get('needs') or 'unknown'}]")
             elif q:
                 lines.append(f"question: {q}")
     return "\n".join(lines)

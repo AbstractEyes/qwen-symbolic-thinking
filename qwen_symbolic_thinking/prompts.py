@@ -12,9 +12,9 @@ from __future__ import annotations
 
 from thought_seeds.thought_tools import COUNTS, STEPS
 
-from .chain import render
+from .chain import KEYS, relation_key, relation_letters, render
 
-LOOK = {"simple": "a quick look", "medium": "a closer look", "deep": "a long look"}
+LOOK ={"simple": "a quick look", "medium": "a closer look", "deep": "a long look"}
 WORDS = {"simple": "a caption", "medium": "a caption and a prompt or tags", "deep": "a caption, a prompt, tags and a critique"}
 
 RULES = """Rules:
@@ -44,24 +44,40 @@ def shown(depth: str, examples: list) -> str:
             f"picture, which is not shown):\n\n{shown_examples}\n\nNow the picture above.")
 
 
-def records(spec: dict) -> str:
-    """A specification as one record per line: `system attribute: value`, relations as `relation: a rel b`."""
+def records(spec: dict, keys: str = "record") -> str:
+    """A specification as one record per line: `system attribute: value`, relations as `relation: a rel b`. With keys="relation"
+    (chain.KEYS) a line is `- key: value`, the key as the question lines write it: `- thing_position: left`, and per relation its
+    first thing (when new), its word and its second thing (when new): `- relation_a: man`, `- relation_a_b: holding`,
+    `- relation_b: umbrella`. After the `- ` a key and its value are the same tokens here as in the answer's question line."""
+    if keys not in KEYS:
+        raise ValueError(f"unknown keys {keys!r}: one of {KEYS}")
     lines = []
     for system, body in spec.items():
-        if system == "relation":
+        if system == "relation" and keys == "relation":
+            shown = set()
+            for r, (x, y) in zip(body, relation_letters(body)):
+                if x not in shown:
+                    lines.append(f"- relation_{x}: {r.get('a')}")
+                lines.append(f"- relation_{x}_{y}: {r.get('rel')}")
+                if y not in shown | {x}:
+                    lines.append(f"- relation_{y}: {r.get('b')}")
+                shown |= {x, y}
+        elif system == "relation":
             lines += [f"relation: {r.get('a')} {r.get('rel')} {r.get('b')}" for r in body]
+        elif isinstance(body, dict) and keys == "relation":
+            lines += [f"- {relation_key(f'{system} {k}')}: {v}" for k, v in body.items() if k != "from"]
         elif isinstance(body, dict):
             lines += [f"{system} {k}: {v}" for k, v in body.items() if k != "from"]
     return "\n".join(lines)
 
 
-def _records_preamble(specification: dict) -> str:
-    return (f"There is no picture to see. Here is a specification of one, as records:\n\n{records(specification)}\n\n"
+def _records_preamble(specification: dict, keys: str = "record") -> str:
+    return (f"There is no picture to see. Here is a specification of one, as records:\n\n{records(specification, keys)}\n\n"
             f"Treat the records as what the picture shows and ")
 
 
-def spec(depth: str, specification: dict) -> str:
-    return _records_preamble(specification) + _form(depth)[0].lower() + _form(depth)[1:]
+def spec(depth: str, specification: dict, keys: str = "record") -> str:
+    return _records_preamble(specification, keys) + _form(depth)[0].lower() + _form(depth)[1:]
 
 
 def short(depth: str) -> str:
@@ -69,8 +85,8 @@ def short(depth: str) -> str:
     return f"Look at this picture and think it through in writing, {LOOK[depth]}, ending with a caption."
 
 
-def spec_short(depth: str, specification: dict) -> str:
-    return _records_preamble(specification) + f"think it through in writing, {LOOK[depth]}, ending with a caption."
+def spec_short(depth: str, specification: dict, keys: str = "record") -> str:
+    return _records_preamble(specification, keys) + f"think it through in writing, {LOOK[depth]}, ending with a caption."
 
 
 def _full_tail(depth: str) -> str:
@@ -83,8 +99,8 @@ def full(depth: str) -> str:
     return "Look at this picture and " + _full_tail(depth)
 
 
-def spec_full(depth: str, specification: dict) -> str:
-    return _records_preamble(specification) + _full_tail(depth)
+def spec_full(depth: str, specification: dict, keys: str = "record") -> str:
+    return _records_preamble(specification, keys) + _full_tail(depth)
 
 
 # The system prompt (v1, 2026-10-30): the stable guarantees of the row, sent once before the user line, in training and at

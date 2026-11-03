@@ -80,7 +80,7 @@ def run_spec(spec: dict, lane: str, repo: str, out_dir: str) -> dict:
         s = dict(DEFAULT_SCREEN, **spec.get("screen", {}))
         s["forms"] = tuple(s["forms"])
         s.setdefault("system", spec["train"].get("system"))     # an arm trained with a system prompt is screened with it
-        for key in ("trust_remote_code", "revision", "image_settings"):   # an arm is screened on its own code and picture budget
+        for key in ("trust_remote_code", "revision", "image_settings", "keys"):   # an arm is screened on its own code, picture budget and keys
             if spec["train"].get(key) is not None:
                 s.setdefault(key, spec["train"][key])
         if t.get("full"):                                        # a full fine-tune: the trained folder is the model
