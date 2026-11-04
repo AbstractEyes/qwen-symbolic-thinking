@@ -133,6 +133,18 @@ text = chain.render(row, full=True)       # the whole row as the model is taught
 
 Tests: `pytest tests` (no GPU needed).
 
+## Captions and tags for a zip of photos
+
+`captions.run` gives every photo of a zip archive a plain caption from a stock VLM and booru tags from a tagger (`booru`: the
+animetimm and WD v3 taggers, run the way their authors run them). The ask may carry the photo's own description as a helper
+line (`{original}`, from a JSON of file name to description); the row keeps the file name, the caption, the tags with their
+scores, the tags a reviewer's filter keeps (a leave-out list and a floor on each tag's published precision, clothing exempt),
+and `copy5`, the share of the caption's five-word runs found word for word in the description (the description itself is not
+written). The VLM runs a batch in one generation (halved on an out-of-memory), the next chunk of photos decodes meanwhile, and
+the rows ship to `extractions/<stamp>/` while the run goes; `resume=` continues a shipped folder after a lost runtime.
+Notebook: `notebooks/deepfashion_captions.ipynb` (DeepFashion-MultiModal's 44,096 photos, the stock Qwen3.5-4B and the
+EVA-giant tagger).
+
 ## Reading an arm
 
 `qwen_symbolic_thinking.tools` reads a trained arm's runs from the Hub without a GPU. Files live under a data root (`--data`, else

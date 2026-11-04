@@ -6,11 +6,12 @@ huggingface.co/datasets/AbstractPhil/thought-symbolic-image-captions do.
     from qwen_symbolic_thinking.screen import run          # the behaviour screen on a GPU (Colab)
     from qwen_symbolic_thinking.train import run           # the LoRA fine-tune (the chain, or the whole row)
     from qwen_symbolic_thinking.queue import run_queue     # a card working through a queue of runs kept on the Hub
+    from qwen_symbolic_thinking.captions import run        # captions and booru tags for a zip of photos (a stock VLM + a tagger)
 
 Weights and results: huggingface.co/AbstractPhil/qwen-symbolic-thinking-image-training."""
 import os
 
-__version__ = "0.1.40"
+__version__ = "0.1.41"
 
 # The CUDA caching allocator grows by expandable segments, so a long batch late in a run does not fail on memory the process
 # already holds in fragments (a 4B full fine-tune died at step 1,220 of 2,724 asking for 5 GB with 15 GB reserved but unusable).
