@@ -24,8 +24,8 @@ _PRED = (r"(?:\s+(?:is|are)\s+(?:(?:also|otherwise)\s+)?(?:visible|present|appar
          + r"|\s+(?:on|anywhere|in)\s+[^,.;]*)?")
 _NO = r"\bno\s+" + _LIST + _PRED + r"(?!\s*,?\s*(?:or|nor)\b)"   # never cut before an 'or' that goes on with the list
 _SHUT = r",(?!\s*(?:(?:or|and|nor)\s+)?" + _LATER + r")"   # a comma that closes the list
-_WHO = r"(?:he|she|they|it|both|each|(?:the|his|her|their|its)\s+(?:[\w-]+\s+)?[\w-]+)"   # "her garment", "the front boy", "the t-shirt"
-_HAS = r"(?:wears|has|have|is\s+wearing|are\s+wearing|has\s+on|appears\s+to\s+wear|shows|show|features|feature|bears|bear)"
+_WHO = r"(?:he|she|they|it|both|each|(?:the|his|her|their|its|each|every)\s+(?:[\w-]+\s+)?[\w-]+)"   # "her garment", "the front boy", "each garment"
+_HAS = r"(?:wears|wear|has|have|is\s+wearing|are\s+wearing|has\s+on|appears\s+to\s+wear|shows|show|features|feature|bears|bear)"
 _VERB = r"(?:has|have|wears|wear|is|are|holds|smiles|looks|gazes|appears|shows|sports|carries|stands|sits|poses|has\s+on)"
 # A sentence start: the text's start, or after a sentence end (with or without a closing quote).
 _START = r"(?:^|(?<=[.!?]\s)|(?<=[.!?][\"\u201d\u2019']\s))"
@@ -38,6 +38,8 @@ _RULES = [
     # "she wears no eyewear or headwear, but has on a necklace" -> "she has on a necklace" (a verb follows)
     (re.compile(r"\b(" + _WHO + r")\s+" + _HAS + r"\s+" + _NO + r"(?:" + _SHUT + r")?\s+(?:but|and|while)\s+(?=" + _VERB + r"\b)",
                 re.I), r"\1 "),
+    # "she wears no eyewear or headwear, has a stud earring, and ..." -> "she has a stud earring, and ..." (a verb list)
+    (re.compile(r"\b(" + _WHO + r")\s+" + _HAS + r"\s+" + _NO + _SHUT + r"\s+(?=" + _VERB + r"\b)", re.I), r"\1 "),
     # "The child wears no eyewear or jewelry, and only the top of a garment is visible" -> "Only the top of a garment ..."
     (re.compile(_START + _WHO + r"\s+" + _HAS + r"\s+" + _NO + r"(?:" + _SHUT + r")?\s+(?:but|and|while)\s+", re.I), "\u0000"),
     (re.compile(r"\b" + _WHO + r"\s+" + _HAS + r"\s+" + _NO + r"(?:" + _SHUT + r")?\s+(?:but|and|while)\s+", re.I), ""),
@@ -59,7 +61,7 @@ _RULES = [
     (re.compile(r"\b(that|which)\s+(?:also\s+)?(?:has|have)\s+" + _NO + r"\s+and\s+", re.I), r"\1 "),
     (re.compile(r",?\s+(?:that|which)\s+(?:also\s+)?(?:has|have|features?|bears?|shows?)\s+" + _NO + r"(?=\s*[.,;]|\s*$)", re.I), ""),
     # "both featuring no visible print or text" / "- no visible print or text appears on any garment"
-    (re.compile(r",?\s+(?:both\s+|all\s+|each\s+)?(?:featuring|showing|bearing|displaying)\s+" + _NO, re.I), ""),
+    (re.compile(r",?\s+(?:both\s+|all\s+|each\s+)?(?:featuring|showing|bearing|displaying|revealing)\s+" + _NO, re.I), ""),
     (re.compile(r"\s*[\u2013\u2014]\s*" + _NO + r"(?=\s*[.;]|\s*$)", re.I), ""),
     (re.compile(r"\s+-\s+" + _NO + r"(?=\s*[.;]|\s*$)", re.I), ""),
     # "and has no eyewear or headwear" / "and wears no jewelry"

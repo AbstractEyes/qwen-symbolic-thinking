@@ -40,6 +40,13 @@ CASES = [
     ("No jewelry or headwear is visible; her expression is warm.", "Her expression is warm."),
     ("He has no headwear or visible jewelry; a red garment shows at the edge.", "A red garment shows at the edge."),
     ("A woman is in the foreground, wearing no eyewear or headwear, and a thin necklace.", "A woman is in the foreground, wearing a thin necklace."),
+    # 0.1.52, from FFHQ's full run: a verb list, plain "wear", "each ...", "revealing no ..."
+    ("She smiles; she wears no eyewear or headwear, has a small stud earring, and is dressed in blue.",
+     "She smiles; she has a small stud earring, and is dressed in blue."),
+    ("They smile, showing teeth; they wear no eyewear, headwear, or jewelry. They are dressed in black.",
+     "They smile, showing teeth. They are dressed in black."),
+    ("Each garment has no visible print or text. She stands.", "She stands."),
+    ("Her hair is pulled back, revealing no eyewear, headwear, or jewelry. She wears a top.", "Her hair is pulled back. She wears a top."),
 ]
 KEPT = [
     "A boy with no visible smile looks on.",                                   # an expression, not an absent item
@@ -50,6 +57,7 @@ KEPT = [
     "e.g., a plain wall; nothing else.",                                       # untouched text comes back byte for byte
     "Form-fitting black pants with no visible print or texture.",              # texture is not text (0.1.50 wrote "pantsure")
     "The design has no text presented on it.",                                 # words end at a boundary: presented, not present
+    "She wears no jewelry beyond the small hoop earrings.",                    # an exception names what is there: kept
 ]
 
 

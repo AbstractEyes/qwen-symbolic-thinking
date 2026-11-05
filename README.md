@@ -227,7 +227,8 @@ fewer accessories named). `absences.drop(caption)` removes those statements for 
 ("no visible smile"); `absences.left(text)` lists the ones still there. On the 400 smoke captions of four asks it changes 264 and
 leaves 1; on the 42,544 DeepFashion captions it changes 12,684 and leaves 132; no cleaned caption gains a word it did not have
 (0.1.50 matched "text" inside "texture" and broke 13 DeepFashion captions; every pattern word now ends at a word boundary), and a
-caption with nothing to drop comes back byte for byte. Release tables keep the raw caption beside the clean one.
+caption with nothing to drop comes back byte for byte. Release tables keep the raw caption beside the clean one. On FFHQ's 70,000 captions
+(0.1.52) it changes 58,032 and leaves 1,178, mostly exceptions that name what is there ("no jewelry beyond the earrings"), kept on purpose.
 
 ## Reading an arm
 
