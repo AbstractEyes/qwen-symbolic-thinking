@@ -181,6 +181,15 @@ gated: request access on the Hub with the account whose `HF_TOKEN` the run uses.
 license with any redistribution of the model, its use acknowledged in research publications, and the end uses it forbids (military
 and warfare, nuclear, espionage, weapons, work under arms-export controls).
 
+### Helper facts two describers agree on
+
+`garments.py` turns a caption, its booru tags and the fit into facts a helper line can carry. A garment color enters only where
+the caption and the tags give the same base color to the same kind of garment (top, bottom, one-piece, outer layer, shoes):
+`garments.agreed(caption, tags)`. Shoes or an outer layer enter only where both name one: `garments.worn(caption, tags, slot)`.
+The camera angle comes from the hips' turn: `garments.angle(turn)` gives frontal up to 20 degrees, three quarter up to 70 and
+profile up to 110; past 110 the back is to the camera and no angle is given. `garments.records_line(spec, colors, angle, worn)`
+writes a specification's records with all of these as one line (`upper name: t-shirt; upper color: white; ...`), in US spelling.
+
 ## Reading an arm
 
 `qwen_symbolic_thinking.tools` reads a trained arm's runs from the Hub without a GPU. Files live under a data root (`--data`, else
