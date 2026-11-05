@@ -162,9 +162,11 @@ each one as turn / nod / tilt          intrinsic Y-X-Z: turn = atan2(R[0,2], R[2
 
 A turn is + toward the subject's left (a person facing the camera reads 0, the back of a person 180), a nod + up, a tilt + toward
 the subject's left shoulder; the torso's lean is its axis against the camera's vertical, forward and to the side. `pose.words`
-turns a record into a pose line ("Pose (3D body fit): the body is turned 30 degrees to the subject's left; the head is turned 20
-degrees to the subject's right"), naming only what stands out (a twist of 15 degrees, a head turn of 15, a nod, tilt or lean of
-10). In `captions.run`, `pose_fit=pose.WEIGHTS` adds each photo's record (the angles, the three frames, the 70 keypoints) to its
+turns a record into a pose line in the picture's own terms ("Pose (3D body fit): the body is in profile, facing the right of the
+picture; the head is turned 30 degrees toward the left of the picture"), naming only what stands out (a twist of 15 degrees, a
+head turn of 15, a nod of 15, a tilt or lean of 10). The picture's terms because a captioner reads "the subject's left" as the
+picture's left: with a line in the subject's terms, the stock Qwen3.5-4B named the wrong side of the picture in 17 of the 22
+captions that named one (49 DeepFashion photos turned 45-135 degrees). In `captions.run`, `pose_fit=pose.WEIGHTS` adds each photo's record (the angles, the three frames, the 70 keypoints) to its
 row, `pose_ask=True` puts the pose line in the ask (`{pose}`, or a `Helper pose:` line), `pose_skip` leaves photos out by file name
 (a flat lay), and `model_id=None` runs the fit without captions. Without a person detector each picture is one person's box, and
 the camera has the fit's default field of view: right for a studio photo of one person.

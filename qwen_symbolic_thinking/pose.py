@@ -151,7 +151,8 @@ def angles(k3d: np.ndarray, names: dict) -> dict | None:
     if up is not None and fwd_h is not None:
         left_h = np.cross(camera_up, fwd_h)
         lean = {"forward": round(math.degrees(math.asin(max(-1.0, min(1.0, float(np.dot(up, fwd_h)))))), 1),
-                "left": round(math.degrees(math.asin(max(-1.0, min(1.0, float(np.dot(up, left_h)))))), 1)}
+                "left": round(math.degrees(math.asin(max(-1.0, min(1.0, float(np.dot(up, left_h)))))), 1),
+                "picture": round(math.degrees(math.asin(max(-1.0, min(1.0, float(up[0]))))), 1)}   # + its top toward the right
     return {"hips": _tnt(FACING.T @ hips), "chest": _tnt(FACING.T @ chest), "twist": _tnt(hips.T @ chest)["turn"],
             "head": _tnt(FACING.T @ head), "head_on_chest": _tnt(chest.T @ head), "lean": lean,
             "frames": {"hips": np.round(hips, 4).tolist(), "chest": np.round(chest, 4).tolist(), "head": np.round(head, 4).tolist()}}
@@ -161,44 +162,58 @@ def _deg(x: float) -> int:
     return int(5 * round(abs(x) / 5))
 
 
-def _side(x: float) -> str:
-    return "the subject's left" if x > 0 else "the subject's right"
+def _picture(x: float) -> str:
+    """The side of the picture a + / - points to: a turn toward the subject's left faces the right of the picture (sin turn > 0),
+    whichever way the body faces; a + lean or tilt measured on the camera's x axis points right."""
+    return "the right of the picture" if x > 0 else "the left of the picture"
 
 
-def facing(turn: float) -> str:
+def facing(turn: float, part: str = "the body") -> str:
+    """Where a part faces, in the picture's own terms (a caption writer reads "the subject's left" as the picture's left)."""
     a = abs(turn)
+    is_ = "are" if part.endswith("s") else "is"
     if a <= 20:
-        return "the body faces the camera"
+        return f"{part} {'face' if is_ == 'are' else 'faces'} the camera"
     if a <= 70:
-        return f"the body is turned {_deg(turn)} degrees to {_side(turn)}"
+        return f"{part} {is_} turned {_deg(turn)} degrees toward {_picture(turn)}"
     if a <= 110:
-        return f"the body is in profile, turned to {_side(turn)}"
+        return f"{part} {is_} in profile, facing {_picture(turn)}"
     if a <= 160:
-        return f"the body is turned mostly away from the camera, to {_side(turn)}"
-    return "the body has its back to the camera"
+        return f"{part} {is_} turned mostly away from the camera, facing {_picture(turn)}"
+    if part == "the body":
+        return "the body has its back to the camera"
+    return f"{part} {'face' if is_ == 'are' else 'faces'} away from the camera"
+
+
+def _up_x(rec: dict, frame: str) -> float | None:
+    """The camera-x part of a frame's up axis (+: its top leans toward the right of the picture), from the stored frames."""
+    try:
+        return float(rec["frames"][frame][0][1])
+    except (KeyError, IndexError, TypeError):
+        return None
 
 
 def words(rec: dict | None) -> str:
-    """The pose line for a caption ask (empty without a record): the body's facing, then only what stands out: the shoulders
-    against the hips (15 degrees or more), the head against the chest (a turn of 15, a nod or tilt of 10), the torso's lean (10)."""
+    """The pose line for a caption ask (empty without a record), every direction in the picture's terms: the body's facing, then
+    only what stands out: the shoulders when they turn 15 degrees or more from the hips, the head when it turns 15 from the
+    shoulders, nods 15 (the eye-ear line carries a few degrees of its own) or tilts 10, the torso's lean of 10."""
     if not rec:
         return ""
     parts = [facing(rec["hips"]["turn"])]
     if abs(rec["twist"]) >= 15:
-        parts.append(f"the shoulders are turned {_deg(rec['twist'])} degrees further to {_side(rec['twist'])} than the hips")
-    h = rec["head_on_chest"]
-    head = []
-    if abs(h["turn"]) >= 15:
-        head.append(f"turned {_deg(h['turn'])} degrees to {_side(h['turn'])}")
-    if abs(h["nod"]) >= 10:
-        head.append(f"{'raised' if h['nod'] > 0 else 'lowered'} {_deg(h['nod'])} degrees")
-    if abs(h["tilt"]) >= 10:
-        head.append(f"tilted {_deg(h['tilt'])} degrees toward {_side(h['tilt'])} shoulder")
-    if head:
-        parts.append("the head is " + " and ".join(head))
+        parts.append(facing(rec["chest"]["turn"], "the shoulders"))
+    h, head = rec["head"], []
+    if abs(rec["head_on_chest"]["turn"]) >= 15:
+        head.append(facing(h["turn"], "the head"))
+    if abs(h["nod"]) >= 15:
+        head.append(f"the head is {'raised' if h['nod'] > 0 else 'lowered'} {_deg(h['nod'])} degrees")
+    tilt = _up_x(rec, "head")
+    if tilt is not None and abs(math.degrees(math.asin(max(-1.0, min(1.0, tilt))))) >= 10:
+        head.append(f"the head tilts {_deg(math.degrees(math.asin(max(-1.0, min(1.0, tilt)))))} degrees toward {_picture(tilt)}")
+    parts += head
     lean = rec.get("lean") or {}
     if abs(lean.get("forward", 0)) >= 10:
         parts.append(f"the torso leans {'forward' if lean['forward'] > 0 else 'back'} {_deg(lean['forward'])} degrees")
-    if abs(lean.get("left", 0)) >= 10:
-        parts.append(f"the torso leans {_deg(lean['left'])} degrees to {_side(lean['left'])}")
+    if abs(lean.get("picture", 0)) >= 10:
+        parts.append(f"the torso leans {_deg(lean['picture'])} degrees toward {_picture(lean['picture'])}")
     return "Pose (3D body fit): " + "; ".join(parts) + "."

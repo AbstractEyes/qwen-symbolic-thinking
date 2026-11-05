@@ -51,7 +51,7 @@ def test_pose_only_pass(tmp_path, monkeypatch):
     rows = rows_of(out, summary)
     assert set(rows) == set(NAMES)
     assert rows["A-id_1_front.jpg"]["pose_status"] == "fitted" and rows["A-id_1_front.jpg"]["pose"]["hips"]["turn"] == 30.0
-    assert rows["A-id_1_front.jpg"]["pose_line"] == "Pose (3D body fit): the body is turned 30 degrees to the subject's left."
+    assert rows["A-id_1_front.jpg"]["pose_line"] == "Pose (3D body fit): the body is turned 30 degrees toward the right of the picture."
     assert rows["B-id_6_flat.jpg"]["pose_status"] == "skipped" and rows["B-id_6_flat.jpg"]["pose"] is None
     assert "caption" not in rows["C-id_2_side.jpg"]
     assert summary["pose"]["counts"] == {"fitted": 2, "skipped": 1} and summary["pose"]["commit"] == "abc1234"
@@ -75,7 +75,7 @@ def test_captions_with_the_pose_line_in_the_ask(tmp_path, monkeypatch):
     rows = rows_of(out, summary)
     a, b = rows["A-id_1_front.jpg"], rows["B-id_6_flat.jpg"]
     assert "Helper caption: The lady wears a tank top." in a["caption"]
-    assert "Helper pose: Pose (3D body fit): the body is turned 30 degrees to the subject's left." in a["caption"]
+    assert "Helper pose: Pose (3D body fit): the body is turned 30 degrees toward the right of the picture." in a["caption"]
     assert a["pose_asked"] and a["helped"] and a["new_tokens"] == 7
     assert "Helper" not in b["caption"] and not b["pose_asked"]          # no description, the fit skipped: no helper lines
     assert summary["ask"].endswith(captions.POSE_LINE)

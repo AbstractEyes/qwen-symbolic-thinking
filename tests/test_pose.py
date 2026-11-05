@@ -42,7 +42,7 @@ def test_facing_the_camera_reads_zero():
     rec = pose.angles(BODY, NAMES)
     for part in ("hips", "chest", "head", "head_on_chest"):
         assert rec[part] == {"turn": 0.0, "nod": 0.0, "tilt": 0.0}
-    assert rec["twist"] == 0.0 and rec["lean"] == {"forward": 0.0, "left": 0.0}
+    assert rec["twist"] == 0.0 and rec["lean"] == {"forward": 0.0, "left": 0.0, "picture": 0.0}
     assert pose.words(rec) == "Pose (3D body fit): the body faces the camera."
 
 
@@ -67,7 +67,7 @@ def test_shoulders_twisted_against_the_hips():
     assert rec["chest"]["turn"] == pytest.approx(25.0, abs=0.11)
     assert rec["twist"] == pytest.approx(25.0, abs=0.11)
     assert rec["head_on_chest"]["turn"] == pytest.approx(0.0, abs=0.11)
-    assert "the shoulders are turned 25 degrees further to the subject's left than the hips" in pose.words(rec)
+    assert "the shoulders are turned 25 degrees toward the right of the picture" in pose.words(rec)
 
 
 def test_head_turn_nod_and_tilt_against_the_chest():
@@ -79,7 +79,7 @@ def test_head_turn_nod_and_tilt_against_the_chest():
     k = turned(BODY, HEAD, about("forward", -15.0), head_center(BODY))        # the left side lowered 15
     rec = pose.angles(k, NAMES)
     assert rec["head_on_chest"]["tilt"] == pytest.approx(15.0, abs=0.11)
-    assert "the head is tilted 15 degrees toward the subject's left shoulder" in pose.words(rec)
+    assert "the head tilts 15 degrees toward the right of the picture" in pose.words(rec)   # its left shoulder, facing the camera
 
 
 def test_lean_forward_and_to_the_side():
@@ -88,15 +88,26 @@ def test_lean_forward_and_to_the_side():
     assert rec["lean"]["left"] == pytest.approx(0.0, abs=0.11)
     rec = pose.angles(turned(BODY, UPPER, about("forward", -12.0), np.zeros(3)), NAMES)  # the top moved to the subject's left
     assert rec["lean"]["left"] == pytest.approx(12.0, abs=0.11)
-    assert "the torso leans 10 degrees to the subject's left" in pose.words(rec)
+    assert "the torso leans 10 degrees toward the right of the picture" in pose.words(rec)
 
 
 def test_words_thresholds_and_facing():
     assert pose.facing(10) == "the body faces the camera"
-    assert pose.facing(-45) == "the body is turned 45 degrees to the subject's right"
-    assert pose.facing(95) == "the body is in profile, turned to the subject's left"
-    assert pose.facing(-130) == "the body is turned mostly away from the camera, to the subject's right"
+    assert pose.facing(-45) == "the body is turned 45 degrees toward the left of the picture"
+    assert pose.facing(95) == "the body is in profile, facing the right of the picture"
+    assert pose.facing(-130) == "the body is turned mostly away from the camera, facing the left of the picture"
+    assert pose.facing(175, "the head") == "the head faces away from the camera"
+    assert pose.facing(30, "the shoulders") == "the shoulders are turned 30 degrees toward the right of the picture"
     assert pose.words(None) == ""
+
+
+def test_back_to_the_camera_the_sides_swap():
+    """With the back to the camera the subject's left is the picture's left: a further turn to the subject's left (+) moves the
+    shoulders toward the left of the picture."""
+    k = turned(BODY @ about("up", 180.0).T, UPPER, about("up", 30.0), np.zeros(3))   # here "up" stays the camera's vertical
+    rec = pose.angles(k, NAMES)
+    assert rec["twist"] == pytest.approx(30.0, abs=0.11)
+    assert "the shoulders are turned mostly away from the camera, facing the left of the picture" in pose.words(rec)
 
 
 def test_degenerate_points_give_none():
