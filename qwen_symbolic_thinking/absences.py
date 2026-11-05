@@ -11,15 +11,16 @@ from __future__ import annotations
 
 import re
 
-# One absent item, with the qualifiers the captioners put before it; a list of them as the captioners write it.
+# One absent item, with the qualifiers the captioners put before it; a list of them as the captioners write it. Every word ends
+# at a word boundary: "no visible print or texture" is a texture, not an absent text (an early version cut it to "pantsure").
 _ITEM = (r"(?:(?:visible|discernible|apparent|readable|additional|other|printed|graphic)\s+)*"
-         r"(?:eye\s?wear|head\s?wear|jewel(?:le)?ry|eyeglasses|sunglasses|glasses|accessor(?:y|ies)|prints?|text|logos?|graphics?)")
-_LATER = r"(?:" + _ITEM + r"|(?:(?:visible|discernible|apparent|additional|other)\s+)*(?:garments?|clothing|clothes))"
+         r"(?:eye\s?wear|head\s?wear|jewel(?:le)?ry|eyeglasses|sunglasses|glasses|accessor(?:y|ies)|prints?|text|logos?|graphics?)\b")
+_LATER = r"(?:" + _ITEM + r"|(?:(?:visible|discernible|apparent|additional|other)\s+)*(?:garments?|clothing|clothes)\b)"
 _LIST = _ITEM + r"(?:\s*,\s*(?:or\s+|and\s+|nor\s+)?" + _LATER + r"|\s+(?:or|and|nor)\s+" + _LATER + r")*"
 # What may follow the list inside its clause: "is visible", "appears on any garment", "on the fabric", "anywhere in the image".
 _WHERE = r"(?:\s+(?:on|in|anywhere|elsewhere|beyond)\b[^,.;]*)?"
-_PRED = (r"(?:\s+(?:is|are)\s+(?:(?:also|otherwise)\s+)?(?:visible|present|apparent|discernible|evident|worn|noticeable)"
-         + _WHERE + r"|\s+(?:is|are)\s+(?:on|in)\b[^,.;]*|\s+(?:appears?|visible|present)" + _WHERE
+_PRED = (r"(?:\s+(?:is|are)\s+(?:(?:also|otherwise)\s+)?(?:visible|present|apparent|discernible|evident|worn|noticeable)\b"
+         + _WHERE + r"|\s+(?:is|are)\s+(?:on|in)\b[^,.;]*|\s+(?:appears?|visible|present)\b" + _WHERE
          + r"|\s+(?:on|anywhere|in)\s+[^,.;]*)?")
 _NO = r"\bno\s+" + _LIST + _PRED + r"(?!\s*,?\s*(?:or|nor)\b)"   # never cut before an 'or' that goes on with the list
 _SHUT = r",(?!\s*(?:(?:or|and|nor)\s+)?" + _LATER + r")"   # a comma that closes the list

@@ -48,6 +48,8 @@ KEPT = [
     "She wears a shirt with no visible text or patterns on the sleeves.",      # the list goes on past what the rules know: left whole
     "A sign reads “NO TEXTING” behind him.",
     "e.g., a plain wall; nothing else.",                                       # untouched text comes back byte for byte
+    "Form-fitting black pants with no visible print or texture.",              # texture is not text (0.1.50 wrote "pantsure")
+    "The design has no text presented on it.",                                 # words end at a boundary: presented, not present
 ]
 
 
@@ -61,6 +63,17 @@ def test_drop(raw, clean):
 @pytest.mark.parametrize("text", KEPT)
 def test_kept(text):
     assert A.drop(text) == text
+
+
+@pytest.mark.parametrize("raw, clean", CASES)
+def test_only_loses_words(raw, clean):
+    import re
+    words = lambda s: {w.lower() for w in re.findall(r"[\w'’-]+", s)}
+    assert words(A.drop(raw)) <= words(raw)            # a cleaned caption never gains a word
+
+
+def test_plural_items():
+    assert A.drop("A plain tee with no visible prints or text. She smiles.") == "A plain tee. She smiles."
 
 
 def test_left_names_what_is_there():

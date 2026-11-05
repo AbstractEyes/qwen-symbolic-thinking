@@ -224,8 +224,9 @@ Asked for "any eyewear, headwear or jewelry" and "any print or text", the stock 
 headwear, or jewelry", "with no visible print or text"): 68 and 36 of 100 FFHQ smoke captions, 30% of the DeepFashion ones.
 Rewording the ask did not remove them (the best of three wordings still wrote one in 55 of 100 captions, with longer captions and
 fewer accessories named). `absences.drop(caption)` removes those statements for the two families and leaves every other negative
-("no visible smile"); `absences.left(text)` lists the ones still there. On the 400 smoke captions of four asks it changes 265 and
-leaves 1; on the 42,544 DeepFashion captions it changes 12,696 and leaves 136, with no broken punctuation or sentence starts; a
+("no visible smile"); `absences.left(text)` lists the ones still there. On the 400 smoke captions of four asks it changes 264 and
+leaves 1; on the 42,544 DeepFashion captions it changes 12,684 and leaves 132; no cleaned caption gains a word it did not have
+(0.1.50 matched "text" inside "texture" and broke 13 DeepFashion captions; every pattern word now ends at a word boundary), and a
 caption with nothing to drop comes back byte for byte. Release tables keep the raw caption beside the clean one.
 
 ## Reading an arm
