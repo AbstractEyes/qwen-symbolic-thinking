@@ -198,7 +198,9 @@ shot?" and "What's the lighting of this shot?", once open and once as a choice o
 (`lighting.TYPES`, `lighting.LIGHTS`). CinemaCLIP (OZU-Technology; CLIP ViT-B/32 with classifier heads, OpenRAIL) scores its
 lighting heads from its released ONNX encoder and label schema: cast (soft / neutral / hard), contrast (low / neutral / high),
 direction (ambient, back, front, left, right, top, under; every label over its suggested threshold) and the edge-light and
-silhouette likelihoods. One row a photo; the folder ships to a Hub dataset. Notebook cell C6 of
+silhouette likelihoods. The released encoder gives 101 probabilities (23 heads), which only the package's own schema (1.0.0, read
+from its repository at a fixed commit) names; the schema beside the encoder on the Hub (2.0.0) has 315 labels, so the loader takes
+whichever schema fits the encoder's output. One row a photo; the folder ships to a Hub dataset. Notebook cell C6 of
 `notebooks/deepfashion_captions.ipynb` runs it on 100 DeepFashion photos.
 
 ## Reading an arm

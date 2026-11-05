@@ -28,6 +28,10 @@ SYSTEM = "You are a helpful assistant."            # the model card's system mes
 CINEMACLIP = "OZU-Technology/CinemaCLIP"
 ONNX_FILE = "ImageEncoder.onnx"
 SCHEMA_FILE = "CinemaNetSchema.json"
+# The released ONNX encoder gives 101 probabilities (23 heads), which the package's own schema (1.0.0) names; the schema beside it
+# on the Hub (2.0.0) names 315 (28 heads). The package's schema, at a fixed commit of its repository:
+SCHEMA_V1 = ("https://raw.githubusercontent.com/Synopsis/cinemaclip/8680411620aef92bb661306ef2957da5eee8bede/"
+             "cinemaclip/assets/CinemaNetSchema.json")
 SIDE = 256                                         # the encoder's input: 256 x 256, bicubic, values in [0, 1], no normalization
 HEADS = ("shot.lighting.cast", "shot.lighting.contrast", "shot.lighting.direction", "shot.lighting.edge",
          "shot.lighting.silhouette")
@@ -89,12 +93,26 @@ def shotvl_ask(bundle: dict, image, ask: str, max_new_tokens: int = 64) -> str:
     return processor.batch_decode(out[:, inputs["input_ids"].shape[1]:], skip_special_tokens=True)[0].strip()
 
 
+def pick_schema(widths, schemas):
+    """The first schema whose label count is one of the encoder's output widths, else None."""
+    return next((s for s in schemas if s and len(s.get("probabilities_labels") or []) in set(widths)), None)
+
+
 def cinemaclip_load(repo: str = CINEMACLIP) -> dict:
+    """The ONNX image encoder and the schema that names its outputs: the Hub's own when its labels fit the encoder, else the
+    package's schema (SCHEMA_V1)."""
+    import urllib.request
     import onnxruntime as ort
     from huggingface_hub import hf_hub_download
-    schema = json.load(open(hf_hub_download(repo, SCHEMA_FILE), encoding="utf-8"))
     session = ort.InferenceSession(hf_hub_download(repo, ONNX_FILE), providers=["CPUExecutionProvider"])
-    return {"session": session, "schema": schema, "labels": schema["probabilities_labels"], "heads": schema["categories_meta"]}
+    widths = [o.shape[-1] for o in session.get_outputs() if isinstance(o.shape[-1], int)]
+    schema = pick_schema(widths, [json.load(open(hf_hub_download(repo, SCHEMA_FILE), encoding="utf-8"))])
+    if schema is None:
+        schema = pick_schema(widths, [json.loads(urllib.request.urlopen(SCHEMA_V1, timeout=60).read())])
+    if schema is None:
+        raise ValueError(f"no schema names the encoder's outputs (widths {widths})")
+    return {"session": session, "schema": schema, "labels": schema["probabilities_labels"], "heads": schema["categories_meta"],
+            "schema_version": schema.get("version")}
 
 
 def cinemaclip_scores(bundle: dict, image) -> dict:
@@ -179,6 +197,7 @@ def trial(images_zip: str, files: list, out_repo: str | None = None, path_in_rep
     summary = {"package": __version__, "made": datetime.now(timezone.utc).isoformat(timespec="seconds"), "photos": len(rows),
                **_versions(),
                "shotvl": SHOTVL, "processor_from": shotvl["processor_from"], "cinemaclip": f"{CINEMACLIP}/{ONNX_FILE}",
+               "cinemaclip_schema": clip.get("schema_version"),
                "asks": {k: (choice_text(q, o) if o else q) for k, (q, o) in ASKS.items()}, "max_new_tokens": max_new_tokens,
                "load_s": round(load_s, 1), "s_per_photo": {k: round(v / max(1, len(rows)), 3) for k, v in seconds.items()}}
     with open(os.path.join(out_dir, "summary.json"), "w", encoding="utf-8") as fh:

@@ -48,6 +48,14 @@ def test_lighting_heads_pick_by_activation():
     assert heads["direction"]["scores"]["back"] == 0.1
 
 
+def test_pick_schema_matches_the_encoder_width():
+    v2 = {"version": "2.0.0", "probabilities_labels": ["x"] * 315}
+    v1 = {"version": "1.0.0", "probabilities_labels": ["x"] * 101}
+    assert L.pick_schema([512, 101], [v2]) is None
+    assert L.pick_schema([512, 101], [v2, v1]) is v1
+    assert L.pick_schema([315], [v2, v1]) is v2
+
+
 def test_trial_plumbing(tmp_path, monkeypatch):
     from PIL import Image
     zpath = tmp_path / "images.zip"
