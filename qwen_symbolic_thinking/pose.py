@@ -7,6 +7,8 @@ the hips, the head against the chest, the torso's lean, and a plain pose line fo
     fit = pose.load()                       # the weights are gated: request access to facebook/sam-3d-body-vith on the Hub
     rec = pose.predict(fit, picture)        # a PIL image -> the record (the whole picture as the person's box), or None
     pose.words(rec)                         # "Pose (3D body fit): the body is turned 30 degrees to the subject's left; ..."
+    recs = pose.predict_many(fit, picture, boxes)   # several people: one record per box, with the keypoints in the picture
+    pose.apart(recs[0], recs[1])            # ~0.0x: two boxes around one person; tenths: two people
 
 A frame's columns are the subject's left, up and forward, written in the camera's frame (x right, y down, z away from the camera).
 The frames come from keypoints (hips, shoulders, ears, eyes), not from the rig's joint rotations, so they do not depend on the rig's
@@ -36,6 +38,9 @@ FACING = np.diag([1.0, -1.0, -1.0])
 # The fit's keypoints the frames read, by index in its 70-point set (sam_3d_body/metadata/mhr70.py at COMMIT); load() checks them.
 KEYPOINTS = {"left_eye": 1, "right_eye": 2, "left_ear": 3, "right_ear": 4, "left_shoulder": 5, "right_shoulder": 6,
              "left_hip": 9, "right_hip": 10}
+# The body's points apart() compares (the same 70-point set): the nose, eyes and ears, the shoulders, elbows, wrists (62 left,
+# 41 right), hips, knees and ankles.
+BODY_2D = (0, 1, 2, 3, 4, 5, 6, 7, 8, 62, 41, 9, 10, 11, 12, 13, 14)
 
 
 def install(root: str | None = None) -> str:
@@ -105,15 +110,51 @@ def predict(fit: dict, picture, box=None) -> dict | None:
     boxes = None if box is None else np.asarray(box, dtype=np.float32).reshape(1, 4)
     with contextlib.redirect_stdout(io.StringIO()):
         out = fit["estimator"].process_one_image(img, bboxes=boxes, inference_type="body")
-    if not out:
-        return None
-    k3d = np.asarray(out[0]["pred_keypoints_3d"], dtype=np.float64)
-    rec = angles(k3d, fit["keypoints"])
+    return _record(out[0], fit["keypoints"]) if out else None
+
+
+def _record(out: dict, names: dict) -> dict | None:
+    """One fitted body of the estimator's output -> its record (predict()'s fields), or None."""
+    k3d = np.asarray(out["pred_keypoints_3d"], dtype=np.float64)
+    rec = angles(k3d, names)
     if rec is None:
         return None
-    rec["focal_length"] = round(float(np.asarray(out[0]["focal_length"]).reshape(-1)[0]), 1)
+    rec["focal_length"] = round(float(np.asarray(out["focal_length"]).reshape(-1)[0]), 1)
     rec["keypoints_3d"] = np.round(k3d, 3).tolist()
     return rec
+
+
+def predict_many(fit: dict, picture, boxes, chunk: int = 16) -> list[dict | None]:
+    """Several people in one photo (a PIL image): one fit per box ([x0, y0, x1, y1] each, in the picture's pixels), in the
+    boxes' order, up to chunk boxes a pass; each record as predict()'s plus its box and the 70 keypoints in the picture's
+    pixels (keypoints_2d, x and y); None where no body was fitted."""
+    b = np.asarray(boxes, dtype=np.float32).reshape(-1, 4)
+    img = np.asarray(picture.convert("RGB"))
+    recs = []
+    for i in range(0, len(b), chunk):
+        part = b[i:i + chunk]
+        with contextlib.redirect_stdout(io.StringIO()):
+            out = fit["estimator"].process_one_image(img, bboxes=part, inference_type="body")
+        assert len(out) == len(part), f"{len(out)} fits for {len(part)} boxes"
+        for box, o in zip(part, out):
+            rec = _record(o, fit["keypoints"])
+            if rec is not None:
+                rec["box"] = [round(float(v), 1) for v in box]
+                rec["keypoints_2d"] = np.round(np.asarray(o["pred_keypoints_2d"], dtype=np.float64)[:, :2], 1).tolist()
+            recs.append(rec)
+    return recs
+
+
+def apart(a: dict | None, b: dict | None) -> float | None:
+    """How far apart two fits of one photo lie in the picture: the median distance between their BODY_2D points over the larger
+    fit's size (the diagonal of its points' extent). Two boxes drawn around one person give fits a few hundredths apart, two
+    people tenths or more; None without both keypoints_2d."""
+    ka, kb = (a or {}).get("keypoints_2d"), (b or {}).get("keypoints_2d")
+    if not ka or not kb:
+        return None
+    pa, pb = np.asarray(ka, dtype=np.float64)[list(BODY_2D)], np.asarray(kb, dtype=np.float64)[list(BODY_2D)]
+    size = max(float(np.linalg.norm(p.max(axis=0) - p.min(axis=0))) for p in (pa, pb))
+    return round(float(np.median(np.linalg.norm(pa - pb, axis=1))) / size, 4) if size > 0 else None
 
 
 def _unit(v: np.ndarray) -> np.ndarray | None:

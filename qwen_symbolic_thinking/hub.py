@@ -48,13 +48,15 @@ def model_short(model_id: str) -> str:
     return parts[1] if model_id.startswith("hub:") and len(parts) > 1 else parts[-1]
 
 
-def ship(folder: str, path_in_repo: str, message: str, repo: str = REPO, retries: int = 4) -> str | None:
-    """Upload a folder under a path of the project repo, with backoff retries; returns the commit url or None."""
+def ship(folder: str, path_in_repo: str, message: str, repo: str = REPO, retries: int = 4,
+         repo_type: str = "model") -> str | None:
+    """Upload a folder under a path of the project repo (or another repo of repo_type), with backoff retries; returns the commit
+    url or None."""
     from huggingface_hub import HfApi
     api = HfApi(token=token())
     for attempt in range(retries):
         try:
-            info = api.upload_folder(folder_path=folder, path_in_repo=path_in_repo, repo_id=repo, repo_type="model",
+            info = api.upload_folder(folder_path=folder, path_in_repo=path_in_repo, repo_id=repo, repo_type=repo_type,
                                      commit_message=message)
             return getattr(info, "commit_url", None) or str(info)
         except Exception as e:  # the Hub's faults are retried; the local results stay on disk either way

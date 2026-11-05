@@ -149,3 +149,51 @@ def test_fill_with_a_pose_line():
     neither = fill(ask, "", "")
     assert "Helper" not in neither and "{" not in neither
     assert fill(FASHION_ASK, "x", "a pose line nobody asked for").endswith("Helper caption: x")
+
+
+class _Estimator:
+    """A stand-in for SAM 3D Body's estimator: each box gets the facing body, its 2D points spread over the box (a box with
+    x0 < 0 gets no body); the call sizes are kept."""
+
+    def __init__(self):
+        self.calls = []
+
+    def process_one_image(self, img, bboxes=None, inference_type="body"):
+        self.calls.append(len(bboxes))
+        k3d = np.zeros((70, 3))
+        for name, i in pose.KEYPOINTS.items():
+            k3d[i] = BODY[NAMES[name]]
+        grid = np.linspace(0.0, 1.0, 70)
+        out = []
+        for x0, y0, x1, y1 in bboxes:
+            k2d = np.stack([x0 + (x1 - x0) * grid, y0 + (y1 - y0) * grid[::-1]], axis=1)
+            out.append({"pred_keypoints_3d": np.zeros((70, 3)) if x0 < 0 else k3d, "pred_keypoints_2d": k2d,
+                        "focal_length": np.array([1234.56])})
+        return out
+
+
+def test_predict_many_keeps_the_boxes_order_and_their_pixels():
+    from PIL import Image
+    est = _Estimator()
+    fit = {"estimator": est, "keypoints": pose.KEYPOINTS}
+    boxes = [[10, 20, 110, 220], [-5, 0, 50, 50], [200, 20, 300, 220]] + [[i, 0, i + 40, 80] for i in range(0, 400, 20)]
+    recs = pose.predict_many(fit, Image.new("RGB", (640, 480)), boxes, chunk=16)
+    assert est.calls == [16, 7] and len(recs) == len(boxes)
+    assert recs[1] is None                                          # no body fitted: the place is kept
+    a, c = recs[0], recs[2]
+    assert a["box"] == [10.0, 20.0, 110.0, 220.0] and c["box"] == [200.0, 20.0, 300.0, 220.0]
+    assert a["keypoints_2d"][0] == [10.0, 220.0] and a["keypoints_2d"][-1] == [110.0, 20.0]
+    assert a["focal_length"] == 1234.6 and a["hips"] == {"turn": 0.0, "nod": 0.0, "tilt": 0.0}
+    assert pose.predict_many(fit, Image.new("RGB", (8, 8)), []) == []
+
+
+def test_apart_reads_one_person_twice_and_two_people():
+    k = np.zeros((70, 2))
+    k[list(pose.BODY_2D)] = np.stack([np.linspace(100, 160, 17), np.linspace(50, 350, 17)], axis=1)
+    one = {"keypoints_2d": k.tolist()}
+    nudged = {"keypoints_2d": (k + np.array([3.0, -4.0])).tolist()}       # 5 px over a ~306 px body
+    beside = {"keypoints_2d": (k + np.array([150.0, 0.0])).tolist()}      # a second person a body width away
+    assert pose.apart(one, one) == 0.0
+    assert pose.apart(one, nudged) == pytest.approx(5.0 / math.hypot(60, 300), abs=1e-4)
+    assert pose.apart(one, beside) == pytest.approx(150.0 / math.hypot(60, 300), abs=1e-4)
+    assert pose.apart(one, None) is None and pose.apart(one, {"keypoints_2d": None}) is None

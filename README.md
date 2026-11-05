@@ -173,6 +173,13 @@ caption run with a pose run by file name: each row gains the pose record (rebuil
 angles), the pose sentence, and `caption_pose`, the caption with the fit's own sentence appended (no captioner in between). Without a person detector each picture is one person's box, and
 the camera has the fit's default field of view: right for a studio photo of one person.
 
+Photos of several people: `pose.predict_many(fit, picture, boxes)` fits every person box of a photo in one pass (up to 16 boxes a
+pass) and keeps each record in its box's place (None where no body was fitted), with the box and the 70 keypoints in the
+picture's pixels (`keypoints_2d`). `pose.apart(a, b)` says how far two fits of one photo lie apart: the median distance between
+their body points (face, shoulders, elbows, wrists, hips, knees, ankles) over the larger fit's size. Two boxes drawn around one
+person give fits a few hundredths apart, two people tenths or more, which is how the boxes of a dataset that draws one box per
+action (HICO-DET) are merged into people. `notebooks/hico_det_bodies.ipynb` runs it on 1,000 HICO-DET photos on Colab.
+
 The fit's inference path needs `roma pytorch-lightning yacs omegaconf timm einops braceexpand` (`pose.NEEDS`); its repository is
 not a pip package, so `pose.install()` fetches the pinned commit once and puts it on the path. The weights
 (`facebook/sam-3d-body-vith`, 631M parameters, the default: its backbone code is in the pinned repository; `-dinov3`, 840M,
