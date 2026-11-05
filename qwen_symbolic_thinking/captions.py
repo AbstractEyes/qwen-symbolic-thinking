@@ -6,7 +6,8 @@ in one greedy generation (a batch that runs out of memory is retried in halves),
 extractions/<stamp>/rows.jsonl in the dataset repo, shipped as the run goes (a copy of the file, uploaded in a background thread,
 with retries), so a lost runtime loses at most one shipment; run(resume="extractions/<stamp>") goes on from a shipped folder.
 A row keeps the photo's file name, the caption, the tags with their scores and how much of the caption repeats the helper
-line's wording word for word; the helper line itself is not written."""
+line's wording word for word; the helper line itself is not written. With pose_fit, a 3D body fit (pose.py) adds the body's
+angles to each row and, with pose_ask, a pose line to the ask; model_id=None runs the fit (and the tagger) without captions."""
 from __future__ import annotations
 
 import collections
@@ -38,13 +39,21 @@ def one_line(text: str) -> str:
     return " ".join(str(text or "").split())
 
 
-def fill(ask: str, original: str) -> str:
-    """The ask for one photo: {original} becomes the photo's own description on one line; without one, the lines that name
-    {original} are left out."""
-    original = one_line(original)
-    if original:
-        return ask.replace("{original}", original)
-    return "\n".join(line for line in ask.split("\n") if "{original}" not in line).strip()
+POSE_LINE = "Helper pose: {pose}"     # added to an ask without {pose} when run(pose_ask=True)
+
+
+def fill(ask: str, original: str, pose_line: str = "") -> str:
+    """The ask for one photo: {original} becomes the photo's own description on one line, {pose} its pose line; a line that
+    names one of them while it is empty is left out."""
+    values = {"{original}": one_line(original), "{pose}": one_line(pose_line)}
+    lines = []
+    for line in ask.split("\n"):
+        if any(key in line and not value for key, value in values.items()):
+            continue
+        for key, value in values.items():
+            line = line.replace(key, value)
+        lines.append(line)
+    return "\n".join(lines).strip()
 
 
 def copy_share(caption: str, original: str, n: int = 5) -> float | None:
@@ -66,13 +75,16 @@ def photos(images_zip: str, n: int | None = None) -> list:
 
 
 def run(images_zip: str, descriptions: str | None = None, out_repo: str = "AbstractPhil/qwen-thinking-images",
-        model_id: str = "Qwen/Qwen3.5-4B", ask: str = FASHION_ASK, batch: int = 64, chunk: int = 512, max_new_tokens: int = 160,
-        tagger: str | None = "animetimm/eva_giant_patch14_560.dbv4-full", tag_max: int = booru.MAX_TAGS, tag_omit: tuple = (),
-        tag_min_precision: float = 0.0, n: int | None = None, out_dir: str = "/content/captions", tag: str = "captions",
-        ship_every: int = 2048, resume: str | None = None, repo_type: str = "dataset", do_ship: bool = True) -> dict:
+        model_id: str | None = "Qwen/Qwen3.5-4B", ask: str = FASHION_ASK, batch: int = 64, chunk: int = 512,
+        max_new_tokens: int = 160, tagger: str | None = "animetimm/eva_giant_patch14_560.dbv4-full", tag_max: int = booru.MAX_TAGS,
+        tag_omit: tuple = (), tag_min_precision: float = 0.0, n: int | None = None, out_dir: str = "/content/captions",
+        tag: str = "captions", ship_every: int = 2048, resume: str | None = None, repo_type: str = "dataset", do_ship: bool = True,
+        pose_fit: str | None = None, pose_ask: bool = False, pose_skip=None) -> dict:
     """Caption and tag every photo of the zip (n: the first n in name order) and ship the rows; returns the summary.
     descriptions: a JSON file {file name: description} whose text fills the ask's {original}. tag_omit / tag_min_precision: the
-    reviewer's filter (booru.keep), applied to each row's tags_kept beside the full tag list."""
+    reviewer's filter (booru.keep), applied to each row's tags_kept beside the full tag list. pose_fit: the 3D body fit's
+    weights (pose.WEIGHTS; None: no fit); pose_ask: its pose line fills the ask's {pose} (or a POSE_LINE added to the ask);
+    pose_skip: a test on the file name for photos the fit leaves out (a flat lay); model_id=None: no captions."""
     import torch
     from huggingface_hub import HfApi, hf_hub_download
     from PIL import Image
@@ -93,16 +105,23 @@ def run(images_zip: str, descriptions: str | None = None, out_repo: str = "Abstr
     texts = json.load(open(descriptions, encoding="utf-8")) if descriptions else {}
     members = photos(images_zip, n)
     todo = [m for m in members if os.path.basename(m) not in done]
-    print(f"captions {stamp}: {len(todo)} photos to do of {len(members)} ({len(done)} done before); {model_id}"
-          + (f" + {tagger}" if tagger else "") + f"; batch {batch}, chunk {chunk}, {max_new_tokens} new tokens at most", flush=True)
-    processor, model = load_model(model_id, False)
-    mark = family.marker(model)
+    print(f"captions {stamp}: {len(todo)} photos to do of {len(members)} ({len(done)} done before); {model_id or 'no captions'}"
+          + (f" + {tagger}" if tagger else "") + (f" + {pose_fit}" + (" (in the ask)" if pose_ask else "") if pose_fit else "")
+          + f"; batch {batch}, chunk {chunk}, {max_new_tokens} new tokens at most", flush=True)
+    processor, model = load_model(model_id, False) if model_id else (None, None)
+    mark = family.marker(model) if model is not None else None
     tags_bundle = booru.load(booru.fetch(tagger, os.path.join(out_dir, "taggers"), token()), booru.kind_of(tagger)) if tagger else None
     prec = tags_bundle["precision"] if tags_bundle else {}
+    fit = None
+    if pose_fit:
+        from . import pose
+        fit = pose.load(pose_fit)
+        if pose_ask and "{pose}" not in ask:
+            ask = ask + "\n" + POSE_LINE
     api = HfApi(token=token()) if do_ship else None
     zf = zipfile.ZipFile(images_zip)
     reader, shipper = ThreadPoolExecutor(1), ThreadPoolExecutor(1)
-    oom, copies = collections.Counter(), []
+    oom, copies, poses, seconds = collections.Counter(), [], collections.Counter(), collections.Counter()
     t0, n_done, n_tok, n_missing, since_ship, shipping = time.time(), 0, 0, 0, 0, None
 
     def decode(group):
@@ -116,9 +135,8 @@ def run(images_zip: str, descriptions: str | None = None, out_repo: str = "Abstr
                 out[m] = f"{type(e).__name__}: {str(e)[:200]}"
         return out
 
-    def gen(part, pictures):
-        convs = [[{"role": "user", "content": family.content(fill(ask, texts.get(os.path.basename(m), "")), pictures[m], mark)}]
-                 for m in part]
+    def gen(part, pictures, asks):
+        convs = [[{"role": "user", "content": family.content(asks[m], pictures[m], mark)}] for m in part]
         try:
             return generate(processor, model, convs, [pictures[m] for m in part], max_new_tokens, False, None)
         except Exception as e:  # noqa: BLE001
@@ -128,7 +146,7 @@ def run(images_zip: str, descriptions: str | None = None, out_repo: str = "Abstr
             if is_oom and len(part) > 1:
                 oom["splits"] += 1
                 h = len(part) // 2
-                a, b = gen(part[:h], pictures), gen(part[h:], pictures)
+                a, b = gen(part[:h], pictures, asks), gen(part[h:], pictures, asks)
                 return a[0] + b[0], a[1] + b[1]
             oom["rows_failed" if is_oom else "errors"] += len(part)
             return [f"<error {type(e).__name__}: {str(e)[:200]}>"] * len(part), [0] * len(part)
@@ -164,8 +182,27 @@ def run(images_zip: str, descriptions: str | None = None, out_repo: str = "Abstr
         group = [m for m in group if m not in bad]
         for b0 in range(0, len(group), batch):
             part = group[b0:b0 + batch]
-            outs, lengths = gen(part, pictures)
+            fits, lines = {}, {}
+            if fit is not None:
+                ts = time.time()
+                for m in part:
+                    if pose_skip is not None and pose_skip(os.path.basename(m)):
+                        fits[m] = "skipped"
+                        continue
+                    try:
+                        fits[m] = pose.predict(fit, pictures[m]) or "none"
+                    except Exception as e:  # noqa: BLE001
+                        fits[m] = f"<error {type(e).__name__}: {str(e)[:200]}>"
+                    if isinstance(fits[m], dict):
+                        lines[m] = pose.words(fits[m])
+                seconds["pose"] += time.time() - ts
+            asks = {m: fill(ask, texts.get(os.path.basename(m), ""), lines.get(m, "") if pose_ask else "") for m in part}
+            ts = time.time()
+            outs, lengths = gen(part, pictures, asks) if model is not None else ([""] * len(part), [0] * len(part))
+            seconds["caption"] += time.time() - ts
+            ts = time.time()
             found = booru.predict_batch(tags_bundle, [pictures[m] for m in part], None, tag_max) if tags_bundle else [[]] * len(part)
+            seconds["tags"] += time.time() - ts
             n_tok += sum(lengths)
             with open(rows_path, "a", encoding="utf-8") as fh:
                 for m, text, k, tags in zip(part, outs, lengths, found):
@@ -175,25 +212,37 @@ def run(images_zip: str, descriptions: str | None = None, out_repo: str = "Abstr
                             mh.write(json.dumps({"file": file, "why": text}) + "\n")
                         n_missing += 1
                         continue
-                    original = texts.get(file, "")
-                    caption = booru.us(one_line(text))
-                    share = copy_share(caption, original)
-                    if share is not None:
-                        copies.append(share)
-                    fh.write(json.dumps({"file": file, "caption": caption, "new_tokens": k, "truncated": k >= max_new_tokens,
-                                         "helped": bool(one_line(original)), "copy5": share,
-                                         "tags": [[booru.tag_name(t), round(s, 4), c, prec.get(t)] for t, s, c in tags],
-                                         "tags_kept": ", ".join(booru.tag_name(t) for t, s, c in tags
-                                                                if booru.keep(t, prec.get(t), tag_omit, tag_min_precision))},
-                                        ensure_ascii=False) + "\n")
+                    row = {"file": file}
+                    if model is not None:
+                        original = texts.get(file, "")
+                        caption = booru.us(one_line(text))
+                        share = copy_share(caption, original)
+                        if share is not None:
+                            copies.append(share)
+                        row.update({"caption": caption, "new_tokens": k, "truncated": k >= max_new_tokens,
+                                    "helped": bool(one_line(original)), "copy5": share})
+                    row.update({"tags": [[booru.tag_name(t), round(s, 4), c, prec.get(t)] for t, s, c in tags],
+                                "tags_kept": ", ".join(booru.tag_name(t) for t, s, c in tags
+                                                       if booru.keep(t, prec.get(t), tag_omit, tag_min_precision))})
+                    if fit is not None:
+                        got = fits.get(m)
+                        status = "fitted" if isinstance(got, dict) else ("error" if str(got).startswith("<error ") else got)
+                        poses[status] += 1
+                        row.update({"pose": got if isinstance(got, dict) else None, "pose_status": status,
+                                    "pose_line": lines.get(m, ""), "pose_asked": bool(pose_ask and lines.get(m))})
+                    fh.write(json.dumps(row, ensure_ascii=False) + "\n")
             n_done += len(part)
             since_ship += len(part)
             spent = time.time() - t0
             print(f"  {n_done}/{len(todo)} photos, {spent:.0f} s spent, {spent / n_done * (len(todo) - n_done):.0f} s left, "
-                  f"{spent / n_done:.3f} s a photo, {n_tok / max(spent, 1e-9):.0f} tok/s", flush=True)
+                  f"{spent / n_done:.3f} s a photo, {n_tok / max(spent, 1e-9):.0f} tok/s"
+                  + (f"; pose {seconds['pose'] / n_done:.3f} s a photo, {dict(poses)}" if fit is not None else ""), flush=True)
             if n_done == len(part):
-                print("  linear attention:", fast_path_note(), flush=True)
-                print("  first caption:", booru.us(one_line(outs[0]))[:300], flush=True)
+                if model is not None:
+                    print("  linear attention:", fast_path_note(), flush=True)
+                    print("  first caption:", booru.us(one_line(outs[0]))[:300], flush=True)
+                if lines:
+                    print("  first pose line:", next(iter(lines.values())), flush=True)
             if api and since_ship >= ship_every:
                 if shipping is not None:
                     shipping.result()                 # the previous upload has finished before its files are replaced
@@ -208,11 +257,15 @@ def run(images_zip: str, descriptions: str | None = None, out_repo: str = "Abstr
                "max_new_tokens": max_new_tokens, "tag_filter": {"omit": list(tag_omit), "min_precision": tag_min_precision},
                "s_per_photo": round(spent / max(n_done, 1), 3), "tok_per_s": round(n_tok / max(spent, 1e-9), 1),
                "copy5_mean": round(sum(copies) / len(copies), 3) if copies else None,
-               "copy5_over_half": sum(1 for c in copies if c >= 0.5), "env": env, "library_notes": LIBRARY_NOTES[-20:]}
+               "copy5_over_half": sum(1 for c in copies if c >= 0.5),
+               "s_per_photo_by_op": {k: round(v / max(n_done, 1), 4) for k, v in seconds.items()},
+               "pose": {"weights": pose_fit, "commit": fit["commit"], "asked": pose_ask, "counts": dict(poses)} if fit else None,
+               "env": env, "library_notes": LIBRARY_NOTES[-20:]}
     with open(os.path.join(folder, "summary.json"), "w", encoding="utf-8") as fh:
         json.dump(summary, fh, indent=1)
     print(f"\ncaptions done: {n_done} photos in {spent / 60:.1f} min ({summary['s_per_photo']} s a photo); {n_missing} missing; "
-          f"out of memory {dict(oom)}; copy5 mean {summary['copy5_mean']}, {summary['copy5_over_half']} rows at 0.5 or more", flush=True)
+          f"out of memory {dict(oom)}; copy5 mean {summary['copy5_mean']}, {summary['copy5_over_half']} rows at 0.5 or more"
+          + (f"; pose {dict(poses)}" if fit else "") + f"; seconds a photo by op {summary['s_per_photo_by_op']}", flush=True)
     if api:
         if shipping is not None:
             shipping.result()
@@ -220,6 +273,8 @@ def run(images_zip: str, descriptions: str | None = None, out_repo: str = "Abstr
         upload(len(done) + n_done, True)
     shipper.shutdown(wait=True)
     zf.close()
+    if fit is not None:
+        pose.unload(fit)
     del model, processor
     gc.collect()
     torch.cuda.empty_cache()

@@ -145,6 +145,37 @@ the rows ship to `extractions/<stamp>/` while the run goes; `resume=` continues 
 Notebook: `notebooks/deepfashion_captions.ipynb` (DeepFashion-MultiModal's 44,096 photos, the stock Qwen3.5-4B and the
 EVA-giant tagger).
 
+### Body angles: a 3D body fit beside the caption
+
+`pose` fits a 3D body to the photo with SAM 3D Body (Meta; [facebookresearch/sam-3d-body](https://github.com/facebookresearch/sam-3d-body),
+pinned to commit `b5c765a`; its body rig, [MHR](https://github.com/facebookresearch/MHR), is Apache-2.0) and reads three frames from
+the fit's named 3D keypoints: the hips (the hip joints), the chest (the shoulder line) and the head (the ear line and the eyes).
+Each frame's columns are the subject's left, up and forward in the camera's frame; the hips and the chest share the torso's axis,
+so their difference is a pure twist. With R the frames and F the frame of a person facing the camera upright:
+
+```
+hips, chest, head against the camera   F^T R_hips,  F^T R_chest,  F^T R_head
+twist (the shoulders against the hips) R_hips^T R_chest   (a turn about the torso's axis)
+the head against the chest             R_chest^T R_head
+each one as turn / nod / tilt          intrinsic Y-X-Z: turn = atan2(R[0,2], R[2,2]), nod = asin(R[1,2]), tilt = -atan2(R[1,0], R[1,1])
+```
+
+A turn is + toward the subject's left (a person facing the camera reads 0, the back of a person 180), a nod + up, a tilt + toward
+the subject's left shoulder; the torso's lean is its axis against the camera's vertical, forward and to the side. `pose.words`
+turns a record into a pose line ("Pose (3D body fit): the body is turned 30 degrees to the subject's left; the head is turned 20
+degrees to the subject's right"), naming only what stands out (a twist of 15 degrees, a head turn of 15, a nod, tilt or lean of
+10). In `captions.run`, `pose_fit=pose.WEIGHTS` adds each photo's record (the angles, the three frames, the 70 keypoints) to its
+row, `pose_ask=True` puts the pose line in the ask (`{pose}`, or a `Helper pose:` line), `pose_skip` leaves photos out by file name
+(a flat lay), and `model_id=None` runs the fit without captions. Without a person detector each picture is one person's box, and
+the camera has the fit's default field of view: right for a studio photo of one person.
+
+The fit's inference path needs `roma pytorch-lightning yacs omegaconf timm einops braceexpand` (`pose.NEEDS`); its repository is
+not a pip package, so `pose.install()` fetches the pinned commit once and puts it on the path. The weights
+(`facebook/sam-3d-body-dinov3`, 840M parameters; `-vith`, 631M) are gated: request access on the Hub with the account whose
+`HF_TOKEN` the run uses. They come under the SAM License: free use, copies and changes, outputs given as they are, a copy of the
+license with any redistribution of the model, its use acknowledged in research publications, and the end uses it forbids (military
+and warfare, nuclear, espionage, weapons, work under arms-export controls).
+
 ## Reading an arm
 
 `qwen_symbolic_thinking.tools` reads a trained arm's runs from the Hub without a GPU. Files live under a data root (`--data`, else
