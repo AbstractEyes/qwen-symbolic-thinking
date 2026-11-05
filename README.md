@@ -171,8 +171,9 @@ the camera has the fit's default field of view: right for a studio photo of one 
 
 The fit's inference path needs `roma pytorch-lightning yacs omegaconf timm einops braceexpand` (`pose.NEEDS`); its repository is
 not a pip package, so `pose.install()` fetches the pinned commit once and puts it on the path. The weights
-(`facebook/sam-3d-body-dinov3`, 840M parameters; `-vith`, 631M) are gated: request access on the Hub with the account whose
-`HF_TOKEN` the run uses. They come under the SAM License: free use, copies and changes, outputs given as they are, a copy of the
+(`facebook/sam-3d-body-vith`, 631M parameters, the default: its backbone code is in the pinned repository; `-dinov3`, 840M,
+scores the same on the published benchmarks but builds its backbone from GitHub through `torch.hub` at every load, unpinned) are
+gated: request access on the Hub with the account whose `HF_TOKEN` the run uses. They come under the SAM License: free use, copies and changes, outputs given as they are, a copy of the
 license with any redistribution of the model, its use acknowledged in research publications, and the end uses it forbids (military
 and warfare, nuclear, espionage, weapons, work under arms-export controls).
 

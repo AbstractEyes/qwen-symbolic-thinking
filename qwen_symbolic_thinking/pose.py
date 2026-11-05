@@ -4,7 +4,7 @@ and the head, in the camera's frame. From them: each one's turn / nod / tilt aga
 the hips, the head against the chest, the torso's lean, and a plain pose line for a caption ask.
 
     from qwen_symbolic_thinking import pose
-    fit = pose.load()                       # the weights are gated: request access to facebook/sam-3d-body-dinov3 on the Hub
+    fit = pose.load()                       # the weights are gated: request access to facebook/sam-3d-body-vith on the Hub
     rec = pose.predict(fit, picture)        # a PIL image -> the record (the whole picture as the person's box), or None
     pose.words(rec)                         # "Pose (3D body fit): the body is turned 30 degrees to the subject's left; ..."
 
@@ -26,7 +26,10 @@ import numpy as np
 
 REPO = "https://github.com/facebookresearch/sam-3d-body"
 COMMIT = "b5c765a0d89d789985e186d396315e7590887b94"          # 2026-02-19
-WEIGHTS = "facebook/sam-3d-body-dinov3"                       # DINOv3-H+, 840M parameters; facebook/sam-3d-body-vith: ViT-H, 631M
+# ViT-H, 631M parameters: its backbone code is in the pinned repository. facebook/sam-3d-body-dinov3 (DINOv3-H+, 840M) scores the
+# same on the published benchmarks (3DPW 54.8 / 54.8 MPJPE, EMDB 61.7 / 62.9, COCO 86.5 / 86.8 PCK) but builds its backbone from
+# github facebookresearch/dinov3 through torch.hub at every load, unpinned.
+WEIGHTS = "facebook/sam-3d-body-vith"
 NEEDS = ("roma", "pytorch-lightning", "yacs", "omegaconf", "timm", "einops", "braceexpand")   # its inference path's imports
 # A person facing the camera, upright: their left is the camera's +x, up is -y, forward (toward the camera) is -z.
 FACING = np.diag([1.0, -1.0, -1.0])
