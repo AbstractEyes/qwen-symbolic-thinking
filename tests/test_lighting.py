@@ -57,6 +57,7 @@ def test_shot_light_record_values():
     assert L.shot_light(_heads(["front"]), 0.5) == []                                   # frontal, mid-key: nothing to record
     assert L.shot_light(_heads(["front", "left"]), 0.5) == ["from the left"]
     assert L.shot_light(_heads(["top", "right"]), 0.5) == ["from above", "from the right"]   # in the head's label order
+    assert L.shot_light(_heads(["front", "under"]), 0.5) == []                          # "under" read frontal flash: no side
     assert L.shot_light(_heads(["back"], edge=True), 0.5) == ["backlit"]                # backlit already names the edge light
     assert L.shot_light(_heads([], edge=True), 0.5) == ["rim light"]
     assert L.shot_light(_heads([], "high"), 0.2) == ["low key"]

@@ -204,17 +204,29 @@ whichever schema fits the encoder's output. One row a photo; the folder ships to
 
 `lighting.heads_run(images_zip, out_repo=...)` runs CinemaCLIP alone over every photo of a zip (batched when the encoder takes a
 batch) and writes, beside the heads, the photo's mean luminance and the `shot light` record values the heads support
-(`lighting.shot_light`): silhouette; the key light's side (from the left / right / above / below, or backlit); rim light; low key
-(high contrast, mean luminance under 0.35) or high key (low contrast, over 0.65). Left and right are the picture's.
+(`lighting.shot_light`): silhouette; the key light's side (from the left / right / above, or backlit); rim light; low key
+(high contrast, mean luminance under 0.35) or high key (low contrast, over 0.65). Left and right are the picture's. The head's
+`under` label names no side (0.1.50): on FFHQ's smoke sheet the faces it read as lit from below were frontal flash shots. Every row
+keeps all the head scores, so the record values can be recomputed from a shipped run. Notebook cell C6 of
+`notebooks/deepfashion_captions.ipynb` runs the trial on 100 DeepFashion photos.
 
 ### FFHQ
 
 `notebooks/ffhq_captions.ipynb` gives the 70,000 faces of FFHQ the same treatment: `captions.webdataset_zip` repacks the WebDataset
 shards of a Hub copy (gaunernst/ffhq-1024-wds) into one zip without re-encoding; `captions.run` captions and tags them with
 `captions.PORTRAIT_ASK` (`repo_folder` picks the dataset folder the rows ship to, `max_side` can shrink large photos);
-`lighting.heads_run` adds the lighting. A 100-face smoke (C3) shows a sheet of faces with their readings before the full run.
-FFHQ is CC BY-NC-SA 4.0 and not for the development of facial recognition. Notebook cell C6 of
-`notebooks/deepfashion_captions.ipynb` runs it on 100 DeepFashion photos.
+`lighting.heads_run` adds the lighting. A 100-face smoke (C3) shows a sheet of faces with their readings before the full run, and
+C3b tries reworded asks on the same faces. FFHQ is CC BY-NC-SA 4.0 and not for the development of facial recognition.
+
+### Absences in captions
+
+Asked for "any eyewear, headwear or jewelry" and "any print or text", the stock captioner also says what is not there ("no eyewear,
+headwear, or jewelry", "with no visible print or text"): 68 and 36 of 100 FFHQ smoke captions, 30% of the DeepFashion ones.
+Rewording the ask did not remove them (the best of three wordings still wrote one in 55 of 100 captions, with longer captions and
+fewer accessories named). `absences.drop(caption)` removes those statements for the two families and leaves every other negative
+("no visible smile"); `absences.left(text)` lists the ones still there. On the 400 smoke captions of four asks it changes 265 and
+leaves 1; on the 42,544 DeepFashion captions it changes 12,696 and leaves 136, with no broken punctuation or sentence starts; a
+caption with nothing to drop comes back byte for byte. Release tables keep the raw caption beside the clean one.
 
 ## Reading an arm
 

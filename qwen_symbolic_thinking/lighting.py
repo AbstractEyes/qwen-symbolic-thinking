@@ -149,7 +149,8 @@ def luminance(image) -> float:
     return round(float((a @ np.array([0.2126, 0.7152, 0.0722], dtype=np.float32)).mean()), 4)
 
 
-SIDES = {"left": "from the left", "right": "from the right", "top": "from above", "under": "from below", "back": "backlit"}
+# "under" names no side: on FFHQ's smoke sheet (0.1.49) the faces the head read as lit from below were frontal flash shots.
+SIDES = {"left": "from the left", "right": "from the right", "top": "from above", "back": "backlit"}
 LOW_KEY, HIGH_KEY = 0.35, 0.65        # mean luminance under / over which a high / low contrast photo is low / high key
 
 
