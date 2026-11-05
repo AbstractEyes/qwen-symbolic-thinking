@@ -190,6 +190,17 @@ The camera angle comes from the hips' turn: `garments.angle(turn)` gives frontal
 profile up to 110; past 110 the back is to the camera and no angle is given. `garments.records_line(spec, colors, angle, worn)`
 writes a specification's records with all of these as one line (`upper name: t-shirt; upper color: white; ...`), in US spelling.
 
+### Lighting: a trial of two published readers
+
+`lighting.trial(images_zip, files, out_repo=...)` asks two models about each photo's light. ShotVL-7B (Vchitect; a Qwen2.5-VL-7B
+fine-tune for cinematography, Apache-2.0) answers its benchmark's two lighting questions, "What's the lighting type of this
+shot?" and "What's the lighting of this shot?", once open and once as a choice over every option the benchmark uses
+(`lighting.TYPES`, `lighting.LIGHTS`). CinemaCLIP (OZU-Technology; CLIP ViT-B/32 with classifier heads, OpenRAIL) scores its
+lighting heads from its released ONNX encoder and label schema: cast (soft / neutral / hard), contrast (low / neutral / high),
+direction (ambient, back, front, left, right, top, under; every label over its suggested threshold) and the edge-light and
+silhouette likelihoods. One row a photo; the folder ships to a Hub dataset. Notebook cell C6 of
+`notebooks/deepfashion_captions.ipynb` runs it on 100 DeepFashion photos.
+
 ## Reading an arm
 
 `qwen_symbolic_thinking.tools` reads a trained arm's runs from the Hub without a GPU. Files live under a data root (`--data`, else
