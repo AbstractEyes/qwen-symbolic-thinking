@@ -48,6 +48,60 @@ def test_lighting_heads_pick_by_activation():
     assert heads["direction"]["scores"]["back"] == 0.1
 
 
+def _heads(direction=(), contrast="low", edge=False, silhouette=False):
+    return {"direction": {"pick": list(direction)}, "contrast": {"pick": [contrast]}, "edge": {"pick": ["likelihood"] if edge else []},
+            "silhouette": {"pick": ["likelihood"] if silhouette else []}, "cast": {"pick": ["soft"]}}
+
+
+def test_shot_light_record_values():
+    assert L.shot_light(_heads(["front"]), 0.5) == []                                   # frontal, mid-key: nothing to record
+    assert L.shot_light(_heads(["front", "left"]), 0.5) == ["from the left"]
+    assert L.shot_light(_heads(["top", "right"]), 0.5) == ["from above", "from the right"]   # in the head's label order
+    assert L.shot_light(_heads(["back"], edge=True), 0.5) == ["backlit"]                # backlit already names the edge light
+    assert L.shot_light(_heads([], edge=True), 0.5) == ["rim light"]
+    assert L.shot_light(_heads([], "high"), 0.2) == ["low key"]
+    assert L.shot_light(_heads([], "low"), 0.8) == ["high key"]
+    assert L.shot_light(_heads([], "high"), 0.8) == [] and L.shot_light(_heads([], "low"), None) == []
+    assert L.shot_light(_heads(["back"], silhouette=True), 0.1) == ["silhouette", "backlit"]
+
+
+def test_heads_run_plumbing(tmp_path, monkeypatch):
+    import numpy as np
+    from PIL import Image
+    zpath = tmp_path / "faces.zip"
+    with zipfile.ZipFile(zpath, "w") as zf:
+        for name, shade in (("00000.webp", 240), ("00001.webp", 20), ("00002.webp", 128)):
+            buf = io.BytesIO()
+            Image.new("RGB", (64, 64), (shade, shade, shade)).save(buf, "WEBP", lossless=True)
+            zf.writestr(name, buf.getvalue())
+    labels = [f"{h}.{lab}" for h, meta in SCHEMA_HEADS.items() for lab in meta["labels"]]
+
+    class Inp:
+        name, shape = "Image", ["batch", 3, 256, 256]
+
+    class Session:
+        def get_inputs(self):
+            return [Inp()]
+
+        def run(self, _, feed):
+            x = feed["Image"]
+            out = np.full((x.shape[0], len(labels)), 0.1, dtype=np.float32)
+            bright = x.mean(axis=(1, 2, 3)) > 0.5
+            for i, b in enumerate(bright):
+                out[i, labels.index("shot.lighting.contrast.low" if b else "shot.lighting.contrast.high")] = 0.9
+                out[i, labels.index("shot.lighting.direction.left")] = 0.8
+            return [np.zeros((x.shape[0], 512), dtype=np.float32), out]
+    monkeypatch.setattr(L, "cinemaclip_load", lambda: {"session": Session(), "labels": labels, "heads": SCHEMA_HEADS,
+                                                       "schema_version": "test"})
+    monkeypatch.chdir(tmp_path)
+    out = L.heads_run(str(zpath), batch=2, ship=False, tag="t")
+    rows = [json.loads(line) for line in open(f"{out['out_dir']}/rows.jsonl", encoding="utf-8")]
+    assert [r["file"] for r in rows] == ["00000.webp", "00001.webp", "00002.webp"]
+    assert rows[0]["shot_light"] == ["from the left", "high key"] and rows[1]["shot_light"] == ["from the left", "low key"]
+    assert rows[2]["shot_light"] == ["from the left"]                       # mid gray: neither key
+    assert out["photos"] == 3 and out["shot_light_counts"]["from the left"] == 3
+
+
 def test_pick_schema_matches_the_encoder_width():
     v2 = {"version": "2.0.0", "probabilities_labels": ["x"] * 315}
     v1 = {"version": "1.0.0", "probabilities_labels": ["x"] * 101}

@@ -32,6 +32,10 @@ FASHION_ASK = ("Describe this picture in one or two sentences: who or what is in
                "text on it, the pose and the setting. Answer with the visible description ONLY, explaining the specifics of each "
                "garment piece that you recognize. Do not describe print or text if none is present.\n"
                "Helper caption: {original}")
+# The same ask for portraits without text of their own (FFHQ): the person, the visible clothing, the background and the light.
+PORTRAIT_ASK = ("Describe this picture in one or two sentences: who is in it (apparent age, expression, hair, and any eyewear, "
+                "headwear or jewelry), each visible garment with its color and any print or text on it, the background and the light. "
+                "Answer with the visible description ONLY. Do not describe print or text if none is present.")
 WORD = re.compile(r"[a-z0-9']+")
 
 
@@ -95,10 +99,40 @@ def append_pose(caption_rows: str, pose_rows: str, out_path: str) -> dict:
 
 
 def photos(images_zip: str, n: int | None = None) -> list:
-    """The zip's photos (JPEG / PNG members) in name order, the first n when n is given."""
+    """The zip's photos (JPEG / PNG / WebP members) in name order, the first n when n is given."""
     with zipfile.ZipFile(images_zip) as zf:
-        names = sorted(m for m in zf.namelist() if m.lower().endswith((".jpg", ".jpeg", ".png")))
+        names = sorted(m for m in zf.namelist() if m.lower().endswith((".jpg", ".jpeg", ".png", ".webp")))
     return names[:n] if n else names
+
+
+def webdataset_zip(repo: str, out_zip: str, shards: list | None = None, exts: tuple = (".webp", ".png", ".jpg", ".jpeg"),
+                   work_dir: str = "/content/shards") -> dict:
+    """A Hub dataset of WebDataset shards (*.tar) as one stored zip of its pictures, named as in the shards: each shard is
+    downloaded, its picture members copied into the zip unchanged (no re-encoding), and the shard deleted. Appends to an existing
+    zip and skips names it holds, so a broken pass goes on where it stopped. Returns {shards, written, skipped}."""
+    import tarfile
+    from huggingface_hub import HfApi, hf_hub_download
+    shards = shards or sorted(f for f in HfApi(token=token()).list_repo_files(repo, repo_type="dataset") if f.endswith(".tar"))
+    os.makedirs(work_dir, exist_ok=True)
+    written = skipped = 0
+    with zipfile.ZipFile(out_zip, "a" if os.path.exists(out_zip) else "w", zipfile.ZIP_STORED) as zf:
+        have = set(zf.namelist())
+        for i, shard in enumerate(shards):
+            path = hf_hub_download(repo, shard, repo_type="dataset", local_dir=work_dir, token=token())
+            with tarfile.open(path) as tf:
+                for member in tf:
+                    name = os.path.basename(member.name)
+                    if not member.isfile() or not name.lower().endswith(exts):
+                        continue
+                    if name in have:
+                        skipped += 1
+                        continue
+                    zf.writestr(name, tf.extractfile(member).read())
+                    have.add(name)
+                    written += 1
+            os.remove(path)
+            print(f"  shard {i + 1}/{len(shards)} {shard}: {written} pictures in the zip", flush=True)
+    return {"shards": len(shards), "written": written, "skipped": skipped}
 
 
 def run(images_zip: str, descriptions: str | None = None, out_repo: str = "AbstractPhil/qwen-thinking-images",
@@ -106,12 +140,14 @@ def run(images_zip: str, descriptions: str | None = None, out_repo: str = "Abstr
         max_new_tokens: int = 160, tagger: str | None = "animetimm/eva_giant_patch14_560.dbv4-full", tag_max: int = booru.MAX_TAGS,
         tag_omit: tuple = (), tag_min_precision: float = 0.0, n: int | None = None, out_dir: str = "/content/captions",
         tag: str = "captions", ship_every: int = 2048, resume: str | None = None, repo_type: str = "dataset", do_ship: bool = True,
-        pose_fit: str | None = None, pose_ask: bool = False, pose_skip=None) -> dict:
+        pose_fit: str | None = None, pose_ask: bool = False, pose_skip=None, max_side: int | None = None,
+        repo_folder: str = "extractions") -> dict:
     """Caption and tag every photo of the zip (n: the first n in name order) and ship the rows; returns the summary.
     descriptions: a JSON file {file name: description} whose text fills the ask's {original}. tag_omit / tag_min_precision: the
     reviewer's filter (booru.keep), applied to each row's tags_kept beside the full tag list. pose_fit: the 3D body fit's
     weights (pose.WEIGHTS; None: no fit); pose_ask: its pose line fills the ask's {pose} (or a POSE_LINE added to the ask);
-    pose_skip: a test on the file name for photos the fit leaves out (a flat lay); model_id=None: no captions."""
+    pose_skip: a test on the file name for photos the fit leaves out (a flat lay); model_id=None: no captions. max_side: each
+    photo shrunk to fit it (None: as stored). repo_folder: the dataset repo folder the run ships to (<repo_folder>/<stamp>/)."""
     import torch
     from huggingface_hub import HfApi, hf_hub_download
     from PIL import Image
@@ -121,7 +157,7 @@ def run(images_zip: str, descriptions: str | None = None, out_repo: str = "Abstr
     os.makedirs(ship_dir, exist_ok=True)
     rows_path, missing_path = os.path.join(folder, "rows.jsonl"), os.path.join(folder, "missing.jsonl")
     if resume and not os.path.exists(rows_path):
-        got = hf_hub_download(out_repo, f"extractions/{stamp}/rows.jsonl", repo_type=repo_type, token=token(),
+        got = hf_hub_download(out_repo, f"{repo_folder}/{stamp}/rows.jsonl", repo_type=repo_type, token=token(),
                               local_dir=os.path.join(out_dir, "resume"))
         shutil.copyfile(got, rows_path)
     done = set()
@@ -157,7 +193,10 @@ def run(images_zip: str, descriptions: str | None = None, out_repo: str = "Abstr
             try:
                 im = Image.open(io.BytesIO(zf.read(m)))
                 im.load()
-                out[m] = im.convert("RGB")
+                im = im.convert("RGB")
+                if max_side and max(im.size) > max_side:
+                    im.thumbnail((max_side, max_side), Image.Resampling.LANCZOS)
+                out[m] = im
             except Exception as e:  # noqa: BLE001
                 out[m] = f"{type(e).__name__}: {str(e)[:200]}"
         return out
@@ -181,9 +220,9 @@ def run(images_zip: str, descriptions: str | None = None, out_repo: str = "Abstr
     def upload(count: int, final: bool) -> bool:
         for attempt in range(5):
             try:
-                api.upload_folder(folder_path=ship_dir, path_in_repo=f"extractions/{stamp}", repo_id=out_repo, repo_type=repo_type,
+                api.upload_folder(folder_path=ship_dir, path_in_repo=f"{repo_folder}/{stamp}", repo_id=out_repo, repo_type=repo_type,
                                   commit_message=f"captions {stamp}: {count} rows" + (" (final)" if final else ""))
-                print(f"  shipped {count} rows to {out_repo}/extractions/{stamp}", flush=True)
+                print(f"  shipped {count} rows to {out_repo}/{repo_folder}/{stamp}", flush=True)
                 return True
             except Exception as e:  # noqa: BLE001
                 print(f"  ship failed ({type(e).__name__}: {str(e)[:120]}); retry", flush=True)
@@ -305,5 +344,5 @@ def run(images_zip: str, descriptions: str | None = None, out_repo: str = "Abstr
     del model, processor
     gc.collect()
     torch.cuda.empty_cache()
-    summary["path_in_repo"] = f"extractions/{stamp}"
+    summary["path_in_repo"] = f"{repo_folder}/{stamp}"
     return summary

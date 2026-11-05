@@ -128,6 +128,97 @@ def cinemaclip_scores(bundle: dict, image) -> dict:
     return lighting_heads(dict(zip(bundle["labels"], found[0][0].tolist())), bundle["heads"])
 
 
+def cinemaclip_batch(bundle: dict, images: list) -> list:
+    """cinemaclip_scores for several photos in one encoder call when its input takes a batch, else one at a time."""
+    import numpy as np
+    from PIL import Image
+    first = bundle["session"].get_inputs()[0]
+    if isinstance(first.shape[0], int):
+        return [cinemaclip_scores(bundle, im) for im in images]
+    x = np.stack([np.asarray(im.convert("RGB").resize((SIDE, SIDE), Image.Resampling.BICUBIC), dtype=np.float32) / 255.0
+                  for im in images]).transpose(0, 3, 1, 2)
+    outputs = bundle["session"].run(None, {first.name: x})
+    probs = next(o for o in outputs if o.shape[-1] == len(bundle["labels"]))
+    return [lighting_heads(dict(zip(bundle["labels"], p.tolist())), bundle["heads"]) for p in probs]
+
+
+def luminance(image) -> float:
+    """The photo's mean luminance in [0, 1] (Rec. 709 weights, on a 64-pixel copy)."""
+    import numpy as np
+    a = np.asarray(image.convert("RGB").resize((64, 64)), dtype=np.float32) / 255.0
+    return round(float((a @ np.array([0.2126, 0.7152, 0.0722], dtype=np.float32)).mean()), 4)
+
+
+SIDES = {"left": "from the left", "right": "from the right", "top": "from above", "under": "from below", "back": "backlit"}
+LOW_KEY, HIGH_KEY = 0.35, 0.65        # mean luminance under / over which a high / low contrast photo is low / high key
+
+
+def shot_light(heads: dict, lum: float | None = None) -> list:
+    """The `shot light` record values a photo's lighting heads support, in order: silhouette; the key light's side (from the
+    left / right / above / below, backlit; front and ambient name none); rim light (edge light, unless backlit); low key (high
+    contrast, dark) or high key (low contrast, bright). Left and right are the picture's."""
+    out = ["silhouette"] if heads["silhouette"]["pick"] else []
+    out += [SIDES[d] for d in heads["direction"]["pick"] if d in SIDES]
+    if heads["edge"]["pick"] and "backlit" not in out:
+        out.append("rim light")
+    contrast = (heads["contrast"]["pick"] or [None])[0]
+    if lum is not None and contrast == "high" and lum < LOW_KEY:
+        out.append("low key")
+    elif lum is not None and contrast == "low" and lum > HIGH_KEY:
+        out.append("high key")
+    return out
+
+
+def heads_run(images_zip: str, out_repo: str | None = None, repo_folder: str = "raw", tag: str = "lighting", n: int | None = None,
+              batch: int = 64, workers: int = 8, ship: bool = True) -> dict:
+    """CinemaCLIP's lighting heads, the mean luminance and the `shot light` values for every photo of the zip (n: the first n in
+    name order): rows.jsonl + summary.json in a stamped folder, shipped to `out_repo` under `repo_folder` at the end."""
+    import collections
+    from concurrent.futures import ThreadPoolExecutor
+    from PIL import Image
+    from .captions import photos
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S") + "_" + tag
+    out_dir = os.path.join("/content" if os.path.isdir("/content") else ".", "lighting_out", stamp)
+    os.makedirs(out_dir, exist_ok=True)
+    clip = cinemaclip_load()
+    members = photos(images_zip, n)
+    zf = zipfile.ZipFile(images_zip)
+
+    def load(m):
+        im = Image.open(io.BytesIO(zf.read(m)))
+        im.draft("RGB", (SIDE * 2, SIDE * 2))          # a JPEG decodes small; other formats decode whole
+        im = im.convert("RGB")
+        im.thumbnail((SIDE * 2, SIDE * 2))
+        return im
+
+    t0, counts = time.time(), collections.Counter()
+    with open(os.path.join(out_dir, "rows.jsonl"), "w", encoding="utf-8") as fh, ThreadPoolExecutor(workers) as pool:
+        for start in range(0, len(members), batch):
+            group = members[start:start + batch]
+            images = list(pool.map(load, group))
+            for m, im, heads in zip(group, images, cinemaclip_batch(clip, images)):
+                lum = luminance(im)
+                light = shot_light(heads, lum)
+                counts.update(light or ["(none)"])
+                fh.write(json.dumps({"file": os.path.basename(m), "cinemaclip": heads, "luminance": lum, "shot_light": light},
+                                    ensure_ascii=False) + "\n")
+            if start // batch % 50 == 0:
+                print(f"  {start + len(group)}/{len(members)} photos, {time.time() - t0:.0f} s", flush=True)
+    summary = {"package": __version__, "made": datetime.now(timezone.utc).isoformat(timespec="seconds"), "photos": len(members),
+               "cinemaclip": f"{CINEMACLIP}/{ONNX_FILE}", "cinemaclip_schema": clip.get("schema_version"),
+               "shot_light_rule": {"sides": SIDES, "low_key_under": LOW_KEY, "high_key_over": HIGH_KEY},
+               "shot_light_counts": dict(counts.most_common()), "s_per_photo": round((time.time() - t0) / max(1, len(members)), 4),
+               **_versions()}
+    with open(os.path.join(out_dir, "summary.json"), "w", encoding="utf-8") as fh:
+        json.dump(summary, fh, indent=1)
+    if ship and out_repo:
+        from huggingface_hub import HfApi
+        HfApi(token=token()).upload_folder(folder_path=out_dir, path_in_repo=f"{repo_folder}/{stamp}", repo_id=out_repo,
+                                           repo_type="dataset", commit_message=f"{tag}: {len(members)} photos ({stamp})")
+        print(f"shipped {out_repo}/{repo_folder}/{stamp}")
+    return {"out_dir": out_dir, "stamp": stamp, "path_in_repo": f"{repo_folder}/{stamp}", **summary}
+
+
 def lighting_heads(flat: dict, heads: dict) -> dict:
     """The lighting heads' scores out of the flat label -> probability map, with each head's pick: the top label of a softmax
     head, every label at or over the suggested threshold of a sigmoid head."""
@@ -160,7 +251,7 @@ def _versions() -> dict:
 
 
 def trial(images_zip: str, files: list, out_repo: str | None = None, path_in_repo: str = "raw", run_name: str = "lighting_trial",
-          views: dict | None = None, ship: bool = True, max_new_tokens: int = 64) -> dict:
+          views: dict | None = None, ship: bool = True, max_new_tokens: int = 64, asks: tuple = tuple(ASKS)) -> dict:
     """Both models on the photos named (members `images/<file>` or `<file>` of the zip): one row a photo with ShotVL's four answers (the open
     ones as written, the choices as written and as picked options) and CinemaCLIP's lighting heads; rows.jsonl + summary.json in
     a stamped folder, shipped to `out_repo` (a dataset) under `path_in_repo` at the end."""
@@ -180,17 +271,20 @@ def trial(images_zip: str, files: list, out_repo: str | None = None, path_in_rep
             image = Image.open(io.BytesIO(zf.read(member))).convert("RGB")
             t = time.time()
             answers = {}
-            for key, (question, options) in ASKS.items():
+            for key in asks:
+                question, options = ASKS[key]
                 text = shotvl_ask(shotvl, image, choice_text(question, options) if options else question, max_new_tokens)
                 answers[key] = {"text": text, "picked": picked(text, options)} if options else {"text": text}
             seconds["shotvl"] += time.time() - t
             t = time.time()
             heads = cinemaclip_scores(clip, image)
             seconds["cinemaclip"] += time.time() - t
-            rows.append({"file": file, "view": (views or {}).get(file), "shotvl": answers, "cinemaclip": heads})
+            lum = luminance(image)
+            rows.append({"file": file, "view": (views or {}).get(file), "shotvl": answers, "cinemaclip": heads, "luminance": lum,
+                         "shot_light": shot_light(heads, lum)})
             if i % 20 == 0:
-                print(f"  {i + 1}/{len(files)}  {file}: type {answers['type_choice']['picked']}, light "
-                      f"{answers['light_choice']['picked']}, cast {heads['cast']['pick']}, direction {heads['direction']['pick']}")
+                print(f"  {i + 1}/{len(files)}  {file}: " + "; ".join(f"{k} {v.get('picked', v['text'][:60])}" for k, v in answers.items())
+                      + f"; cast {heads['cast']['pick']}, direction {heads['direction']['pick']}, shot light {rows[-1]['shot_light']}")
     with open(os.path.join(out_dir, "rows.jsonl"), "w", encoding="utf-8") as fh:
         for r in rows:
             fh.write(json.dumps(r, ensure_ascii=False) + "\n")
@@ -198,7 +292,7 @@ def trial(images_zip: str, files: list, out_repo: str | None = None, path_in_rep
                **_versions(),
                "shotvl": SHOTVL, "processor_from": shotvl["processor_from"], "cinemaclip": f"{CINEMACLIP}/{ONNX_FILE}",
                "cinemaclip_schema": clip.get("schema_version"),
-               "asks": {k: (choice_text(q, o) if o else q) for k, (q, o) in ASKS.items()}, "max_new_tokens": max_new_tokens,
+               "asks": {k: (choice_text(q, o) if o else q) for k, (q, o) in ASKS.items() if k in asks}, "max_new_tokens": max_new_tokens,
                "load_s": round(load_s, 1), "s_per_photo": {k: round(v / max(1, len(rows)), 3) for k, v in seconds.items()}}
     with open(os.path.join(out_dir, "summary.json"), "w", encoding="utf-8") as fh:
         json.dump(summary, fh, indent=1)

@@ -200,7 +200,20 @@ lighting heads from its released ONNX encoder and label schema: cast (soft / neu
 direction (ambient, back, front, left, right, top, under; every label over its suggested threshold) and the edge-light and
 silhouette likelihoods. The released encoder gives 101 probabilities (23 heads), which only the package's own schema (1.0.0, read
 from its repository at a fixed commit) names; the schema beside the encoder on the Hub (2.0.0) has 315 labels, so the loader takes
-whichever schema fits the encoder's output. One row a photo; the folder ships to a Hub dataset. Notebook cell C6 of
+whichever schema fits the encoder's output. One row a photo; the folder ships to a Hub dataset.
+
+`lighting.heads_run(images_zip, out_repo=...)` runs CinemaCLIP alone over every photo of a zip (batched when the encoder takes a
+batch) and writes, beside the heads, the photo's mean luminance and the `shot light` record values the heads support
+(`lighting.shot_light`): silhouette; the key light's side (from the left / right / above / below, or backlit); rim light; low key
+(high contrast, mean luminance under 0.35) or high key (low contrast, over 0.65). Left and right are the picture's.
+
+### FFHQ
+
+`notebooks/ffhq_captions.ipynb` gives the 70,000 faces of FFHQ the same treatment: `captions.webdataset_zip` repacks the WebDataset
+shards of a Hub copy (gaunernst/ffhq-1024-wds) into one zip without re-encoding; `captions.run` captions and tags them with
+`captions.PORTRAIT_ASK` (`repo_folder` picks the dataset folder the rows ship to, `max_side` can shrink large photos);
+`lighting.heads_run` adds the lighting. A 100-face smoke (C3) shows a sheet of faces with their readings before the full run.
+FFHQ is CC BY-NC-SA 4.0 and not for the development of facial recognition. Notebook cell C6 of
 `notebooks/deepfashion_captions.ipynb` runs it on 100 DeepFashion photos.
 
 ## Reading an arm
