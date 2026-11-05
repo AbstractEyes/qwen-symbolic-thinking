@@ -168,7 +168,9 @@ head turn of 15, a nod of 15, a tilt or lean of 10). The picture's terms because
 picture's left: with a line in the subject's terms, the stock Qwen3.5-4B named the wrong side of the picture in 17 of the 22
 captions that named one (49 DeepFashion photos turned 45-135 degrees). In `captions.run`, `pose_fit=pose.WEIGHTS` adds each photo's record (the angles, the three frames, the 70 keypoints) to its
 row, `pose_ask=True` puts the pose line in the ask (`{pose}`, or a `Helper pose:` line), `pose_skip` leaves photos out by file name
-(a flat lay), and `model_id=None` runs the fit without captions. Without a person detector each picture is one person's box, and
+(a flat lay), and `model_id=None` runs the fit without captions. `captions.append_pose(caption_rows, pose_rows, out)` joins a
+caption run with a pose run by file name: each row gains the pose record (rebuilt from the stored keypoints with the current
+angles), the pose sentence, and `caption_pose`, the caption with the fit's own sentence appended (no captioner in between). Without a person detector each picture is one person's box, and
 the camera has the fit's default field of view: right for a studio photo of one person.
 
 The fit's inference path needs `roma pytorch-lightning yacs omegaconf timm einops braceexpand` (`pose.NEEDS`); its repository is

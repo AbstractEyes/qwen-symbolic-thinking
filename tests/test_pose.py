@@ -1,4 +1,5 @@
 """pose: the angle geometry on a synthetic body (no weights, no GPU): known turns, twists, nods, tilts and leans read back."""
+import json
 import math
 
 import numpy as np
@@ -114,6 +115,31 @@ def test_degenerate_points_give_none():
     flat = BODY.copy()
     flat[NAMES["left_hip"]] = flat[NAMES["right_hip"]]
     assert pose.angles(flat, NAMES) is None
+
+
+def test_append_pose_joins_by_file(tmp_path):
+    from qwen_symbolic_thinking.captions import append_pose
+    k = np.zeros((70, 3))
+    for name, i in pose.KEYPOINTS.items():
+        k[i] = BODY[NAMES[name]]
+    k = k @ about("up", 90.0).T                                     # in profile, facing the right of the picture
+    caps = tmp_path / "c.jsonl"
+    caps.write_text("\n".join(json.dumps(r) for r in (
+        {"file": "a_2_side.jpg", "caption": "A man in jeans."}, {"file": "b_6_flat.jpg", "caption": "A shirt laid flat."})) + "\n",
+                    encoding="utf-8")
+    poses = tmp_path / "p.jsonl"
+    poses.write_text("\n".join(json.dumps(r) for r in (
+        {"file": "a_2_side.jpg", "pose": {"keypoints_3d": k.tolist(), "focal_length": 1000.0, "hips": "old"}},
+        {"file": "b_6_flat.jpg", "pose": None}, {"file": "c_1_front.jpg", "pose": None})) + "\n", encoding="utf-8")
+    out = tmp_path / "o.jsonl"
+    counts = append_pose(str(caps), str(poses), str(out))
+    rows = {r["file"]: r for r in map(json.loads, open(out, encoding="utf-8"))}
+    a, b = rows["a_2_side.jpg"], rows["b_6_flat.jpg"]
+    assert a["pose_line"] == "The body is in profile, facing the right of the picture."
+    assert a["caption_pose"] == "A man in jeans. The body is in profile, facing the right of the picture."
+    assert a["pose"]["hips"]["turn"] == pytest.approx(90.0, abs=0.11) and "keypoints_3d" not in a["pose"]
+    assert b["caption_pose"] == "A shirt laid flat." and b["pose"] is None
+    assert counts == {"with a pose": 1, "without a pose": 1, "pose rows without a caption": 1}
 
 
 def test_fill_with_a_pose_line():

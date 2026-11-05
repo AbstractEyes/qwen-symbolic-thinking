@@ -67,6 +67,33 @@ def copy_share(caption: str, original: str, n: int = 5) -> float | None:
     return round(sum(r in theirs for r in runs) / len(runs), 3)
 
 
+def append_pose(caption_rows: str, pose_rows: str, out_path: str) -> dict:
+    """Join a caption run's rows with a pose run's rows (run(pose_fit=...)) by file name: each caption row gains the pose record
+    (rebuilt from its keypoints with this version's angles and words; the keypoints stay in the pose run's rows), the pose sentence
+    (pose_line) and caption_pose, the caption with that sentence appended. A photo without a fitted body (a flat lay) keeps its
+    caption alone. Returns the counts."""
+    from . import pose
+    with open(pose_rows, encoding="utf-8") as fh:
+        poses = {r["file"]: r for r in map(json.loads, fh)}
+    counts, seen = collections.Counter(), set()
+    with open(caption_rows, encoding="utf-8") as fh, open(out_path, "w", encoding="utf-8") as out:
+        for line in fh:
+            row = json.loads(line)
+            seen.add(row["file"])
+            rec = pose.rebuild((poses.get(row["file"]) or {}).get("pose"))
+            if rec is not None:
+                rec.pop("keypoints_3d", None)
+                said = pose.sentence(rec)
+                row.update({"pose": rec, "pose_line": said, "caption_pose": f"{row.get('caption', '')} {said}".strip()})
+                counts["with a pose"] += 1
+            else:
+                row.update({"pose": None, "pose_line": "", "caption_pose": row.get("caption", "")})
+                counts["without a pose"] += 1
+            out.write(json.dumps(row, ensure_ascii=False) + "\n")
+    counts["pose rows without a caption"] = len(set(poses) - seen)
+    return dict(counts)
+
+
 def photos(images_zip: str, n: int | None = None) -> list:
     """The zip's photos (JPEG / PNG members) in name order, the first n when n is given."""
     with zipfile.ZipFile(images_zip) as zf:

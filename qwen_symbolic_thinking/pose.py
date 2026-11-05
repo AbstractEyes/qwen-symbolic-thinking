@@ -33,6 +33,9 @@ WEIGHTS = "facebook/sam-3d-body-vith"
 NEEDS = ("roma", "pytorch-lightning", "yacs", "omegaconf", "timm", "einops", "braceexpand")   # its inference path's imports
 # A person facing the camera, upright: their left is the camera's +x, up is -y, forward (toward the camera) is -z.
 FACING = np.diag([1.0, -1.0, -1.0])
+# The fit's keypoints the frames read, by index in its 70-point set (sam_3d_body/metadata/mhr70.py at COMMIT); load() checks them.
+KEYPOINTS = {"left_eye": 1, "right_eye": 2, "left_ear": 3, "right_ear": 4, "left_shoulder": 5, "right_shoulder": 6,
+             "left_hip": 9, "right_hip": 10}
 
 
 def install(root: str | None = None) -> str:
@@ -62,7 +65,28 @@ def load(weights: str = WEIGHTS, root: str | None = None) -> dict:
         model, cfg = load_sam_3d_body_hf(weights)
         estimator = SAM3DBodyEstimator(sam_3d_body_model=model, model_cfg=cfg)
     names = {v["name"]: int(v["id"]) for v in pose_info["keypoint_info"].values()}
+    assert all(names[k] == i for k, i in KEYPOINTS.items()), "the fit's keypoint order differs from pose.KEYPOINTS"
     return {"estimator": estimator, "keypoints": names, "weights": weights, "commit": COMMIT}
+
+
+def rebuild(stored: dict | None) -> dict | None:
+    """A stored record again from its keypoints, with this version's angles (a row written by an earlier version)."""
+    k3d = (stored or {}).get("keypoints_3d")
+    if not k3d:
+        return None
+    rec = angles(np.asarray(k3d, dtype=np.float64), KEYPOINTS)
+    if rec is not None:
+        rec.update({"focal_length": stored.get("focal_length"), "keypoints_3d": k3d})
+    return rec
+
+
+def sentence(rec: dict | None) -> str:
+    """The pose line as a sentence to append to a caption ("The body is in profile, facing the right of the picture; ..."), or ""."""
+    line = words(rec)
+    if not line:
+        return ""
+    said = line.split(": ", 1)[1]
+    return said[0].upper() + said[1:]
 
 
 def unload(fit: dict) -> None:
