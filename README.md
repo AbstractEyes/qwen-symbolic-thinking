@@ -166,7 +166,9 @@ base itself (where the third read is the base model writing the row form on its 
 `adapter_scale` (default 1.0) and merge the adapter at that strength, interpolating between the base and the adapter as trained
 (the delta form of weight interpolation, Wortsman et al., "Robust fine-tuning of zero-shot models", arXiv 2109.01903). Rows
 written by outside writers become items through `rows.build_api_rows` (the writers and licenses a run accepts, the pictures held
-out for the screens and the held-out reads, each drop counted), and `tools.build_rows` runs it inside a queue.
+out for the screens and the held-out reads, each drop counted), and `tools.build_rows` runs it inside a queue. With `hold_out`,
+a seeded draw of the training pictures leaves the training set for a file of its own (`sft/<tag>_held.json`), so the held rows
+of `tools.anchors` (`held_pictures` takes one input file or a list) can be pictures from the same sources the adapter trained on.
 
 ## Extraction
 

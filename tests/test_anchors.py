@@ -1,8 +1,20 @@
 """The general rows' pure parts (tools.anchors): the request bank, the picture pick, the user-turn opening cut from a chat template,
 the request filter, the cap drop and the item format. No model, no network."""
+import json
+
 import pytest
 
 from qwen_symbolic_thinking.tools import anchors
+
+
+def test_held_pictures_from_one_file_or_several(tmp_path):
+    a, b = tmp_path / "a.json", tmp_path / "b.json"
+    a.write_text(json.dumps({"items": [{"id": "1", "kind": "image", "seed_id": "coco:1"}, {"id": "2", "kind": "spec"}]}),
+                 encoding="utf-8")
+    b.write_text(json.dumps({"items": [{"id": "3", "kind": "image", "seed_id": "docci:x"}]}), encoding="utf-8")
+    assert [it["id"] for it in anchors.load_held(str(a))] == ["1"]
+    assert [it["id"] for it in anchors.load_held([str(a), str(b)])] == ["1", "3"]
+    assert [it["id"] for it in anchors.load_held((str(b),))] == ["3"]
 
 
 def fake_template(messages):

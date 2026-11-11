@@ -4,7 +4,9 @@ sft/<tag>.json, so a later run in the same queue can train on `hub:sft/<tag>.jso
     {"name": "B_rows", "kind": "tool", "tool": {"module": "build_rows", "args": {"accepted": "hub:owner/dataset",
         "manifest": "hub:owner/images/manifest.jsonl", "writers": ["model-a", "model-b"]}}}
 
-The queue passes the run's name as the tag; the result (the counts, the filters, the file's place) goes into the run's marker."""
+The queue passes the run's name as the tag; the result (the counts, the filters, the file's place) goes into the run's marker.
+With "hold_out" in the args, the drawn pictures ship beside the training set as sft/<tag>_held.json (see rows.build_api_rows),
+the held pictures tools.anchors can take for the held-out read."""
 from __future__ import annotations
 
 import os
@@ -24,9 +26,12 @@ def run(accepted: str, tag: str = "rows", repo: str = REPO, do_ship: bool = True
             kwargs[key] = tuple(kwargs[key])
     folder = out_dir or tempfile.mkdtemp(prefix="rows_")
     path = os.path.join(folder, f"{tag}.json")
+    if kwargs.get("hold_out"):
+        kwargs.setdefault("held_path", os.path.join(folder, f"{tag}_held.json"))
     built = build_api_rows(accepted, path, **kwargs)
     summary = {"tag": tag, "path_in_repo": f"sft/{tag}.json", "items": len(built["items"]), "counts": built["counts"],
-               "filters": built["filters"], "built": built["built"]}
+               "filters": built["filters"], "built": built["built"],
+               "held_path_in_repo": f"sft/{os.path.basename(kwargs['held_path'])}" if kwargs.get("hold_out") else None}
     print(f"rows {tag}: {summary['items']} items; dropped {built['counts']['dropped']}", flush=True)
     if do_ship:
         summary["shipped"] = ship(folder, "sft", f"rows {tag}: {summary['items']} items", repo)

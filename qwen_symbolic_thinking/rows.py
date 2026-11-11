@@ -18,6 +18,7 @@ from __future__ import annotations
 import glob
 import json
 import os
+import random
 from collections import Counter
 from datetime import datetime, timezone
 
@@ -161,7 +162,7 @@ def make_item(row: dict, route: str, picture: tuple | None, forms_picture: tuple
 def build_api_rows(accepted: str, out_path: str, manifest: str | None = None, screen: str | None = DEFAULT_SCREEN,
                    writers=None, licenses=DEFAULT_LICENSES, held_manifest_splits=("probe",), museum: dict | None = None,
                    forms_picture=("full", "short"), forms_spec=("spec_full",), hold_in_view=("coco",),
-                   picture_licenses=None) -> dict:
+                   picture_licenses=None, hold_out: int = 0, hold_seed: int = 0, held_path: str | None = None) -> dict:
     """Training items from the accepted rows of an outside row-writing system, written to out_path as one input file
     {"version": 3, "built", "accepted", "counts", "items"}; the items come sorted by id, so a build is reproducible.
 
@@ -175,7 +176,14 @@ def build_api_rows(accepted: str, out_path: str, manifest: str | None = None, sc
     license as well as the annotations': for such a row whose seed source is in hold_in_view (COCO photos keep each author's
     license, many of them non-commercial), the license the filter reads is picture_licenses' entry for its seed id (a dict, or
     the path of a JSON file of one), and a row with no entry is dropped as "picture in view, its own license not given". A row
-    whose image_size is empty or null keeps source_label's license. counts holds the kept items by writer, source, license and kind, and every drop by its reason."""
+    whose image_size is empty or null keeps source_label's license. counts holds the kept items by writer, source, license and kind, and every drop by its reason.
+
+    hold_out: after the filters, that many of the remaining pictures (a seeded draw over their sorted seed ids, hold_seed) leave
+    the training set with every item that shows them, and are written to held_path as an input file of their own (the pictures a
+    held-out read of the trained model can use, from the same sources as the training pictures); the drop is counted as
+    "held_out_drawn". The draw is fixed by the seed and the rows it draws from, so a later snapshot draws again."""
+    if hold_out and not held_path:
+        raise ValueError("hold_out needs held_path: the drawn pictures are written there for the held-out read")
     dropped = Counter()
     manifest_rows = extract.load_manifest(manifest) if manifest else []
     held = held_seed_ids(screen, manifest_rows, tuple(held_manifest_splits or ()), museum)
@@ -226,8 +234,20 @@ def build_api_rows(accepted: str, out_path: str, manifest: str | None = None, sc
             continue
         seen.add(item["id"])
         items.append(item)
+    built = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    drawn = []
+    if hold_out:
+        pictures = sorted({it["seed_id"] for it in items if it["kind"] == "image"})
+        drawn = sorted(random.Random(hold_seed).sample(pictures, min(int(hold_out), len(pictures))))
+        chosen = set(drawn)
+        held_items = sorted((it for it in items if it.get("seed_id") in chosen), key=lambda it: it["id"])
+        items = [it for it in items if it.get("seed_id") not in chosen]
+        if held_items:
+            dropped["held_out_drawn"] += len(held_items)
+        data._write({"version": 3, "built": built, "accepted": accepted, "hold_out": int(hold_out), "hold_seed": hold_seed,
+                     "pictures": len(drawn), "items": held_items}, held_path)
     items.sort(key=lambda it: it["id"])
-    out = {"version": 3, "built": datetime.now(timezone.utc).isoformat(timespec="seconds"), "accepted": accepted,
+    out = {"version": 3, "built": built, "accepted": accepted,
            "counts": {"by_writer": dict(Counter(it["writer"] for it in items)),
                       "by_source": dict(Counter(it["source"] for it in items)),
                       "by_license": dict(Counter(str(it["license"]) for it in items)),
@@ -239,7 +259,9 @@ def build_api_rows(accepted: str, out_path: str, manifest: str | None = None, sc
                        "licenses": sorted(allowed_licenses) if allowed_licenses is not None else None,
                        "screen": screen, "held_manifest_splits": list(held_manifest_splits or ()), "museum": museum,
                        "held_pictures": len(held), "manifest": manifest,
-                       "forms_picture": list(forms_picture), "forms_spec": list(forms_spec)},
+                       "forms_picture": list(forms_picture), "forms_spec": list(forms_spec),
+                       "hold_out": int(hold_out), "hold_seed": hold_seed if hold_out else None, "held_drawn": len(drawn),
+                       "held_path": held_path if hold_out else None},
            "items": items}
     data._write(out, out_path)
     return out

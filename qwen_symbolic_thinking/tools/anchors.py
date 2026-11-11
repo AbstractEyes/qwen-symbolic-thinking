@@ -101,6 +101,15 @@ def pick_pictures(items: list, n: int, seed: int, exclude=()) -> list:
     return out
 
 
+def load_held(held_pictures) -> list:
+    """The picture items of one input file, or of several (a list or tuple of files, in their order): the held pictures."""
+    files = [held_pictures] if isinstance(held_pictures, str) else list(held_pictures)
+    out = []
+    for f in files:
+        out += [it for it in load_inputs(f)["items"] if it.get("kind") == "image"]
+    return out
+
+
 def draw_requests(n: int, seed: int) -> list:
     """n requests from the bank, drawn in seeded shuffled passes over the whole bank, so each request is used about equally."""
     rng = random.Random(seed)
@@ -257,17 +266,16 @@ def run(model_id: str = "Qwen/Qwen3.5-4B", rows: str | None = None, n_picture: i
         out_dir: str = "/content/anchors", do_ship: bool = True) -> dict:
     """Write the general rows with the base model (no adapter) and ship anchors/<tag>/{anchors,held,summary}.json to the
     project repo. rows: an input file of training items (built by rows.build_api_rows), whose pictures the training picture rows
-    use; held_pictures: an input file whose picture items are held out of training (the screen set), whose pictures the held
-    rows use. The detail rows and the text rows answer under max_new_tokens_text (a detailed description or a free request runs
-    longer than a one-line answer)."""
+    use; held_pictures: an input file, or a list of them, whose picture items are held out of training (the screen set; the
+    pictures rows.build_api_rows draws out with hold_out), whose pictures the held rows use. The detail rows and the text rows
+    answer under max_new_tokens_text (a detailed description or a free request runs longer than a one-line answer)."""
     if not rows:
         raise ValueError("rows: the input file of training items whose pictures the general rows use (rows.build_api_rows)")
     label = tag or datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
     out = os.path.join(out_dir, label)
     os.makedirs(out, exist_ok=True)
     env = preflight()
-    held_file = load_inputs(held_pictures)
-    held_items = [it for it in held_file["items"] if it.get("kind") == "image"]
+    held_items = load_held(held_pictures)
     held_seeds = {it["seed_id"] for it in held_items if it.get("seed_id")}
     train_pics = pick_pictures(load_inputs(rows)["items"], n_picture, seed, exclude=held_seeds)
     held_pics = pick_pictures(held_items, n_held_picture, seed + 1)

@@ -177,6 +177,40 @@ def test_a_picture_in_view_takes_the_pictures_own_license(fixture):
     assert out["counts"]["hold_in_view"] == ["coco"] and out["counts"]["picture_licenses"] == {"entries": 2}
 
 
+def test_a_seeded_draw_of_pictures_leaves_the_training_set_for_a_file_of_its_own(fixture):
+    held_path = fixture / "out" / "held.json"
+    out = build(fixture, hold_out=2, hold_seed=7, held_path=str(held_path))
+    held = json.loads(held_path.read_text(encoding="utf-8"))
+    drawn = {it["seed_id"] for it in held["items"]}
+    assert len(drawn) == 2 and held["pictures"] == 2 and held["hold_seed"] == 7 and held["version"] == 3
+    assert all(it["kind"] == "image" for it in held["items"])
+    kept = {it["seed_id"] for it in out["items"] if it["kind"] == "image"}
+    assert not drawn & kept and len(kept) == 2                 # four pictures before the draw; every item of a drawn one leaves
+    assert out["counts"]["dropped"]["held_out_drawn"] == len(held["items"])
+    assert (out["filters"]["hold_out"], out["filters"]["hold_seed"], out["filters"]["held_drawn"]) == (2, 7, 2)
+    again = build(fixture, hold_out=2, hold_seed=7, held_path=str(held_path))
+    assert [it["id"] for it in again["items"]] == [it["id"] for it in out["items"]]     # the draw is fixed by the seed
+    everything = build(fixture, hold_out=99, hold_seed=7, held_path=str(held_path))     # more than there are: all of them
+    assert [it["kind"] for it in everything["items"]] == ["spec"]
+    plain = build(fixture)
+    assert "held_out_drawn" not in plain["counts"]["dropped"] and plain["filters"]["held_drawn"] == 0
+    with pytest.raises(ValueError, match="held_path"):
+        build(fixture, hold_out=1)
+
+
+def test_the_queue_tool_ships_the_held_pictures_beside_the_training_set(fixture):
+    from qwen_symbolic_thinking.tools import build_rows
+    folder = fixture / "ship"
+    summary = build_rows.run(str(fixture / "dataset"), tag="v_rows", do_ship=False, out_dir=str(folder),
+                             manifest=str(fixture / "manifest.jsonl"), screen=str(fixture / "screen.json"),
+                             writers=["model-a", "model-b"], hold_out=1, hold_seed=3)
+    assert summary["path_in_repo"] == "sft/v_rows.json" and summary["held_path_in_repo"] == "sft/v_rows_held.json"
+    assert (folder / "v_rows.json").exists() and (folder / "v_rows_held.json").exists()
+    assert summary["filters"]["held_drawn"] == 1
+    assert build_rows.run(str(fixture / "dataset"), tag="v2", do_ship=False, out_dir=str(folder / "b"),
+                          screen=str(fixture / "screen.json"))["held_path_in_repo"] is None
+
+
 def test_picture_licenses_from_a_file_and_other_held_sources(fixture):
     in_view_fixture(fixture, [with_view("30", "coco:410", [1, 1]), with_view("31", "docci:d2", [1, 1])])
     path = fixture / "licenses.json"
