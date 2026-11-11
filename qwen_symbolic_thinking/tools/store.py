@@ -4,7 +4,9 @@ import os
 
 from huggingface_hub import hf_hub_download
 
-TRAIN_REPO = "AbstractPhil/qwen-symbolic-thinking-image-training"
+from .. import REPO
+
+TRAIN_REPO = REPO                 # the project repo (QST_REPO points it at a private twin)
 DATA_REPO = "AbstractPhil/qwen-thinking-images"
 MANIFEST = "manifest_v1.5.jsonl"
 MUSEUMS = ("aic", "nga", "cleveland", "met")

@@ -31,14 +31,20 @@ DEFAULT_LICENSES = ("CC BY 4.0", "Apache-2.0")
 
 
 # ------------------------------------------------------------------------------------------------------ reading the rows
-def accepted_dir(accepted: str) -> str:
-    """The local folder that holds the route folders: the given folder's own accepted/ when it has one, else the folder
-    itself; 'hub:<dataset repo id>' downloads accepted/*/*.jsonl first (the dataset repo, a token from the environment)."""
+def local_accepted(accepted: str) -> str:
+    """A local folder of the accepted rows: the folder as given, or, for 'hub:<dataset repo id>', a download of its
+    accepted/*/*.jsonl (a token from the environment). Downloading once and reading the folder twice keeps two readings of one
+    snapshot the same."""
     if accepted.startswith("hub:"):
         from huggingface_hub import snapshot_download
-        root = snapshot_download(accepted[4:], repo_type="dataset", allow_patterns=["accepted/*/*.jsonl"], token=token())
-    else:
-        root = accepted
+        return snapshot_download(accepted[4:], repo_type="dataset", allow_patterns=["accepted/*/*.jsonl"], token=token())
+    return accepted
+
+
+def accepted_dir(accepted: str) -> str:
+    """The local folder that holds the route folders: the given folder's own accepted/ when it has one, else the folder
+    itself; 'hub:<dataset repo id>' downloads accepted/*/*.jsonl first (local_accepted)."""
+    root = local_accepted(accepted)
     inner = os.path.join(root, "accepted")
     return inner if os.path.isdir(inner) else root
 
@@ -73,12 +79,13 @@ def seed_id_of(manifest_row: dict) -> str | None:
 
 def held_seed_ids(screen_inputs: str | None, manifest_rows: list, held_splits: tuple, museum: dict | None = None) -> set:
     """The seed ids no training item may show: every picture of the screen set's items and worked examples (screen_inputs, a
-    hub path or a local file, read the way screen.load_inputs reads it), every manifest row of the held splits, and, when
-    `museum` is given ({"manifest", "split", "sources", "per_source"}), the pictures extract.select_rows picks with those
-    settings, which is the held-out museum read's draw."""
+    hub path or a local file, or a list of them, read the way screen.load_inputs reads it: another build's held pictures can
+    be listed beside the screen set), every manifest row of the held splits, and, when `museum` is given ({"manifest",
+    "split", "sources", "per_source"}), the pictures extract.select_rows picks with those settings, which is the held-out
+    museum read's draw."""
     held = set()
-    if screen_inputs:
-        loaded = screen.load_inputs(screen_inputs)
+    for inputs in ([screen_inputs] if isinstance(screen_inputs, str) else list(screen_inputs or [])):
+        loaded = screen.load_inputs(inputs)
         pools = list(loaded.get("items") or []) + [ex for exs in (loaded.get("examples") or {}).values() for ex in exs]
         held |= {it["seed_id"] for it in pools if it.get("seed_id")}
     splits = set(held_splits or ())
@@ -118,6 +125,23 @@ def locator(seed_id: str, index: dict) -> tuple | None:
         return [], {"kind": "url_archive", "archive_url": DOCCI_ARCHIVE, "member": f"images/{key}.jpg", "example_id": key}
     found = index.get((source, key))
     return ([], found) if found else None
+
+
+def seeds_without_locator(accepted: str, manifest=None, sources=None) -> list:
+    """The seed ids of the accepted rows' pictures that `locator` cannot find through the manifest(s), only of the named sources
+    when sources are given; sorted. These are the pictures a build must have packed first (pack.pack_staged)."""
+    manifests = [manifest] if isinstance(manifest, str) else [m for m in (manifest or []) if m]
+    index = manifest_index([r for m in manifests for r in extract.load_manifest(m)])
+    wanted = set(sources) if sources else None
+    out = set()
+    for _, row in read_accepted(accepted):
+        src = row.get("source") or {}
+        sid = str(src.get("seed_id") or "")
+        if src.get("kind") != "seeded" or not sid or (wanted is not None and sid.split(":", 1)[0] not in wanted):
+            continue
+        if locator(sid, index) is None:
+            out.add(sid)
+    return sorted(out)
 
 
 # ------------------------------------------------------------------------------------------------------ the build
@@ -167,8 +191,9 @@ def build_api_rows(accepted: str, out_path: str, manifest: str | None = None, sc
     {"version": 3, "built", "accepted", "counts", "items"}; the items come sorted by id, so a build is reproducible.
 
     accepted: a local folder of accepted/<route>/<task>.jsonl files, or 'hub:<dataset repo id>'. manifest: the picture list
-    (a jsonl, local or 'hub:<repo>/<path>'; rows with sample_id, split, source, source_id and an image locator), which finds
-    the pictures of sources other than COCO and DOCCI and names the held splits. writers: when given, a row by any other
+    (a jsonl, local or 'hub:<repo>/<path>'; rows with sample_id, split, source, source_id and an image locator), or a list of
+    them (a packed set's manifest beside the main one, see pack.py), which finds the pictures of sources other than COCO and
+    DOCCI and names the held splits. writers: when given, a row by any other
     writer is dropped. licenses: a row whose license (the picture's, from source_label; a specification row's own when the
     label has none) is not listed is dropped; None keeps every license. Held out of training: the screen set's pictures
     (screen), every manifest row of held_manifest_splits and, when museum is given, the pictures the held-out museum read
@@ -185,7 +210,8 @@ def build_api_rows(accepted: str, out_path: str, manifest: str | None = None, sc
     if hold_out and not held_path:
         raise ValueError("hold_out needs held_path: the drawn pictures are written there for the held-out read")
     dropped = Counter()
-    manifest_rows = extract.load_manifest(manifest) if manifest else []
+    manifests = [manifest] if isinstance(manifest, str) else [m for m in (manifest or []) if m]
+    manifest_rows = [r for m in manifests for r in extract.load_manifest(m)]   # several: one index (a later entry wins)
     held = held_seed_ids(screen, manifest_rows, tuple(held_manifest_splits or ()), museum)
     index = manifest_index(manifest_rows)
     allowed_writers = set(writers) if writers is not None else None

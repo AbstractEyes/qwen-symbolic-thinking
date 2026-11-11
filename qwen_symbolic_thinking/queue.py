@@ -16,8 +16,9 @@ under "after": extract specs and tool specs (such as the read of how far the ada
 its screen ends, each reading the adapter it trained (the project repo, <path_in_repo>/final) with the trained model, so a card can
 train, screen and take the held-out reads unattended. Each run
 leaves runs/done/<name>.json on the Hub (started, then done or failed, with the summaries); a spec whose marker exists is
-skipped unless it says "retry". When the queue is empty the lane waits for new specs, polling every minute, and leaves after
-idle_minutes without any."""
+skipped unless it says "retry". A spec may say "waits_for": [paths in the project repo]; until they all exist it waits, unmarked,
+and the lane runs nothing past it (two lanes can share one build this way). When the queue is empty the lane waits for new specs,
+polling every minute, and leaves after idle_minutes without any."""
 from __future__ import annotations
 
 import json
@@ -43,14 +44,20 @@ def _fresh(path_in_repo: str, repo: str):
         return json.load(fh)
 
 
-def _markers(repo: str) -> dict:
+def _repo_files(repo: str) -> set:
     from huggingface_hub import HfApi
-    api = HfApi(token=token())
-    out = {}
-    for f in api.list_repo_files(repo):
-        if f.startswith("runs/done/") and f.endswith(".json"):
-            out[f[len("runs/done/"):-5]] = f
-    return out
+    return set(HfApi(token=token()).list_repo_files(repo))
+
+
+def _markers(repo: str, files=None) -> dict:
+    files = _repo_files(repo) if files is None else files
+    return {f[len("runs/done/"):-5]: f for f in files if f.startswith("runs/done/") and f.endswith(".json")}
+
+
+def missing_inputs(spec: dict, files) -> list:
+    """The project-repo paths a spec waits for that are not there yet: its "waits_for", a list of paths such as the training set
+    another lane builds. A spec with one missing stays in the queue unmarked (its name is not burnt) until they all exist."""
+    return [p for p in spec.get("waits_for") or [] if str(p).strip("/") not in files]
 
 
 def _mark(name: str, payload: dict, repo: str, out_dir: str) -> None:
@@ -219,13 +226,30 @@ def _run_marked(spec: dict, lane: str, repo: str, out_dir: str) -> dict:
     return result
 
 
-def run_queue(lane: str, repo: str = REPO, out_dir: str = "/content/runs", idle_minutes: int = 45, poll_s: int = 60) -> list:
-    """Work through runs/queue_<lane>.json until it is empty for idle_minutes; returns the names run."""
-    ran, idle_since = [], None
+def run_queue(lane: str, repo: str = REPO, out_dir: str = "/content/runs", idle_minutes: int = 45, poll_s: int = 60,
+              wait_hours: float = 12.0) -> list:
+    """Work through runs/queue_<lane>.json until it is empty for idle_minutes; returns the names run. The specs run in queue
+    order: when the next one waits for inputs another lane builds ("waits_for"), the lane polls for them for up to wait_hours,
+    whatever idle_minutes says, and runs nothing past it meanwhile."""
+    ran, idle_since, wait_since, waited_on = [], None, None, None
     while True:
         specs = _fresh(f"runs/queue_{lane}.json", repo) or []
-        markers = _markers(repo)
+        files = _repo_files(repo)
+        markers = _markers(repo, files)
         todo = [s for s in specs if (s["name"] not in markers or s.get("retry")) and runnable_here(s)]
+        missing = missing_inputs(todo[0], files) if todo else []
+        if missing:
+            if wait_since is None:
+                wait_since = time.time()
+            if waited_on != (todo[0]["name"], missing):
+                waited_on = (todo[0]["name"], missing)
+                print(f"[{lane}] {todo[0]['name']} waits for {missing}", flush=True)
+            if time.time() - wait_since > wait_hours * 3600:
+                print(f"[{lane}] {todo[0]['name']} still waits for {missing} after {wait_hours} h; leaving", flush=True)
+                return ran
+            time.sleep(poll_s)
+            continue
+        wait_since, waited_on = None, None
         if not todo:
             if idle_since is None:
                 idle_since = time.time()

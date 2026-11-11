@@ -6,18 +6,23 @@ sft/<tag>.json, so a later run in the same queue can train on `hub:sft/<tag>.jso
 
 The queue passes the run's name as the tag; the result (the counts, the filters, the file's place) goes into the run's marker.
 With "hold_out" in the args, the drawn pictures ship beside the training set as sft/<tag>_held.json (see rows.build_api_rows),
-the held pictures tools.anchors can take for the held-out read."""
+the held pictures tools.anchors can take for the held-out read. With "pack" ({"bucket": "owner/name/folder", "dirs": {source:
+[dirs]}}), the pictures of those sources that no manifest locates are first copied from the bucket into the project repo
+(pack.pack_staged, under pictures/<tag>/), and their manifest joins the build's; the rows are downloaded once, so the pack and the
+build read the same snapshot."""
 from __future__ import annotations
 
 import os
 import tempfile
 
-from .. import REPO
+from .. import REPO, data
 from ..hub import ship
-from ..rows import build_api_rows
+from ..pack import LISTS, pack_staged
+from ..rows import build_api_rows, local_accepted, seeds_without_locator
 
 
-def run(accepted: str, tag: str = "rows", repo: str = REPO, do_ship: bool = True, out_dir: str | None = None, **kwargs) -> dict:
+def run(accepted: str, tag: str = "rows", repo: str = REPO, do_ship: bool = True, out_dir: str | None = None,
+        pack: dict | None = None, **kwargs) -> dict:
     """build_api_rows(accepted, <out_dir>/<tag>.json, **kwargs), shipped under sft/ of the project repo; returns the build's
     counts and filters without the items. JSON lists in kwargs (writers, licenses, the held splits, the forms) are read as the
     tuples the builder takes."""
@@ -28,10 +33,24 @@ def run(accepted: str, tag: str = "rows", repo: str = REPO, do_ship: bool = True
     path = os.path.join(folder, f"{tag}.json")
     if kwargs.get("hold_out"):
         kwargs.setdefault("held_path", os.path.join(folder, f"{tag}_held.json"))
+    packed, packed_hub = None, None
+    if pack:
+        accepted = local_accepted(accepted)
+        need = seeds_without_locator(accepted, kwargs.get("manifest"), list(pack.get("dirs") or {}) or None)
+        packed = pack_staged(need, pack["bucket"], dirs=pack.get("dirs"), out_dir=tempfile.mkdtemp(prefix="pack_"), tag=tag,
+                             repo=repo, lists=pack.get("lists", LISTS), do_ship=do_ship)
+        base = kwargs.get("manifest")
+        kwargs["manifest"] = ([base] if isinstance(base, str) else list(base or [])) + [packed["manifest"]]
+        packed_hub = f"{repo}:{packed['path_in_repo']}/manifest.jsonl"
     built = build_api_rows(accepted, path, **kwargs)
+    if packed:            # the record names the packed manifest by its place in the project repo, not the runtime's folder
+        built["filters"]["manifest"] = [m if m != packed["manifest"] else packed_hub for m in built["filters"]["manifest"]]
+        built["filters"]["pack"] = {k: v for k, v in packed.items() if k != "manifest"}
+        data._write(built, path)
     summary = {"tag": tag, "path_in_repo": f"sft/{tag}.json", "items": len(built["items"]), "counts": built["counts"],
                "filters": built["filters"], "built": built["built"],
-               "held_path_in_repo": f"sft/{os.path.basename(kwargs['held_path'])}" if kwargs.get("hold_out") else None}
+               "held_path_in_repo": f"sft/{os.path.basename(kwargs['held_path'])}" if kwargs.get("hold_out") else None,
+               "pack": {k: v for k, v in packed.items() if k != "manifest"} if packed else None}
     print(f"rows {tag}: {summary['items']} items; dropped {built['counts']['dropped']}", flush=True)
     if do_ship:
         summary["shipped"] = ship(folder, "sft", f"rows {tag}: {summary['items']} items", repo)

@@ -170,6 +170,14 @@ out for the screens and the held-out reads, each drop counted), and `tools.build
 a seeded draw of the training pictures leaves the training set for a file of its own (`sft/<tag>_held.json`), so the held rows
 of `tools.anchors` (`held_pictures` takes one input file or a list) can be pictures from the same sources the adapter trained on.
 
+**Rows that are not public, and pictures that may not be shared.** A training set built from rows that are not public must not
+ship to a public repo. Setting `QST_REPO` before the package is imported points every `hub:` path, queue, marker and shipped
+result of that runtime at another repo, a private twin of the project repo; the notebooks set it in their queue cell. Pictures
+that a row-writing system keeps in a Hugging Face storage bucket (a mutable store) are copied once into parquet shards of the
+project repo by `pack.pack_staged`, with a manifest of `hf_parquet` locators; `tools.build_rows` does it first when given `pack`
+(`{"bucket": "owner/name/folder", "dirs": {source: [folders]}}`), so the pack and the build read one snapshot of the rows. A queue
+spec can name `waits_for` paths: it waits, unmarked, until another lane has built them.
+
 ## Extraction
 
 `qwen_symbolic_thinking.extract.run` has the trained model write whole rows for the pictures of a manifest, the list kept at
@@ -459,6 +467,8 @@ run(kind="t2i", seeds="hub:synth/seeds_v1.json", n=1000, tag="PE_t2i_read")
 
 ## License
 
-Apache-2.0. The Qwen3.5 models are Apache-2.0; the dataset's rows carry their own licences per row. The Qwen-Image 2.1 prompt
-enhancers that `pe.run` reads with are under the Qwen Research Licence (research and evaluation only); nothing of them is
-redistributed here.
+The code is MIT (from v0.1.56; the tags before it were released under Apache-2.0), so anyone may use it and replicate the
+training. The Qwen3.5 models are Apache-2.0; the datasets' rows carry their own licenses per row. Trained weights and row datasets
+are released under what their data allows: Apache-2.0 repos keep the plain name, non-commercial repos take the `-nc` suffix, and
+each ships what is needed to replicate its training. The Qwen-Image 2.1 prompt enhancers that `pe.run` reads with are under the
+Qwen Research License (research and evaluation only); nothing of them is redistributed here.

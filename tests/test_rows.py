@@ -198,6 +198,23 @@ def test_a_seeded_draw_of_pictures_leaves_the_training_set_for_a_file_of_its_own
         build(fixture, hold_out=1)
 
 
+def test_screen_files_and_manifests_can_be_lists(fixture):
+    other = fixture / "other_held.json"
+    other.write_text(json.dumps({"items": [{"id": "h1", "kind": "image", "seed_id": "docci:test_000123"}]}), encoding="utf-8")
+    out = build(fixture, screen=[str(fixture / "screen.json"), str(other)])
+    assert "row-3" not in {it["id"] for it in out["items"]} and out["counts"]["dropped"]["held_out_picture"] == 5
+    extra = fixture / "extra.jsonl"
+    extra.write_text(json.dumps({"sample_id": "x-1", "split": "packed", "source": "nga", "source_id": "77",
+                                 "image": {"kind": "hf_parquet", "repo": "o/r", "path": "p.parquet", "row_index": 0}}) + "\n",
+                     encoding="utf-8")
+    two = build(fixture, manifest=[str(fixture / "manifest.jsonl"), str(extra)])
+    items = {it["id"]: it for it in two["items"]}
+    assert items["row-5"]["image"]["kind"] == "hf_parquet" and two["counts"]["dropped"]["no_locator"] == 1   # nga:10 still pending
+    assert "row-9" not in items                                                    # the first manifest's probe split still held
+    assert rows.seeds_without_locator(str(fixture / "dataset"), str(fixture / "manifest.jsonl"), ["nga"]) == ["nga:10", "nga:77"]
+    assert rows.seeds_without_locator(str(fixture / "dataset"), [str(fixture / "manifest.jsonl"), str(extra)]) == ["nga:10"]
+
+
 def test_the_queue_tool_ships_the_held_pictures_beside_the_training_set(fixture):
     from qwen_symbolic_thinking.tools import build_rows
     folder = fixture / "ship"
