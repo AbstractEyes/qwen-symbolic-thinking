@@ -107,6 +107,23 @@ def test_pack_writes_shards_and_a_manifest_that_fetch_images_reads(bucket, tmp_p
     assert sorted(got) == sorted(r["sample_id"] for r in rows) and got[rows[1]["sample_id"]].size == (16, 12)
 
 
+def test_rows_that_share_a_packed_picture_each_get_it(bucket, tmp_path, monkeypatch):
+    out = pack.pack_staged(["ffhq:101", "deepfashion_mm:MEN-Pants-id_1"], "owner/store/prod", dirs=DIRS,
+                           out_dir=str(tmp_path / "pack"), tag="t", repo="owner/twin", do_ship=False, api=bucket)
+    rows = [json.loads(l) for l in open(out["manifest"], encoding="utf-8")]
+    import huggingface_hub
+    from qwen_symbolic_thinking import extract
+    shards = tmp_path / "pack" / "packed"
+    monkeypatch.setattr(huggingface_hub, "hf_hub_download", lambda repo, path, **kw: str(shards / os.path.basename(path)))
+    face = rows[1]["image"]                  # two rows written on one picture, another picture, and a row past the shard's end
+    items = [{"sample_id": "a", "image": face}, {"sample_id": "b", "image": dict(face)}, {"sample_id": "c", "image": rows[0]["image"]},
+             {"sample_id": "d", "image": dict(face, row_index=99)}]
+    failures = {}
+    got = extract.fetch_images(items, str(tmp_path / "cache"), failures=failures)
+    assert sorted(got) == ["a", "b", "c"] and got["a"].size == got["b"].size == (16, 12) and got["a"] is not got["b"]
+    assert failures == {"d": "row index outside the shard"}
+
+
 def api_row(rid, seed_id, license_="CC BY-NC 4.0"):
     return {"id": rid, "series": "s", "depth": "medium", "rank": 1, "domain": "photograph", "genre": "portrait",
             "spec": {"thing": {"name": "person"}}, "thoughts": [{"step": "see", "text": "A person."}],

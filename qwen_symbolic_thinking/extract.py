@@ -222,7 +222,9 @@ def fetch_images(rows: list, cache_dir: str, workers: int = 16, failures: dict |
             import pyarrow.parquet as pq
             local = hf_hub_download(repo, path, repo_type=rtype, token=token())
             pf = pq.ParquetFile(local)
-            wanted = {r["image"]["row_index"]: r for r in rs}
+            wanted = collections.defaultdict(list)          # row index -> every row that shows that picture
+            for r in rs:
+                wanted[r["image"]["row_index"]].append(r)
             col = rs[0]["image"].get("column", "image")
             start = 0
             for g in range(pf.num_row_groups):
@@ -234,10 +236,18 @@ def fetch_images(rows: list, cache_dir: str, workers: int = 16, failures: dict |
                         cell = tbl.column(col)[i - start].as_py()
                         b = cell.get("bytes") if isinstance(cell, dict) else cell
                         try:
-                            got[wanted[i]["sample_id"]] = _image_from_bytes(b, max_side)
+                            im = _image_from_bytes(b, max_side)
                         except Exception as e:
-                            fails[wanted[i]["sample_id"]] = f"undecodable ({type(e).__name__})"
+                            for r in wanted[i]:
+                                fails[r["sample_id"]] = f"undecodable ({type(e).__name__})"
+                            continue
+                        for j, r in enumerate(wanted[i]):       # a picture several rows were written on loads for each
+                            got[r["sample_id"]] = im if j == 0 else im.copy()
                 start += n
+            for i, group in wanted.items():
+                if not 0 <= i < start:
+                    for r in group:
+                        fails[r["sample_id"]] = "row index outside the shard"
         except Exception as e:
             print(f"  shard {path} failed: {type(e).__name__}: {str(e)[:120]}", flush=True)
             for r in rs:
@@ -317,7 +327,9 @@ def fetch_images(rows: list, cache_dir: str, workers: int = 16, failures: dict |
             from huggingface_hub import HfApi
             files = sorted(s.rfilename for s in HfApi(token=token()).dataset_info(repo).siblings
                            if s.rfilename.endswith(".parquet") and (not split or f"/{split}-" in s.rfilename or f"/{split}/" in s.rfilename))
-            wanted = {r["image"]["key"]: r for r in rs}
+            wanted = collections.defaultdict(list)          # key -> every row that shows that picture
+            for r in rs:
+                wanted[r["image"]["key"]].append(r)
             key_col, img_col = rs[0]["image"]["key_column"], rs[0]["image"]["image_column"]
             for f in files:
                 if not wanted:
@@ -330,14 +342,22 @@ def fetch_images(rows: list, cache_dir: str, workers: int = 16, failures: dict |
                     if hits:
                         imgs = pf.read_row_group(g, columns=[img_col]).column(img_col)
                         for i, k in hits:
+                            group = wanted.pop(k, None)      # None: a key the split holds twice, already loaded
+                            if group is None:
+                                continue
                             cell = imgs[i].as_py()
                             b = cell.get("bytes") if isinstance(cell, dict) else cell
                             try:
-                                out[wanted.pop(k)["sample_id"]] = _image_from_bytes(b, max_side)
+                                im = _image_from_bytes(b, max_side)
                             except Exception as e:
-                                failures[wanted.pop(k)["sample_id"]] = f"undecodable ({type(e).__name__})"
-            for r in wanted.values():
-                failures.setdefault(r["sample_id"], "key not in the split's files")
+                                for r in group:
+                                    failures[r["sample_id"]] = f"undecodable ({type(e).__name__})"
+                                continue
+                            for j, r in enumerate(group):
+                                out[r["sample_id"]] = im if j == 0 else im.copy()
+            for group in wanted.values():
+                for r in group:
+                    failures.setdefault(r["sample_id"], "key not in the split's files")
         except Exception as e:
             print(f"  dataset rows {repo}/{split} failed: {type(e).__name__}: {str(e)[:120]}", flush=True)
             for r in rs:
