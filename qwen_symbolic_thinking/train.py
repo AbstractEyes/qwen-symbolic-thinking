@@ -246,7 +246,14 @@ def run(model_id: str = "Qwen/Qwen3.5-9B", inputs="hub:sft/sft_v1.json", out_dir
     if writers is not None:
         print(f"writers accepted {sorted(writers)}; items by writer {writers_seen}", flush=True)
     t0 = time.time()
-    pictures = fetch_images(items, os.path.join(out_dir, "images"))
+    why_missing = {}              # the picture items whose picture did not load, by reason (they leave the run)
+    picture_items = [it for it in items if it["kind"] == "image"]
+    pictures = fetch_images(picture_items, os.path.join(out_dir, "images"), failures=why_missing)
+    missing = sorted(it["id"] for it in picture_items if it["id"] not in pictures)
+    pictures_missing = {"n": len(missing), "by_reason": {}, "ids": missing[:200]}
+    for m in missing:
+        reason = why_missing.get(m, "?")
+        pictures_missing["by_reason"][reason] = pictures_missing["by_reason"].get(reason, 0) + 1
     items = [it for it in items if it["kind"] != "image" or it["id"] in pictures]
     if anchor_items:
         with_picture = [a for a in anchor_items if a.get("image_urls") or a.get("image")]
@@ -261,7 +268,7 @@ def run(model_id: str = "Qwen/Qwen3.5-9B", inputs="hub:sft/sft_v1.json", out_dir
     for _, form in pairs:
         forms[form] = forms.get(form, 0) + 1
     print(f"train {stamp}: {len(items)} items ({n_img} with a picture), {len(pairs)} examples by form {forms}; images fetched in "
-          f"{time.time() - t0:.0f} s", flush=True)
+          f"{time.time() - t0:.0f} s; pictures that did not load {pictures_missing['n']} {pictures_missing['by_reason']}", flush=True)
     if keys != "record":
         print(f"  question keys and records written as {keys!r} keys (thing_position; relation_a, relation_b, relation_a_b)", flush=True)
 
@@ -400,7 +407,8 @@ def run(model_id: str = "Qwen/Qwen3.5-9B", inputs="hub:sft/sft_v1.json", out_dir
         print(f"  {', '.join(named)} name the Hub id as the base (the weights loaded from {base_dir})", flush=True)
     summary = {"package": __version__, "model": model_id, "full": full, "tag": tag, "rank": rank, "alpha": alpha, "dropout": dropout, "lr": lr,
                "epochs": epochs, "batch": batch, "grad_accum": grad_accum, "max_len": max_len, "items": len(items),
-               "items_with_picture": n_img, "examples": len(pairs), "examples_by_form": forms, "steps": result.global_step,
+               "items_with_picture": n_img, "pictures_missing": pictures_missing, "examples": len(pairs), "examples_by_form": forms,
+               "steps": result.global_step,
                "train_loss": result.training_loss, "s_per_step": round((time.time() - t0) / max(result.global_step, 1), 2),
                "train_min": round((time.time() - t0) / 60, 1), "lora_modules": report, "targets": targets, "inputs": inputs,
                "model_type": family.model_type(model), "trust_remote_code": trust_remote_code, "revision": revision,

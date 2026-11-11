@@ -107,22 +107,29 @@ def test_pack_writes_shards_and_a_manifest_that_fetch_images_reads(bucket, tmp_p
     assert sorted(got) == sorted(r["sample_id"] for r in rows) and got[rows[1]["sample_id"]].size == (16, 12)
 
 
+def api_row(rid, seed_id, license_="CC BY-NC 4.0"):
+    return {"id": rid, "series": "s", "depth": "medium", "rank": 1, "domain": "photograph", "genre": "portrait",
+            "spec": {"thing": {"name": "person"}}, "thoughts": [{"step": "see", "text": "A person."}],
+            "wordings": {"caption": "A person."}, "questions": [], "held": False, "row_id": f"row-{rid}",
+            "source": {"kind": "seeded", "seed_id": seed_id, "license": license_, "model": "m", "seed_dataset": "d"},
+            "writer": {"model": "model-a", "image_size": [512, 512]},
+            "source_label": {"dataset": "d", "item_id": seed_id, "license": license_}}
+
+
+def write_rows(tmp_path):
+    folder = tmp_path / "rows" / "accepted" / "route-a"
+    folder.mkdir(parents=True)
+    rows_ = [api_row("1", "ffhq:101"), api_row("2", "deepfashion_mm:MEN-Pants-id_1"), api_row("3", "ffhq:102"),
+             api_row("4", "coco:100", "CC BY 4.0")]
+    (folder / "t.jsonl").write_text("\n".join(json.dumps(r) for r in rows_) + "\n", encoding="utf-8")
+    (tmp_path / "screen.json").write_text(json.dumps({"items": []}), encoding="utf-8")
+
+
 def test_build_rows_packs_first_and_the_packed_pictures_join_the_build(tmp_path, bucket, monkeypatch):
     from functools import partial
     from qwen_symbolic_thinking.tools import build_rows
 
-    def row(rid, seed_id, license_="CC BY-NC 4.0"):
-        return {"id": rid, "series": "s", "depth": "medium", "rank": 1, "domain": "photograph", "genre": "portrait",
-                "spec": {"thing": {"name": "person"}}, "thoughts": [{"step": "see", "text": "A person."}],
-                "wordings": {"caption": "A person."}, "questions": [], "held": False, "row_id": f"row-{rid}",
-                "source": {"kind": "seeded", "seed_id": seed_id, "license": license_, "model": "m", "seed_dataset": "d"},
-                "writer": {"model": "model-a", "image_size": [512, 512]},
-                "source_label": {"dataset": "d", "item_id": seed_id, "license": license_}}
-    folder = tmp_path / "rows" / "accepted" / "route-a"
-    folder.mkdir(parents=True)
-    rows_ = [row("1", "ffhq:101"), row("2", "deepfashion_mm:MEN-Pants-id_1"), row("3", "ffhq:102"), row("4", "coco:100", "CC BY 4.0")]
-    (folder / "t.jsonl").write_text("\n".join(json.dumps(r) for r in rows_) + "\n", encoding="utf-8")
-    (tmp_path / "screen.json").write_text(json.dumps({"items": []}), encoding="utf-8")
+    write_rows(tmp_path)
     monkeypatch.setattr(build_rows, "pack_staged", partial(build_rows.pack_staged, api=bucket))
     summary = build_rows.run(str(tmp_path / "rows"), tag="v_nc", repo="owner/twin", do_ship=False, out_dir=str(tmp_path / "out"),
                              screen=str(tmp_path / "screen.json"), licenses=None, hold_in_view=[],
@@ -135,6 +142,27 @@ def test_build_rows_packs_first_and_the_packed_pictures_join_the_build(tmp_path,
     assert summary["pack"]["packed"] == 2 and summary["pack"]["asked"] == 3
     assert built["filters"]["manifest"] == ["owner/twin:pictures/v_nc/manifest.jsonl"]
     assert built["filters"]["pack"]["not_packed"] == {"missing from the bucket": 1}
+
+
+def test_the_staged_copy_wins_over_an_older_manifests_picture_of_the_same_number(tmp_path, bucket, monkeypatch):
+    from functools import partial
+    from qwen_symbolic_thinking.tools import build_rows
+
+    write_rows(tmp_path)
+    older = tmp_path / "older.jsonl"         # another copy of the dataset, with a different picture under number 101
+    older.write_text(json.dumps({"sample_id": "x-1", "split": "main", "source": "ffhq", "source_id": "101",
+                                 "image": {"kind": "hf_parquet", "repo": "owner/other", "repo_type": "dataset",
+                                           "path": "data/ffhq.parquet", "row_index": 7, "column": "image"}}) + "\n",
+                     encoding="utf-8")
+    monkeypatch.setattr(build_rows, "pack_staged", partial(build_rows.pack_staged, api=bucket))
+    summary = build_rows.run(str(tmp_path / "rows"), tag="v_nc", repo="owner/twin", do_ship=False, out_dir=str(tmp_path / "out"),
+                             screen=str(tmp_path / "screen.json"), licenses=None, hold_in_view=[], manifest=str(older),
+                             pack={"bucket": "owner/store/prod", "dirs": DIRS})
+    built = json.loads((tmp_path / "out" / "v_nc.json").read_text(encoding="utf-8"))
+    ids = {it["id"]: it for it in built["items"]}
+    assert summary["pack"]["asked"] == 3 and summary["pack"]["packed"] == 2      # 101 is packed although the older copy has it
+    assert ids["row-1"]["image"]["repo"] == "owner/twin" and ids["row-1"]["image"]["path"].startswith("pictures/v_nc/")
+    assert built["filters"]["manifest"] == [str(older), "owner/twin:pictures/v_nc/manifest.jsonl"]
 
 
 def test_a_spec_waits_for_its_inputs_without_burning_its_name(monkeypatch):

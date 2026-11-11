@@ -7,9 +7,10 @@ sft/<tag>.json, so a later run in the same queue can train on `hub:sft/<tag>.jso
 The queue passes the run's name as the tag; the result (the counts, the filters, the file's place) goes into the run's marker.
 With "hold_out" in the args, the drawn pictures ship beside the training set as sft/<tag>_held.json (see rows.build_api_rows),
 the held pictures tools.anchors can take for the held-out read. With "pack" ({"bucket": "owner/name/folder", "dirs": {source:
-[dirs]}}), the pictures of those sources that no manifest locates are first copied from the bucket into the project repo
-(pack.pack_staged, under pictures/<tag>/), and their manifest joins the build's; the rows are downloaded once, so the pack and the
-build read the same snapshot."""
+[dirs]}}), every picture of those sources is first copied from the bucket into the project repo (pack.pack_staged, under
+pictures/<tag>/), and its manifest joins the build's last, so the copies the rows were written from win over an older manifest's
+picture of the same number (two copies of one dataset can number their pictures differently); the rows are downloaded once, so the
+pack and the build read the same snapshot."""
 from __future__ import annotations
 
 import os
@@ -36,7 +37,11 @@ def run(accepted: str, tag: str = "rows", repo: str = REPO, do_ship: bool = True
     packed, packed_hub = None, None
     if pack:
         accepted = local_accepted(accepted)
-        need = seeds_without_locator(accepted, kwargs.get("manifest"), list(pack.get("dirs") or {}) or None)
+        sources = list(pack.get("dirs") or {}) or None
+        # Every picture of the named sources comes from the staged copies the rows were written from, even where an older
+        # manifest holds a picture under the same number: two copies of one dataset can number their pictures differently.
+        # The packed manifest goes last, so its locators win. With no sources named, only what no manifest locates is packed.
+        need = seeds_without_locator(accepted, None if sources else kwargs.get("manifest"), sources)
         packed = pack_staged(need, pack["bucket"], dirs=pack.get("dirs"), out_dir=tempfile.mkdtemp(prefix="pack_"), tag=tag,
                              repo=repo, lists=pack.get("lists", LISTS), do_ship=do_ship)
         base = kwargs.get("manifest")
