@@ -72,3 +72,9 @@ def test_blanked_zeroes_the_pixels_only_and_verdicts():
     assert picture_probe.verdict(1.0, 1.01, 1.02) == "blind"
     assert picture_probe.verdict(1.0, None, 1.5) == "sees"
     assert picture_probe.verdict(1.0, 1.1, 1.1) == "partial"
+
+
+def test_new_tool_modules_import_without_torch():
+    from importlib import import_module
+    for name in ("anchors", "keep_read", "build_rows"):
+        assert callable(import_module(f"qwen_symbolic_thinking.tools.{name}").run)

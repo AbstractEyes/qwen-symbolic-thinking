@@ -99,6 +99,75 @@ extractions), leaving `runs/done/<name>.json` per run; `notebooks/lane1.ipynb` t
 runs under `after`: extract specs (the held-out probe split, the museum pictures) that run as soon as its screen ends, reading the
 adapter it trained with the model it trained, so one queue entry trains, screens and reads an arm.
 
+## Training rules
+
+- Every training item names its writer: the model, or the people, whose text the item teaches (`writer`). Rows written by an
+  outside row-writing system carry theirs (`rows.build_api_rows` copies it from the row), and the general rows name the base model
+  that answered them.
+- A run lists the writers it accepts (`writers`). An item whose writer is missing, or not on the list, stops the run before
+  anything loads (`keep.check_writers`); the summary records the items by writer. With no list nothing is checked.
+- The optimizer is plain Adam with a cosine schedule and a short warmup, and no weight decay. Whatever regularization a run needs
+  lives in the loss, where it can be read, not in the optimizer.
+- Every keeping term is read against the base model through the adapter's off switch: the same weights with the LoRA disabled,
+  no gradient, so no second copy of the model is held. A run with a keeping term is therefore a LoRA run.
+- Every trained adapter is read for preservation beside the task reads, at each scale it may ship at: `tools.keep_read` loads the
+  adapter without merging it, scales every LoRA layer by the scale, and reads the drift from the base on held general rows. A
+  queue train spec names it under `after` as a `tool` entry, which fills in the model and the adapter the training shipped.
+- The adapter's starting matrices follow the run's seed when `seed_adapter` is set (otherwise only the Trainer is seeded, and every
+  process draws its own starting matrices), so two runs of one recipe start from the same adapter.
+
+## Keeping the base model's behavior
+
+Teaching one answer form moves more than the form: the form starts to appear where it was not asked for, and the model's other
+answers drift away from the base model's. `keep.py` holds the adapted model near the base with three terms, each a mean over the
+answer positions of its micro-batch, each weighed by a `train.run` argument:
+
+| term | weight | what it computes |
+|---|---|---|
+| general KL | `general_kl` | `lambda_g * KL( p_base \|\| p_tuned )` at the answer positions of the general rows; the base side runs with the adapter off and no gradient |
+| target-masked KL | `target_kl` | `lambda_t * KL( p_base^-y \|\| p_tuned^-y )` at the answer positions of the training rows, where `p^-y` is the next-token distribution with the training token `y` removed and the rest renormalized; positions where the base already gives `y` more than 1 - 1e-4 are left out |
+| rehearsal | `rehearsal` | `mu * CE` on the general rows, the base's own answers as targets (no base pass at training time) |
+
+With any term on, the loss of a step is `CE(training rows) + general_kl * KL_g + target_kl * KL_t + rehearsal * CE_g`; with every
+weight at zero the plain Trainer runs, unchanged. The target-masked term keeps the base's ranking of the alternatives at every
+position without opposing the cross-entropy on the training token (Xu et al., "Mask the Target: A Plug-and-Play Regularizer
+Against LoRA Forgetting", arXiv 2605.29498). Rehearsal on the base model's own outputs is the approximate regularized replay of
+Riemer et al., "The Effectiveness of Approximate Regularized Replay for Efficient Supervised Fine-Tuning of Large Language
+Models" (arXiv 2512.22337), and general rows made by the model itself follow Wang et al., "Two-stage LLM Fine-tuning with Less
+Specialization and More Generalization" (arXiv 2211.00635), whose second stage trains on the model's own outputs. For the
+multimodal case, Li et al., "Fine-tuning MLLMs Without Forgetting Is Easier Than You Think" (arXiv 2603.14493) report that
+forgetting in a vision-language model is largely recoverable and shrinks with a small adapter and rehearsal.
+
+**General rows** are requests that do not ask for the row form, answered by the base model itself: items of kind `anchor`, with a
+`prompt`, an `answer`, a `writer` and, for a picture, its locator. `qwen_symbolic_thinking.tools.anchors` writes them on a GPU with
+no adapter, greedy decoding and thinking off:
+
+| rows | the request | the answer |
+|---|---|---|
+| picture rows | one of 22 everyday questions about a training picture ("What is the main subject of this picture?", a caption, a poem, a question in French), one drawn for each picture, the pictures taken round-robin over their sources | the base model's, with the picture |
+| text rows | a request the base model writes itself: the chat template's opening of a user turn is sampled from (temperature 1.0, top-p 0.95, seeded) until the turn ends, kept at 20 to 500 characters, repeats dropped (Xu et al., "Magpie: Alignment Data Synthesis from Scratch by Prompting Aligned LLMs with Nothing", arXiv 2406.08464) | the base model's |
+| held rows | the same two kinds, for pictures and requests kept out of training; each held picture also gets one request for a detailed description | the base model's |
+
+An answer that reaches its token cap never ended, so it is dropped. The tool ships `anchors/<tag>/anchors.json` (for training),
+`held.json` and `summary.json` (counts, seconds a row, tokens a second, the drops). `train.run(anchors=..., anchor_batch=...)` draws
+`anchor_batch` general rows beside every micro-batch of training rows, in a seeded order, cycling.
+
+**Three reads** of how far an adapter moved the model, on the held general rows (`tools.keep_read`; `keep/<stamp>_<tag>/rows.jsonl`
+keeps every row at every scale):
+
+| read | what it measures |
+|---|---|
+| drift | teacher-forced on each held row's own answer: the mean KL(p_base \|\| p_tuned) over the answer positions (per row; reported as the mean, the 50th, 90th and 99th percentile, and the mean at each of the first eight positions), and exp(mean tuned NLL) / exp(mean base NLL) |
+| takeover, stop, agreement | greedy answers to the held requests: the share written in the row form, the share that end before the token cap, the answer's length against the base's, and the word overlap (token F1) with the base's answer |
+| detail inside the row form | the full row form asked of each held picture the base also described in detail: the share of the base's content words the row still holds (recall), and the row's length |
+
+The scale of a read multiplies every LoRA layer's scaling, so a scale of 0.5 reads the adapter at half strength and 0 reads the
+base itself (where the third read is the base model writing the row form on its own). `screen.run` and `extract.run` take the same
+`adapter_scale` (default 1.0) and merge the adapter at that strength, interpolating between the base and the adapter as trained
+(the delta form of weight interpolation, Wortsman et al., "Robust fine-tuning of zero-shot models", arXiv 2109.01903). Rows
+written by outside writers become items through `rows.build_api_rows` (the writers and licenses a run accepts, the pictures held
+out for the screens and the held-out reads, each drop counted), and `tools.build_rows` runs it inside a queue.
+
 ## Extraction
 
 `qwen_symbolic_thinking.extract.run` has the trained model write whole rows for the pictures of a manifest, the list kept at

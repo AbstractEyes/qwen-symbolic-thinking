@@ -12,8 +12,9 @@ prompt enhancers read a manifest's pictures or rewrite the seeds' prompts (pe.ru
 an adapter when given, without training (screen.run; its "screen" keys: models, adapter, forms, ...). A tool spec runs a diagnostic of
 the tools package by name ({"module": <name under tools/>, "args": {...}}; its run() takes the args, the run's name as tag and the
 repo, and its result goes into the marker). A train spec may name runs
-under "after": extract specs run as soon as its screen ends, each reading the adapter it trained (the project repo,
-<path_in_repo>/final) with the trained model, so a card can train, screen and take the held-out reads unattended. Each run
+under "after": extract specs and tool specs (such as the read of how far the adapter moved the model, tools.keep_read) run as soon as
+its screen ends, each reading the adapter it trained (the project repo, <path_in_repo>/final) with the trained model, so a card can
+train, screen and take the held-out reads unattended. Each run
 leaves runs/done/<name>.json on the Hub (started, then done or failed, with the summaries); a spec whose marker exists is
 skipped unless it says "retry". When the queue is empty the lane waits for new specs, polling every minute, and leaves after
 idle_minutes without any."""
@@ -129,18 +130,18 @@ def run_spec(spec: dict, lane: str, repo: str, out_dir: str) -> dict:
 
 
 def after_specs(spec: dict, path_in_repo: str, repo: str = REPO) -> list:
-    """The runs a train spec names under "after", made whole: each an extract spec reading what the training shipped, with
-    its system prompt when it had one: for a LoRA, adapter = the project repo and adapter_subfolder = <path_in_repo>/final
-    on the model it trained; for a full fine-tune (rank 0), model_id = hub:<path_in_repo>/final and no adapter. A key the
-    entry sets itself is kept. Only extract runs may follow a training."""
+    """The runs a train spec names under "after", made whole: each an extract spec or a tool spec reading what the training
+    shipped, with its system prompt when it had one (an extract run): for a LoRA, adapter = the project repo and
+    adapter_subfolder = <path_in_repo>/final on the model it trained; for a full fine-tune (rank 0), model_id =
+    hub:<path_in_repo>/final and no adapter. For a tool run the keys go into its "args" (model_id, adapter, adapter_subfolder:
+    the read of how far an adapter moved the model, tools.keep_read, takes them). A key the entry sets itself is kept. Only
+    extract and tool runs may follow a training."""
     out = []
     train = spec.get("train") or {}
     full = train.get("rank", 32) == 0
     final = f"{path_in_repo.strip('/')}/final"
-    for entry in spec.get("after") or []:
-        if entry.get("kind") != "extract":
-            raise ValueError(f"after {entry.get('name')!r}: only extract runs follow a training, not {entry.get('kind')!r}")
-        x = dict(entry["extract"])
+
+    def fill(x: dict) -> dict:
         if full:
             x.setdefault("model_id", f"hub:{final}")
             x.setdefault("adapter", None)
@@ -148,10 +149,22 @@ def after_specs(spec: dict, path_in_repo: str, repo: str = REPO) -> list:
             x.setdefault("model_id", train.get("model_id", "Qwen/Qwen3.5-9B"))
             x.setdefault("adapter", repo)
             x.setdefault("adapter_subfolder", final)
-        for key in ("system", "trust_remote_code", "revision", "image_settings"):
-            if train.get(key) is not None:
-                x.setdefault(key, train[key])
-        out.append({**entry, "extract": x})
+        return x
+
+    for entry in spec.get("after") or []:
+        kind = entry.get("kind")
+        if kind == "extract":
+            x = fill(dict(entry["extract"]))
+            for key in ("system", "trust_remote_code", "revision", "image_settings"):
+                if train.get(key) is not None:
+                    x.setdefault(key, train[key])
+            out.append({**entry, "extract": x})
+        elif kind == "tool":
+            t = dict(entry["tool"])
+            t["args"] = fill(dict(t.get("args") or {}))
+            out.append({**entry, "tool": t})
+        else:
+            raise ValueError(f"after {entry.get('name')!r}: only extract and tool runs follow a training, not {kind!r}")
     return out
 
 

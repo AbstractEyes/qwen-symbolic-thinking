@@ -56,3 +56,32 @@ def test_model_ids_resolve_and_shorten_without_the_hub():
     assert hub.resolve_model("/content/train/x/adapter") == "/content/train/x/adapter"
     assert hub.model_short("Qwen/Qwen3.5-0.8B") == "Qwen3.5-0.8B"
     assert hub.model_short("hub:full/Qwen3.5-2B/20261101_000000_F/final") == "Qwen3.5-2B"
+
+
+def test_after_specs_fill_a_tool_entry_with_the_trained_adapter():
+    keep_read = {"name": "K_4b", "kind": "tool", "tool": {"module": "keep_read", "args": {"held": "hub:anchors/g1/held.json", "scales": [0.5, 1.0]}}}
+    spec = {**SPEC, "after": [keep_read, {"name": "P", "kind": "extract", "extract": PROBE}]}
+    out = queue.after_specs(spec, PATH)
+    args = out[0]["tool"]["args"]
+    assert out[0]["tool"]["module"] == "keep_read" and args["held"] == "hub:anchors/g1/held.json" and args["scales"] == [0.5, 1.0]
+    assert args["model_id"] == "Qwen/Qwen3.5-4B" and args["adapter"] == queue.REPO and args["adapter_subfolder"] == PATH + "/final"
+    assert out[1]["extract"]["adapter"] == queue.REPO
+    assert "model_id" not in keep_read["tool"]["args"]                                   # the queue's own entry is not changed
+    own = {"name": "K2", "kind": "tool", "tool": {"module": "keep_read", "args": {"model_id": "Qwen/Qwen3.5-9B", "adapter": "owner/x"}}}
+    kept = queue.after_specs({**SPEC, "after": [own]}, PATH, repo="owner/other")[0]["tool"]["args"]
+    assert kept["model_id"] == "Qwen/Qwen3.5-9B" and kept["adapter"] == "owner/x" and kept["adapter_subfolder"] == PATH + "/final"
+    bare = queue.after_specs({**SPEC, "after": [{"name": "K3", "kind": "tool", "tool": {"module": "keep_read"}}]}, PATH)
+    assert bare[0]["tool"]["args"]["adapter"] == queue.REPO
+    full = queue.after_specs({**SPEC, "train": {**SPEC["train"], "rank": 0}, "after": [keep_read]}, "full/Qwen3.5-4B/20261101_x")
+    assert full[0]["tool"]["args"]["model_id"] == "hub:full/Qwen3.5-4B/20261101_x/final" and full[0]["tool"]["args"]["adapter"] is None
+    with pytest.raises(ValueError):
+        queue.after_specs({**SPEC, "after": [{"name": "S", "kind": "screen", "screen": {}}]}, PATH)
+
+
+def test_screen_and_extract_take_adapter_scale():
+    import inspect
+    from qwen_symbolic_thinking import extract, screen
+    for fn in (screen.run, extract.run):
+        p = inspect.signature(fn).parameters["adapter_scale"]
+        assert p.default == 1.0
+        assert "adapter_scale" in inspect.getsource(fn).split("load_model(", 1)[1].split(")", 1)[0]

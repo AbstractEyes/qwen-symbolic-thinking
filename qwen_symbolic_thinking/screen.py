@@ -180,9 +180,11 @@ def model_source(model_id: str, trust_remote_code: bool = False, revision: str |
 
 
 def load_model(model_id: str, thinking: bool, adapter: str | None = None, adapter_subfolder: str | None = None,
-               trust_remote_code: bool = False, revision: str | None = None, image_settings: dict | None = None):
+               trust_remote_code: bool = False, revision: str | None = None, image_settings: dict | None = None,
+               adapter_scale: float = 1.0):
     """The processor and the model on the card; with an adapter (a local folder or a Hub repo, with a subfolder), the LoRA
-    weights are merged into the model. A 'hub:<path>' model id is a full fine-tune shipped under the project repo. With
+    weights are merged into the model, scaled by adapter_scale (keep.scale_adapter: 1 = the adapter as trained, 0 = the base,
+    between = the weights interpolated). A 'hub:<path>' model id is a full fine-tune shipped under the project repo. With
     trust_remote_code the repository's own code loads (from a snapshot at the pinned revision); image_settings go to the
     image processor (family.apply_image_settings)."""
     import torch
@@ -201,7 +203,13 @@ def load_model(model_id: str, thinking: bool, adapter: str | None = None, adapte
     if adapter:
         from peft import PeftModel
         kwargs = {"subfolder": adapter_subfolder} if adapter_subfolder else {}
-        model = PeftModel.from_pretrained(model, adapter, token=token(), **kwargs).merge_and_unload()
+        model = PeftModel.from_pretrained(model, adapter, token=token(), **kwargs)
+        if adapter_scale != 1.0:
+            from .keep import scale_adapter
+            print(f"  the adapter merged at scale {adapter_scale} ({scale_adapter(model, adapter_scale)} layers)", flush=True)
+        model = model.merge_and_unload()
+    elif adapter_scale != 1.0:
+        raise ValueError("adapter_scale needs an adapter")
     model.eval()
     return processor, model
 
@@ -338,11 +346,13 @@ def run(models: list, inputs: str = "hub:screens/inputs/screen_v1.json", out_dir
         max_new_tokens: int = 700, thinking: bool = False, sampling: dict | None = None, repo: str = REPO,
         do_ship: bool = True, adapter: str | None = None, adapter_subfolder: str | None = None, tag: str = "",
         system: str | None = None, trust_remote_code: bool = False, revision: str | None = None,
-        image_settings: dict | None = None, keys: str = "record") -> dict:
+        image_settings: dict | None = None, keys: str = "record", adapter_scale: float = 1.0) -> dict:
     """The screen over every model and form; results and summaries on disk and on the Hub (screens/<stamp>[_<tag>]/). With
     system (see prompts.system) every row's conversation opens with that system turn. trust_remote_code / revision: for a
     family whose repository code runs (see family), pinned to a revision; image_settings: the image processor's (a picture
-    budget); keys (chain.KEYS): how the specification rows' records are written, as the model was trained."""
+    budget); keys (chain.KEYS): how the specification rows' records are written, as the model was trained. adapter_scale: the
+    strength the adapter is merged at (load_model: 1 = as trained, 0 = the base); it is recorded in env.json, on every result
+    and in summary.md."""
     if keys not in chain.KEYS:
         raise ValueError(f"unknown keys {keys!r}: one of {chain.KEYS}")
     stamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S") + (f"_{tag}" if tag else "")
@@ -365,13 +375,15 @@ def run(models: list, inputs: str = "hub:screens/inputs/screen_v1.json", out_dir
                    "max_new_tokens": max_new_tokens, "thinking": thinking, "sampling": sampling,
                    "adapter": adapter, "adapter_subfolder": adapter_subfolder, "system": system,
                    "trust_remote_code": trust_remote_code, "revision": revision, "image_settings": image_settings,
-                   "keys": keys, "n_images": len(image_items), "n_specs": len(spec_items)}, fh, indent=1)
+                   "keys": keys, "adapter_scale": adapter_scale, "n_images": len(image_items), "n_specs": len(spec_items)},
+                  fh, indent=1)
     results_path = os.path.join(out_dir, "results.jsonl")
     all_results = []
     for model_id in models:
         print(f"\n== {model_id}" + (f" + {adapter}/{adapter_subfolder or ''}" if adapter else ""), flush=True)
         t_load = time.time()
-        processor, model = load_model(model_id, thinking, adapter, adapter_subfolder, trust_remote_code, revision, image_settings)
+        processor, model = load_model(model_id, thinking, adapter, adapter_subfolder, trust_remote_code, revision, image_settings,
+                                      adapter_scale)
         mark = family.marker(model)
         print(f"  loaded in {time.time() - t_load:.0f} s" + (f" ({family.model_type(model)}: picture marker {mark})" if mark else ""), flush=True)
         if system_text:
@@ -397,7 +409,7 @@ def run(models: list, inputs: str = "hub:screens/inputs/screen_v1.json", out_dir
                     parsed = chain.parse(text)
                     rec = {"model": model_id, "form": form, "id": it["id"], "depth": it["depth"], "kind": it["kind"],
                            "text": text, "parsed": parsed, "scores": chain.score(parsed, it),
-                           "reference": chain.reference(it), "gen_s": dt, "new_tokens": n_new}
+                           "reference": chain.reference(it), "gen_s": dt, "new_tokens": n_new, "adapter_scale": adapter_scale}
                     results.append(rec)
                     with open(results_path, "a", encoding="utf-8") as fh:
                         fh.write(json.dumps(rec, ensure_ascii=False) + "\n")
@@ -430,7 +442,8 @@ def run(models: list, inputs: str = "hub:screens/inputs/screen_v1.json", out_dir
     with open(os.path.join(out_dir, "summary.json"), "w", encoding="utf-8") as fh:
         json.dump(summary, fh, indent=1)
     with open(os.path.join(out_dir, "summary.md"), "w", encoding="utf-8") as fh:
-        fh.write(table(summary) + "\n\nlinear attention: " + fast_path_note() + "\n")
+        fh.write(table(summary) + ("" if adapter_scale == 1.0 else f"\n\nadapter scale: {adapter_scale}")
+                 + "\n\nlinear attention: " + fast_path_note() + "\n")
     with open(os.path.join(out_dir, "library_notes.json"), "w", encoding="utf-8") as fh:
         json.dump(LIBRARY_NOTES[-50:], fh, indent=1)
     if do_ship:

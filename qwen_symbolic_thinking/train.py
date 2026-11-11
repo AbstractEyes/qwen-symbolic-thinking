@@ -19,7 +19,7 @@ import random
 import time
 from datetime import datetime, timezone
 
-from . import REPO, __version__, chain, family, prompts
+from . import REPO, __version__, chain, family, keep, prompts
 from .hub import model_short, resolve_model, ship
 from .extract import fetch_images                # by url list or by locator (a pretrain shard row, a Hub file, a zip member)
 from .screen import encode, load_inputs, load_vlm, preflight
@@ -53,8 +53,8 @@ def conversation(it: dict, form: str, image=None, system: str | None = None, mar
                  keys: str = "record") -> tuple:
     """(the messages, the answer text) of one item under one form: the user turn, after a system turn when a system prompt is given.
     With a picture marker (family.marker) the user content is one string. keys (chain.KEYS): how the answer's question keys and
-    a specification's records are written, the same way on both sides."""
-    depth = it["depth"]
+    a specification's records are written, the same way on both sides. The form "anchor" is a general row (keep.py)."""
+    depth = it.get("depth")       # a general row has none
     if form == "short":
         user, answer = family.content(prompts.short(depth), image, mark), chain.render(it, keys=keys)
     elif form == "full":
@@ -63,6 +63,8 @@ def conversation(it: dict, form: str, image=None, system: str | None = None, mar
         user, answer = family.content(prompts.spec_short(depth, it["spec"], keys), None, mark), chain.render(it, keys=keys)
     elif form == "spec_full":
         user, answer = family.content(prompts.spec_full(depth, it["spec"], keys), None, mark), chain.render(it, full=True, keys=keys)
+    elif form == "anchor":     # a general row (keep.py): its own request, its picture when it has one, the base model's answer
+        user, answer = family.content(it["prompt"], image, mark), it["answer"]
     else:
         raise ValueError(f"unknown form {form!r}")
     return ([{"role": "system", "content": system}] if system else []) + [{"role": "user", "content": user}], answer
@@ -101,7 +103,7 @@ class Collator:
     def __call__(self, pairs: list) -> dict:
         texts, images, lengths = [], [], []
         for it, form in pairs:
-            image = self.pictures.get(it["id"]) if it["kind"] == "image" else None
+            image = self.pictures.get(it["id"]) if it["kind"] in ("image", "anchor") else None   # a general row may have none
             messages, answer = conversation(it, form, image, self.system, self.mark, self.keys)
             prefix = self.processor.apply_chat_template(messages, add_generation_prompt=True, tokenize=False,
                                                         **family.thinking_kwargs(self.processor, False))
@@ -196,7 +198,8 @@ def run(model_id: str = "Qwen/Qwen3.5-9B", inputs="hub:sft/sft_v1.json", out_dir
         repo: str = REPO, do_ship: bool = True, seed: int = 20261030, tag: str = "", init_adapter: str | None = None,
         system: str | None = None, trust_remote_code: bool = False, revision: str | None = None,
         targets: str | None = None, image_settings: dict | None = None, keys: str = "record",
-        max_steps: int | None = None) -> dict:
+        max_steps: int | None = None, anchors=None, anchor_batch: int = 4, general_kl: float = 0.0,
+        target_kl: float = 0.0, rehearsal: float = 0.0, writers: list | None = None, seed_adapter: bool = False) -> dict:
     """Train the adapter; return {adapter_dir, path_in_repo, steps, s_per_step, train_loss, ...}. With init_adapter (see
     adapter_source) training continues from that trained adapter instead of a fresh LoRA; its rank and alpha must be the ones passed.
     With system (see prompts.system) every example carries that system turn before its user turn. Rank 0 is a full fine-tune of
@@ -204,10 +207,22 @@ def run(model_id: str = "Qwen/Qwen3.5-9B", inputs="hub:sft/sft_v1.json", out_dir
     with its processor. ship_every: the adapter ships every so many steps (100 by default; a full model ships only at the end).
     keys (chain.KEYS): how the answers' question keys and the specification rows' records are written ("record", the dataset's
     names, or "relation": relation_a, relation_b, ..., thing_position). max_steps: the run's length in steps instead of epochs (the
-    cosine schedule and its warmup span those steps)."""
+    cosine schedule and its warmup span those steps).
+
+    Keeping the base model's behavior (keep.py; a LoRA only): general_kl weighs KL(base || tuned) on general rows (anchors: one
+    input file or a list, items of kind "anchor" answered by the base model; anchor_batch of them ride beside every micro-batch),
+    target_kl weighs the target-masked KL on the training rows, rehearsal weighs cross-entropy on the general rows. With all three
+    at zero the plain Trainer runs. writers: the writers whose text this run may learn from; an item whose `writer` is missing or
+    not listed stops the run before anything loads (None: not checked). seed_adapter: seed the global generator before the LoRA
+    is built, so the adapter's starting matrices follow the seed (by default they do not: the seed reaches the Trainer only)."""
     if keys not in chain.KEYS:
         raise ValueError(f"unknown keys {keys!r}: one of {chain.KEYS}")
     full = rank == 0
+    keep_on = general_kl > 0 or target_kl > 0 or rehearsal > 0
+    if keep_on and full:
+        raise ValueError("general_kl, target_kl and rehearsal read the base model through the adapter's off switch: a LoRA only")
+    if (general_kl > 0 or rehearsal > 0) and not anchors:
+        raise ValueError("general_kl and rehearsal are read on general rows: pass anchors")
     import torch
     from transformers import AutoProcessor, Trainer, TrainerCallback, TrainingArguments
     if not full:
@@ -226,9 +241,19 @@ def run(model_id: str = "Qwen/Qwen3.5-9B", inputs="hub:sft/sft_v1.json", out_dir
     env = preflight()
     src = resolve_model(model_id, repo)
     items = load_items(inputs)[:n_items]
+    anchor_items = load_items(anchors) if (anchors and (general_kl > 0 or rehearsal > 0)) else []
+    writers_seen = keep.check_writers(items + anchor_items, writers)
+    if writers is not None:
+        print(f"writers accepted {sorted(writers)}; items by writer {writers_seen}", flush=True)
     t0 = time.time()
     pictures = fetch_images(items, os.path.join(out_dir, "images"))
     items = [it for it in items if it["kind"] != "image" or it["id"] in pictures]
+    if anchor_items:
+        with_picture = [a for a in anchor_items if a.get("image_urls") or a.get("image")]
+        pictures.update(fetch_images(with_picture, os.path.join(out_dir, "images")))
+        anchor_items = [a for a in anchor_items if not (a.get("image_urls") or a.get("image")) or a["id"] in pictures]
+        print(f"general rows: {len(anchor_items)} ({sum(1 for a in anchor_items if a['id'] in pictures)} with a picture), "
+              f"{anchor_batch} beside every micro-batch; general_kl {general_kl}, rehearsal {rehearsal}", flush=True)
     pairs = examples_of(items)
     random.Random(seed).shuffle(pairs)
     n_img = sum(1 for it in items if it["kind"] == "image")
@@ -286,6 +311,9 @@ def run(model_id: str = "Qwen/Qwen3.5-9B", inputs="hub:sft/sft_v1.json", out_dir
     else:
         config = LoraConfig(r=rank, lora_alpha=alpha, lora_dropout=dropout, bias="none", target_modules=targets,
                             task_type=TaskType.CAUSAL_LM)
+        if seed_adapter:     # the starting A matrices follow the seed (otherwise every process draws its own)
+            from transformers import set_seed
+            set_seed(seed)
         model = get_peft_model(model, config)
     if not full and not input_grads and family.drop_input_grads(model):   # PEFT re-installs the hook on a checkpointing model
         print("  the input-embedding grad hook PEFT installed is removed (this family adds its pictures to that output in place)", flush=True)
@@ -312,6 +340,7 @@ def run(model_id: str = "Qwen/Qwen3.5-9B", inputs="hub:sft/sft_v1.json", out_dir
         print("  this transformers' TrainingArguments lacks", dropped, "(left out)", flush=True)
     args = TrainingArguments(**{k: v for k, v in wanted.items() if k in allowed})
     log = []
+    keep_stats = {}          # the keeping terms' running sums between two log lines (keep.keep_trainer)
 
     class Progress(TrainerCallback):
         def __init__(self):
@@ -327,9 +356,14 @@ def run(model_id: str = "Qwen/Qwen3.5-9B", inputs="hub:sft/sft_v1.json", out_dir
             done = max(state.global_step, 1)
             rec = {"step": state.global_step, "spent_s": round(spent), "left_s": round(spent / done * (total - done)),
                    "s_per_step": round(spent / done, 2), **{k: v for k, v in (logs or {}).items() if k in ("loss", "learning_rate")}}
+            n = keep_stats.pop("n", 0)
+            terms = {k: round(keep_stats.pop(k) / n, 5) for k in list(keep_stats)} if n else {}
+            keep_stats.clear()
+            rec.update(terms)
             log.append(rec)
-            print(f"  step {rec['step']}/{total}: loss {rec.get('loss', float('nan')):.4f}, {rec['spent_s']} s spent, "
-                  f"{rec['left_s']} s left, {rec['s_per_step']} s/step", flush=True)
+            print(f"  step {rec['step']}/{total}: loss {rec.get('loss', float('nan')):.4f}"
+                  + "".join(f", {k} {v}" for k, v in terms.items())
+                  + f", {rec['spent_s']} s spent, {rec['left_s']} s left, {rec['s_per_step']} s/step", flush=True)
             if do_ship and ship_every and state.global_step and state.global_step % ship_every == 0 and state.global_step < total:
                 model.save_pretrained(adapter_dir)
                 name_base(adapter_dir, base_dir, model_id, repo)
@@ -342,8 +376,13 @@ def run(model_id: str = "Qwen/Qwen3.5-9B", inputs="hub:sft/sft_v1.json", out_dir
         probe = collate([pic, spc])
         print(f"  a mixed batch (a picture row, a specification row) encodes: input_ids {tuple(probe['input_ids'].shape)}", flush=True)
         collate.collated = collate.cut = collate.longest = 0   # the counts are the training batches'
-    trainer = Trainer(model=model, args=args, train_dataset=Pairs(pairs), data_collator=collate,
-                      optimizers=(optimizer, None), callbacks=[Progress()])
+    data_collator, anchor_collate = collate, None
+    if anchor_items:
+        anchor_collate = Collator(processor, pictures, max_len, system_text, mark, family.model_type(model), keys)
+        data_collator = keep.PairedCollator(collate, anchor_items, anchor_batch, seed, anchor_collate)
+    trainer_class = keep.keep_trainer(general_kl, target_kl, rehearsal, keep_stats) if keep_on else Trainer
+    trainer = trainer_class(model=model, args=args, train_dataset=Pairs(pairs), data_collator=data_collator,
+                            optimizers=(optimizer, None), callbacks=[Progress()])
     result = trainer.train()
     if full:   # the whole model in bf16, with its processor, so the folder loads on its own
         from transformers import GenerationConfig
@@ -368,6 +407,10 @@ def run(model_id: str = "Qwen/Qwen3.5-9B", inputs="hub:sft/sft_v1.json", out_dir
                "image_settings": image_settings,
                "init_adapter": init_adapter, "system": system, "system_tokens": system_tokens, "path_in_repo": path_in_repo,
                "keys": keys, "max_steps": max_steps,
+               "keep": {"general_kl": general_kl, "target_kl": target_kl, "rehearsal": rehearsal, "anchors": anchors,
+                        "anchor_items": len(anchor_items), "anchor_batch": anchor_batch if anchor_items else 0,
+                        "anchor_examples_cut_at_max_len": anchor_collate.cut if anchor_collate else 0},
+               "writers": writers, "items_by_writer": writers_seen, "seed_adapter": seed_adapter,
                "collated_examples": collate.collated, "examples_cut_at_max_len": collate.cut, "longest_example_tokens": collate.longest,
                "env": env, "log": log}
     print(f"  examples longer than max_len {max_len} (answer tail cut): {collate.cut} of {collate.collated} collated "
