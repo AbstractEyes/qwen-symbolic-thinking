@@ -147,6 +147,7 @@ def seeds_without_locator(accepted: str, manifest=None, sources=None) -> list:
 # ------------------------------------------------------------------------------------------------------ the build
 NO_PICTURE_LICENSE = "picture in view, its own license not given"
 NO_OWN_LICENSE = "picture shown in training, its own license not given"
+IN_VIEW_KEPT_OUT = "written with the picture in view, kept out of this set"
 
 
 def load_picture_licenses(picture_licenses) -> dict:
@@ -191,7 +192,7 @@ def make_item(row: dict, route: str, picture: tuple | None, forms_picture: tuple
 def build_api_rows(accepted: str, out_path: str, manifest: str | None = None, screen: str | None = DEFAULT_SCREEN,
                    writers=None, licenses=DEFAULT_LICENSES, held_manifest_splits=("probe",), museum: dict | None = None,
                    forms_picture=("full", "short"), forms_spec=("spec_full",), hold_in_view=("coco",),
-                   picture_licenses=None, own_license_sources=(), hold_out: int = 0, hold_seed: int = 0,
+                   picture_licenses=None, own_license_sources=(), drop_in_view=(), hold_out: int = 0, hold_seed: int = 0,
                    held_path: str | None = None) -> dict:
     """Training items from the accepted rows of an outside row-writing system, written to out_path as one input file
     {"version": 3, "built", "accepted", "counts", "items"}; the items come sorted by id, so a build is reproducible.
@@ -210,8 +211,10 @@ def build_api_rows(accepted: str, out_path: str, manifest: str | None = None, sc
     whose image_size is empty or null keeps source_label's license. own_license_sources: seed sources whose pictures carry their
     own license on EVERY row, written with the picture in view or not, since training shows the model the picture either way;
     the license filter reads picture_licenses' entry for the row's seed id, and a row with no entry is dropped as "picture
-    shown in training, its own license not given". counts holds the kept items by writer, source, license and kind, and every
-    drop by its reason.
+    shown in training, its own license not given". drop_in_view: seed sources whose rows written with the picture in view never
+    enter this set, whatever the picture's license (counted as "written with the picture in view, kept out of this set"); it
+    is checked before every license rule. counts holds the kept items by writer, source, license and kind, and every drop by
+    its reason.
 
     hold_out: after the filters, that many of the remaining pictures (a seeded draw over their sorted seed ids, hold_seed) leave
     the training set with every item that shows them, and are written to held_path as an input file of their own (the pictures a
@@ -228,6 +231,7 @@ def build_api_rows(accepted: str, out_path: str, manifest: str | None = None, sc
     allowed_licenses = set(licenses) if licenses is not None else None
     in_view_sources = set(hold_in_view or ())
     own_sources = set(own_license_sources or ())
+    kept_out_in_view = set(drop_in_view or ())
     own_licenses = load_picture_licenses(picture_licenses)
     items, seen = [], set()
     for route, row in read_accepted(accepted, dropped):
@@ -239,7 +243,11 @@ def build_api_rows(accepted: str, out_path: str, manifest: str | None = None, sc
         license_ = label.get("license") or (row.get("source") or {}).get("license")
         seed = str((row.get("source") or {}).get("seed_id") or "")
         seed_source = seed.split(":", 1)[0]
-        held_in_view = bool((row.get("writer") or {}).get("image_size")) and seed_source in in_view_sources
+        in_view = bool((row.get("writer") or {}).get("image_size"))
+        if in_view and seed_source in kept_out_in_view:
+            dropped[IN_VIEW_KEPT_OUT] += 1
+            continue
+        held_in_view = in_view and seed_source in in_view_sources
         if held_in_view or (seed and seed_source in own_sources):
             license_ = own_licenses.get(seed)
             if not license_:
@@ -292,7 +300,7 @@ def build_api_rows(accepted: str, out_path: str, manifest: str | None = None, sc
                       "by_license": dict(Counter(str(it["license"]) for it in items)),
                       "by_kind": dict(Counter(it["kind"] for it in items)),
                       "dropped": dict(dropped), "hold_in_view": sorted(in_view_sources),
-                      "own_license_sources": sorted(own_sources),
+                      "own_license_sources": sorted(own_sources), "drop_in_view": sorted(kept_out_in_view),
                       "picture_licenses": (picture_licenses if isinstance(picture_licenses, str)
                                            else {"entries": len(own_licenses)} if picture_licenses else None)},
            "filters": {"writers": sorted(allowed_writers) if allowed_writers is not None else None,

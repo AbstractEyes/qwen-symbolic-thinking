@@ -262,6 +262,22 @@ def test_a_source_held_to_its_pictures_own_license_on_every_row(fixture):
     assert build(fixture)["counts"]["own_license_sources"] == []
 
 
+def test_rows_written_with_the_picture_in_view_can_be_kept_out_whatever_its_license(fixture):
+    in_view_fixture(fixture, [with_view("50", "coco:600", [640, 480]),            # in view, an accepted photo license: still out
+                              with_view("51", "coco:601", None),                  # not in view: its photo's license decides
+                              with_view("52", "docci:d4", [640, 480])])           # in view, a source not named: kept
+    licenses = {"coco:600": "Attribution License", "coco:601": "Attribution License"}
+    out = build(fixture, picture_licenses=licenses, own_license_sources=("coco",), drop_in_view=("coco",),
+                licenses=("CC BY 4.0", "Apache-2.0", "Attribution License"))
+    items = {it["id"]: it for it in out["items"]}
+    assert "row-50" not in items and items["row-51"]["license"] == "Attribution License" and "row-52" in items
+    assert out["counts"]["dropped"][rows.IN_VIEW_KEPT_OUT] == 1 and out["counts"]["drop_in_view"] == ["coco"]
+    plain = build(fixture, picture_licenses=licenses, own_license_sources=("coco",),
+                  licenses=("CC BY 4.0", "Apache-2.0", "Attribution License"))
+    assert "row-50" in {it["id"] for it in plain["items"]}                        # without the rule its license lets it in
+    assert rows.IN_VIEW_KEPT_OUT not in plain["counts"]["dropped"] and plain["counts"]["drop_in_view"] == []
+
+
 def test_picture_licenses_from_the_project_repo(fixture, monkeypatch):
     from qwen_symbolic_thinking import hub
     path = fixture / "photo_licenses.json"
