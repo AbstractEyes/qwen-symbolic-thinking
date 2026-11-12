@@ -22,6 +22,11 @@ from thought_seeds.thought_tools import COUNTS, STEPS
 
 WORDINGS = ("caption", "prompt", "tags", "critique")
 WORDINGS_BY_DEPTH = {"simple": 1, "medium": 2, "deep": 4}     # a caption; a caption and a prompt or tags; all four
+# The wordings a row carries at each depth, named, by the version of the rows a model learned (wordings_whole). Version 1's rule
+# counts them (WORDINGS_BY_DEPTH: a medium row is a caption and one of a prompt or tags); the rows of version 1.1 carry a caption,
+# a prompt and tags at medium.
+WORDINGS_V11 = {"simple": ("caption",), "medium": ("caption", "prompt", "tags"), "deep": ("caption", "critique", "prompt", "tags")}
+CONVENTIONS = {"v1": None, "v1.1": WORDINGS_V11}
 NEEDS = ("record", "chain", "unknown")
 LABELS = set(STEPS) | set(WORDINGS) | {"question"}
 NUMBERS = {"1": "one", "2": "two", "3": "three", "4": "four", "5": "five", "6": "six", "7": "seven", "8": "eight", "9": "nine",
@@ -178,8 +183,24 @@ def words(text: str) -> set:
     return {w for w in re.findall(r"[a-z]+", (text or "").lower()) if len(w) >= 3 and w not in STOP}
 
 
-def score(parsed: dict, row: dict) -> dict:
-    """What a screen reads off one parsed chain, against the row it answers."""
+def wordings_whole(wordings: dict, depth: str, convention=None) -> bool:
+    """Whether a row's wordings are the ones its depth asks for. Version 1's rule (convention None or "v1") counts them
+    (WORDINGS_BY_DEPTH); a named convention ("v1.1": WORDINGS_V11, or a {depth: names} map) asks for exactly those names.
+    A caption is always asked for."""
+    if not wordings.get("caption"):
+        return False
+    if convention is None or convention == "v1":
+        return len(wordings) == WORDINGS_BY_DEPTH.get(depth, 1)
+    if isinstance(convention, str):
+        if convention not in CONVENTIONS:
+            raise ValueError(f"unknown wordings convention {convention!r}: one of {sorted(CONVENTIONS)}")
+        convention = CONVENTIONS[convention]
+    return set(wordings) == set(convention.get(depth, ("caption",)))
+
+
+def score(parsed: dict, row: dict, wordings=None) -> dict:
+    """What a screen reads off one parsed chain, against the row it answers. wordings: the convention a whole row's wordings
+    are read by (wordings_whole; None = version 1's count)."""
     depth = row.get("depth", "medium")
     lo, hi = COUNTS[depth]["thoughts"]
     qlo, qhi = COUNTS[depth]["questions"]
@@ -194,7 +215,7 @@ def score(parsed: dict, row: dict) -> dict:
     questions = parsed.get("questions", [])
     grounded = " ".join([t["text"] for t in thoughts] + [parsed["wordings"].get("caption", "")])   # the chain and its caption
     hint_words, chain_words = words(row.get("hint") or ""), words(grounded)
-    wordings_ok = len(parsed["wordings"]) == WORDINGS_BY_DEPTH.get(depth, 1) and bool(parsed["wordings"].get("caption"))
+    wordings_ok = wordings_whole(parsed["wordings"], depth, wordings)
     questions_in_range = qlo <= len(questions) <= qhi
     return {"n_thoughts": len(thoughts),
             "in_range": lo <= len(thoughts) <= hi,

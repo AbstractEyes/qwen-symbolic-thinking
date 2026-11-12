@@ -228,6 +228,12 @@ with the picture's plain-text captions, then `Helper tags:` with the booru tagge
 (`girl (solo) · pants (blue) · jeans · doing: standing`, `extract.tag_line`). Each row records the lines it was given. The
 grounding read is against the same captions, so a helped extraction's said and backed are not comparable to an unhelped one's.
 
+`wordings` (from 0.1.64) reads a whole row by the wordings of the rows its model learned (`chain.wordings_whole`). The rule of
+version 1's rows counts them: a caption at simple, a caption and one of a prompt or tags at medium, all four at deep. The version
+1.1 rows carry a caption, a prompt and tags at medium, so a model taught them is read with `wordings="v1.1"`; read by the count,
+every one of its medium rows would be marked broken ("row shape"). `extract.run`, `screen.run` and `screen.rescore` take it, and
+the summaries record it (`"v1"` when not given).
+
 ```python
 from qwen_symbolic_thinking import chain
 parsed = chain.parse(model_text)          # {thoughts: [{step, text}], wordings: {caption: ...}, questions: [...], stray: [...]}

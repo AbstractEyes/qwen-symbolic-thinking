@@ -346,15 +346,19 @@ def run(models: list, inputs: str = "hub:screens/inputs/screen_v1.json", out_dir
         max_new_tokens: int = 700, thinking: bool = False, sampling: dict | None = None, repo: str = REPO,
         do_ship: bool = True, adapter: str | None = None, adapter_subfolder: str | None = None, tag: str = "",
         system: str | None = None, trust_remote_code: bool = False, revision: str | None = None,
-        image_settings: dict | None = None, keys: str = "record", adapter_scale: float = 1.0) -> dict:
+        image_settings: dict | None = None, keys: str = "record", adapter_scale: float = 1.0,
+        wordings: str | None = None) -> dict:
     """The screen over every model and form; results and summaries on disk and on the Hub (screens/<stamp>[_<tag>]/). With
     system (see prompts.system) every row's conversation opens with that system turn. trust_remote_code / revision: for a
     family whose repository code runs (see family), pinned to a revision; image_settings: the image processor's (a picture
     budget); keys (chain.KEYS): how the specification rows' records are written, as the model was trained. adapter_scale: the
     strength the adapter is merged at (load_model: 1 = as trained, 0 = the base); it is recorded in env.json, on every result
-    and in summary.md."""
+    and in summary.md. wordings: the convention a whole row's wordings are read by (chain.wordings_whole: None = version 1's
+    count; "v1.1" for a model taught the version 1.1 rows); recorded in env.json."""
     if keys not in chain.KEYS:
         raise ValueError(f"unknown keys {keys!r}: one of {chain.KEYS}")
+    if wordings is not None and wordings not in chain.CONVENTIONS:
+        raise ValueError(f"unknown wordings convention {wordings!r}: one of {sorted(chain.CONVENTIONS)}")
     stamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S") + (f"_{tag}" if tag else "")
     out_dir = os.path.join(out_dir, stamp)
     os.makedirs(out_dir, exist_ok=True)
@@ -375,7 +379,8 @@ def run(models: list, inputs: str = "hub:screens/inputs/screen_v1.json", out_dir
                    "max_new_tokens": max_new_tokens, "thinking": thinking, "sampling": sampling,
                    "adapter": adapter, "adapter_subfolder": adapter_subfolder, "system": system,
                    "trust_remote_code": trust_remote_code, "revision": revision, "image_settings": image_settings,
-                   "keys": keys, "adapter_scale": adapter_scale, "n_images": len(image_items), "n_specs": len(spec_items)},
+                   "keys": keys, "adapter_scale": adapter_scale, "wordings": wordings or "v1",
+                   "n_images": len(image_items), "n_specs": len(spec_items)},
                   fh, indent=1)
     results_path = os.path.join(out_dir, "results.jsonl")
     all_results = []
@@ -408,7 +413,7 @@ def run(models: list, inputs: str = "hub:screens/inputs/screen_v1.json", out_dir
                 for (it, _, _), text, n_new in zip(group, texts, lengths):
                     parsed = chain.parse(text)
                     rec = {"model": model_id, "form": form, "id": it["id"], "depth": it["depth"], "kind": it["kind"],
-                           "text": text, "parsed": parsed, "scores": chain.score(parsed, it),
+                           "text": text, "parsed": parsed, "scores": chain.score(parsed, it, wordings),
                            "reference": chain.reference(it), "gen_s": dt, "new_tokens": n_new, "adapter_scale": adapter_scale}
                     results.append(rec)
                     with open(results_path, "a", encoding="utf-8") as fh:
@@ -452,9 +457,10 @@ def run(models: list, inputs: str = "hub:screens/inputs/screen_v1.json", out_dir
     return summary
 
 
-def rescore(results_path: str, inputs: str | None = None) -> dict:
+def rescore(results_path: str, inputs: str | None = None, wordings: str | None = None) -> dict:
     """The summary of a shipped results.jsonl under the current chain reader (the texts are kept, so a better reader re-reads
-    them); with the screen set given, the rows are scored against it, otherwise against the reference kept in each record."""
+    them); with the screen set given, the rows are scored against it, otherwise against the reference kept in each record.
+    wordings: the convention a whole row's wordings are read by (chain.wordings_whole)."""
     items = {}
     if inputs:
         items = {it["id"]: it for it in load_inputs(inputs)["items"]}
@@ -466,7 +472,7 @@ def rescore(results_path: str, inputs: str | None = None) -> dict:
             r = json.loads(line)
             row = items.get(r["id"]) or {"depth": r["depth"], "spec": {}, "thoughts": []}
             parsed = chain.parse(r["text"])
-            r["parsed"], r["scores"] = parsed, chain.score(parsed, row)
+            r["parsed"], r["scores"] = parsed, chain.score(parsed, row, wordings)
             if row.get("spec"):
                 r["reference"] = chain.reference(row)
             out.append(r)
