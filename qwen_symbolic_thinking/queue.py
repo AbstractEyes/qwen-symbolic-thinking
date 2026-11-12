@@ -16,7 +16,8 @@ under "after": extract specs and tool specs (such as the read of how far the ada
 its screen ends, each reading the adapter it trained (the project repo, <path_in_repo>/final) with the trained model, so a card can
 train, screen and take the held-out reads unattended. Each run
 leaves runs/done/<name>.json on the Hub (started, then done or failed, with the summaries); a spec whose marker exists is
-skipped unless it says "retry". A spec may say "waits_for": [paths in the project repo]; until they all exist it waits, unmarked,
+skipped unless it says "retry", or unless it is a train spec with resume on whose marker still says started (its machine ended
+mid-run; it continues from its saved state, resume.py). A spec may say "waits_for": [paths in the project repo]; until they all exist it waits, unmarked,
 and the lane runs nothing past it (two lanes can share one build this way). When the queue is empty the lane waits for new specs,
 polling every minute, and leaves after idle_minutes without any."""
 from __future__ import annotations
@@ -215,6 +216,17 @@ def transformers_fits(spec: dict, installed: str | None = None) -> bool:
         return True
 
 
+def resumes(spec: dict, repo: str, read=None) -> bool:
+    """Whether a train spec with resume on ("train": {"resume": true}) runs again although it has a marker: its marker still
+    says started, so the machine that ran it ended mid-run, and the run continues from its saved state (resume.py). A run
+    still going on another machine has the same marker, so a lane's queue runs on one machine at a time. read: the marker
+    reader (queue._fresh, looked up at the call)."""
+    if spec.get("kind") != "train" or not (spec.get("train") or {}).get("resume"):
+        return False
+    marker = (read or _fresh)(f"runs/done/{spec['name']}.json", repo)
+    return isinstance(marker, dict) and marker.get("status") == "started"
+
+
 def _run_marked(spec: dict, lane: str, repo: str, out_dir: str) -> dict:
     """One spec, start to marker: started, then done (with the summaries) or failed (with the error)."""
     print(f"\n[{lane}] == {spec['name']} ({spec['kind']}) at {datetime.now(timezone.utc).strftime('%H:%M:%S')} UTC", flush=True)
@@ -245,7 +257,7 @@ def run_queue(lane: str, repo: str = REPO, out_dir: str = "/content/runs", idle_
             time.sleep(poll_s)
             continue
         markers = _markers(repo, files)
-        todo = [s for s in specs if (s["name"] not in markers or s.get("retry")) and runnable_here(s)]
+        todo = [s for s in specs if (s["name"] not in markers or s.get("retry") or resumes(s, repo)) and runnable_here(s)]
         missing = missing_inputs(todo[0], files) if todo else []
         if missing:
             if wait_since is None:

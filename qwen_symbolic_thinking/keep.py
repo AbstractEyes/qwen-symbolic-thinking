@@ -162,6 +162,13 @@ class PairedCollator:
             batch["anchor"] = self.anchor_collate(self._next(self.k))
         return batch
 
+    def advance(self, batches: int) -> None:
+        """Draw, without building them, the general rows of `batches` micro-batches: a resumed run (resume.py) replays the draws
+        of the batches already trained, so its next batch gets the rows the uninterrupted run's next batch got."""
+        for _ in range(int(batches)):
+            if self.k > 0:
+                self._next(self.k)
+
 
 # ------------------------------------------------------------------------------------------------------ the trainer
 def keep_trainer(general_kl: float = 0.0, target_kl: float = 0.0, rehearsal: float = 0.0, stats: dict | None = None,

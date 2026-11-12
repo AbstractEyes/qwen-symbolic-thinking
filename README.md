@@ -99,6 +99,23 @@ extractions), leaving `runs/done/<name>.json` per run; `notebooks/lane1.ipynb` t
 runs under `after`: extract specs (the held-out probe split, the museum pictures) that run as soon as its screen ends, reading the
 adapter it trained with the model it trained, so one queue entry trains, screens and reads an arm.
 
+**A training longer than a runtime** (from 0.1.63). A rented runtime ends at a fixed age (Colab's at about 24 hours). With
+`resume=True` (`"resume": true` among a train spec's `train` keys) a LoRA run saves its whole training state to the repo it ships
+to, under `resume/<tag>/`, every `resume_every_h` hours (2 by default) and once more when the machine's age passes
+`resume_before_h` (23 by default; the age read from `/proc/uptime`). Saves fall on log steps only. A run of the same tag that finds
+a saved state continues from it, in the first run's folder and along the uninterrupted run's path: the Trainer's own checkpoint
+(the adapter, the optimizer's moments, the schedule, the step, the random state) is read back, the batches already trained are
+skipped in the same seeded order, the general rows drawn for them are drawn again from the seed, and the collators' counts, the
+progress log and the loss sum are taken back (`resume.py`). A run whose settings or training examples differ from the saved
+state's (the examples are checked by a fingerprint of the items and forms in training order; a picture that does not load on the
+new machine changes it) stops before it trains. Once the training has ended and its adapter has shipped, the state gives way to a
+record of the run's summary, and a run of the same tag returns that summary and the shipped adapter without training. A lane runs
+a train spec with resume on again when its marker still says `started`, so the same lane on a fresh runtime picks up a run whose
+runtime ended mid-run. A run that is still going elsewhere has the same marker, so a lane's queue runs on one runtime at a time.
+Runs that follow a training under `after` are not resumed: one that a runtime's end cuts off goes back into a queue by hand.
+Tested on the CPU with a small model: runs stopped and resumed in the first epoch, in the second, at an epoch's end and twice
+over give the uninterrupted run's loss log and final adapter.
+
 ## Training rules
 
 - Every training item names its writer: the model, or the people, whose text the item teaches (`writer`). Rows written by an
