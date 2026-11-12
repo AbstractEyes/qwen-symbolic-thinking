@@ -238,3 +238,35 @@ def test_picture_licenses_from_a_file_and_other_held_sources(fixture):
     assert out["counts"]["picture_licenses"] == str(path) and out["counts"]["hold_in_view"] == ["coco", "docci"]
     none = build(fixture, hold_in_view=())                                          # nothing held to it: the label's license
     assert {"row-30", "row-31"} <= {it["id"] for it in none["items"]}
+
+
+def test_a_source_held_to_its_pictures_own_license_on_every_row(fixture):
+    in_view_fixture(fixture, [with_view("40", "coco:500", None),                  # not in view: still its photo's license
+                              with_view("41", "coco:501", None),                  # its photo's license is not accepted
+                              with_view("42", "coco:502", None),                  # no entry for its photo
+                              with_view("43", "localized_narratives:503", None),  # these pictures are COCO photos too
+                              with_view("44", "coco:504", [640, 480]),            # in view and held to it: the in-view reason
+                              with_view("45", "docci:d3", None)])                 # a source not named: the label's license
+    licenses = {"coco:500": "Attribution License", "coco:501": "Attribution-NonCommercial License",
+                "localized_narratives:503": "Attribution License"}
+    out = build(fixture, picture_licenses=licenses, own_license_sources=("coco", "localized_narratives"),
+                licenses=("CC BY 4.0", "Apache-2.0", "Attribution License"))
+    items = {it["id"]: it for it in out["items"]}
+    assert items["row-40"]["license"] == "Attribution License" and items["row-43"]["license"] == "Attribution License"
+    assert not {"row-41", "row-42", "row-44"} & set(items) and items["row-45"]["license"] == "CC BY 4.0"
+    dropped = out["counts"]["dropped"]
+    # rows 1, 2, 7, 8, 13-17 and 42 name COCO photos with no entry (row 12 leaves first, on its writer)
+    assert dropped[rows.NO_OWN_LICENSE] == 10 and dropped[rows.NO_PICTURE_LICENSE] == 1 and dropped["license"] == 1
+    assert out["counts"]["own_license_sources"] == ["coco", "localized_narratives"]
+    assert out["counts"]["by_license"]["Attribution License"] == 2
+    assert build(fixture)["counts"]["own_license_sources"] == []
+
+
+def test_picture_licenses_from_the_project_repo(fixture, monkeypatch):
+    from qwen_symbolic_thinking import hub
+    path = fixture / "photo_licenses.json"
+    path.write_text(json.dumps({"coco:1": "Attribution License"}), encoding="utf-8")
+    asked = []
+    monkeypatch.setattr(hub, "fetch", lambda path_in_repo, repo=None: asked.append(path_in_repo) or str(path))
+    assert rows.load_picture_licenses("hub:licenses/coco.json") == {"coco:1": "Attribution License"}
+    assert asked == ["licenses/coco.json"]

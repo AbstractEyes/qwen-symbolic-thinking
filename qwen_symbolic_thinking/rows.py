@@ -146,14 +146,19 @@ def seeds_without_locator(accepted: str, manifest=None, sources=None) -> list:
 
 # ------------------------------------------------------------------------------------------------------ the build
 NO_PICTURE_LICENSE = "picture in view, its own license not given"
+NO_OWN_LICENSE = "picture shown in training, its own license not given"
 
 
 def load_picture_licenses(picture_licenses) -> dict:
-    """{seed id: the picture's own license} from a dict or from the path of a JSON file holding one (None: none given)."""
+    """{seed id: the picture's own license} from a dict, from the path of a JSON file holding one, or from 'hub:<path>' (that
+    file of the project repo); None: none given."""
     if not picture_licenses:
         return {}
     if isinstance(picture_licenses, dict):
         return dict(picture_licenses)
+    if picture_licenses.startswith("hub:"):
+        from .hub import fetch
+        picture_licenses = fetch(picture_licenses[4:])
     with open(picture_licenses, encoding="utf-8") as fh:
         return dict(json.load(fh))
 
@@ -186,7 +191,8 @@ def make_item(row: dict, route: str, picture: tuple | None, forms_picture: tuple
 def build_api_rows(accepted: str, out_path: str, manifest: str | None = None, screen: str | None = DEFAULT_SCREEN,
                    writers=None, licenses=DEFAULT_LICENSES, held_manifest_splits=("probe",), museum: dict | None = None,
                    forms_picture=("full", "short"), forms_spec=("spec_full",), hold_in_view=("coco",),
-                   picture_licenses=None, hold_out: int = 0, hold_seed: int = 0, held_path: str | None = None) -> dict:
+                   picture_licenses=None, own_license_sources=(), hold_out: int = 0, hold_seed: int = 0,
+                   held_path: str | None = None) -> dict:
     """Training items from the accepted rows of an outside row-writing system, written to out_path as one input file
     {"version": 3, "built", "accepted", "counts", "items"}; the items come sorted by id, so a build is reproducible.
 
@@ -201,7 +207,11 @@ def build_api_rows(accepted: str, out_path: str, manifest: str | None = None, sc
     license as well as the annotations': for such a row whose seed source is in hold_in_view (COCO photos keep each author's
     license, many of them non-commercial), the license the filter reads is picture_licenses' entry for its seed id (a dict, or
     the path of a JSON file of one), and a row with no entry is dropped as "picture in view, its own license not given". A row
-    whose image_size is empty or null keeps source_label's license. counts holds the kept items by writer, source, license and kind, and every drop by its reason.
+    whose image_size is empty or null keeps source_label's license. own_license_sources: seed sources whose pictures carry their
+    own license on EVERY row, written with the picture in view or not, since training shows the model the picture either way;
+    the license filter reads picture_licenses' entry for the row's seed id, and a row with no entry is dropped as "picture
+    shown in training, its own license not given". counts holds the kept items by writer, source, license and kind, and every
+    drop by its reason.
 
     hold_out: after the filters, that many of the remaining pictures (a seeded draw over their sorted seed ids, hold_seed) leave
     the training set with every item that shows them, and are written to held_path as an input file of their own (the pictures a
@@ -217,6 +227,7 @@ def build_api_rows(accepted: str, out_path: str, manifest: str | None = None, sc
     allowed_writers = set(writers) if writers is not None else None
     allowed_licenses = set(licenses) if licenses is not None else None
     in_view_sources = set(hold_in_view or ())
+    own_sources = set(own_license_sources or ())
     own_licenses = load_picture_licenses(picture_licenses)
     items, seen = [], set()
     for route, row in read_accepted(accepted, dropped):
@@ -227,10 +238,12 @@ def build_api_rows(accepted: str, out_path: str, manifest: str | None = None, sc
         label = row.get("source_label") or {}
         license_ = label.get("license") or (row.get("source") or {}).get("license")
         seed = str((row.get("source") or {}).get("seed_id") or "")
-        if (row.get("writer") or {}).get("image_size") and seed.split(":", 1)[0] in in_view_sources:
+        seed_source = seed.split(":", 1)[0]
+        held_in_view = bool((row.get("writer") or {}).get("image_size")) and seed_source in in_view_sources
+        if held_in_view or (seed and seed_source in own_sources):
             license_ = own_licenses.get(seed)
             if not license_:
-                dropped[NO_PICTURE_LICENSE] += 1
+                dropped[NO_PICTURE_LICENSE if held_in_view else NO_OWN_LICENSE] += 1
                 continue
         if allowed_licenses is not None and license_ not in allowed_licenses:
             dropped["license"] += 1
@@ -279,6 +292,7 @@ def build_api_rows(accepted: str, out_path: str, manifest: str | None = None, sc
                       "by_license": dict(Counter(str(it["license"]) for it in items)),
                       "by_kind": dict(Counter(it["kind"] for it in items)),
                       "dropped": dict(dropped), "hold_in_view": sorted(in_view_sources),
+                      "own_license_sources": sorted(own_sources),
                       "picture_licenses": (picture_licenses if isinstance(picture_licenses, str)
                                            else {"entries": len(own_licenses)} if picture_licenses else None)},
            "filters": {"writers": sorted(allowed_writers) if allowed_writers is not None else None,
