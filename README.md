@@ -178,6 +178,14 @@ project repo by `pack.pack_staged`, with a manifest of `hf_parquet` locators; `t
 (`{"bucket": "owner/name/folder", "dirs": {source: [folders]}}`), so the pack and the build read one snapshot of the rows. A queue
 spec can name `waits_for` paths: it waits, unmarked, until another lane has built them.
 
+**A picture's own license.** Some sources license their annotations and their pictures apart (COCO's annotations are CC BY 4.0,
+while each photo keeps its Flickr author's license). A row written with its picture in view carries the picture's license as
+well as the annotations' (`hold_in_view` with `picture_licenses`, a `{seed id: license}` map, local or `hub:<path>`). Training
+shows the model the picture whether or not the row's writer saw it, so `own_license_sources` holds every row of the named sources
+to its picture's own license, and `drop_in_view` keeps a set free of rows written with the picture in view, whatever that
+picture's license. The general rows that ride beside training show pictures too: `tools.filter_anchors` holds a general-row file
+to the same rule, so an adapter whose training set leaves some pictures out does not meet them through its general rows.
+
 ## Extraction
 
 `qwen_symbolic_thinking.extract.run` has the trained model write whole rows for the pictures of a manifest, the list kept at
