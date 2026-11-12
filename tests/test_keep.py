@@ -196,6 +196,11 @@ def test_keep_trainer_adds_nothing_at_the_start_and_reads_the_moved_adapter(tmp_
         start = float(kt.compute_loss(model, {**task, "anchor": anchor}))
     assert start == pytest.approx(plain, abs=1e-5)                       # B = 0 at the start: tuned = base, both KL terms 0
     assert stats["n"] == 1 and stats["general_kl"] == pytest.approx(0.0, abs=1e-6) and stats["target_kl"] == pytest.approx(0.0, abs=1e-6)
+    assert dict(cls.keep_empty) == {}                                    # both terms had answer positions to act on
+    with torch.no_grad():                                                # general rows with no answer position: counted
+        kt.compute_loss(model, {**task, "anchor": {**anchor, "labels": torch.full_like(anchor["labels"], -100)}})
+    assert dict(cls.keep_empty) == {"general_kl": 1}
+    stats.clear()
     with torch.no_grad():
         for name, p in model.named_parameters():
             if "lora_B" in name:

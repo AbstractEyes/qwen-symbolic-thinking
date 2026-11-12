@@ -28,16 +28,19 @@ import traceback
 from datetime import datetime, timezone
 
 from . import REPO, __version__
-from .hub import token
+from .hub import token, transient, with_retries
 
 DEFAULT_SCREEN = {"inputs": "hub:screens/inputs/screen_v1.json", "forms": ("full", "short", "spec_full"), "batch": 4,
                   "max_new_tokens": 700}
 
 
 def _fresh(path_in_repo: str, repo: str):
+    """A JSON file of the project repo read fresh, or None when it is not there (the Hub's passing faults are waited out
+    first, so a rate limit is not read as an empty queue)."""
     from huggingface_hub import hf_hub_download
     try:
-        local = hf_hub_download(repo, path_in_repo, repo_type="model", token=token(), force_download=True)
+        local = with_retries(lambda: hf_hub_download(repo, path_in_repo, repo_type="model", token=token(), force_download=True),
+                             f"read {path_in_repo}")
     except Exception:
         return None
     with open(local, encoding="utf-8") as fh:
@@ -45,8 +48,9 @@ def _fresh(path_in_repo: str, repo: str):
 
 
 def _repo_files(repo: str) -> set:
+    """The project repo's file list (the Hub's passing faults waited out: hub.with_retries)."""
     from huggingface_hub import HfApi
-    return set(HfApi(token=token()).list_repo_files(repo))
+    return set(with_retries(lambda: HfApi(token=token()).list_repo_files(repo), "list the repo's files"))
 
 
 def _markers(repo: str, files=None) -> dict:
@@ -66,14 +70,12 @@ def _mark(name: str, payload: dict, repo: str, out_dir: str) -> None:
     local = os.path.join(out_dir, f"{name}.json")
     with open(local, "w", encoding="utf-8") as fh:
         json.dump(payload, fh, indent=1, default=str)
-    for attempt in range(3):
-        try:
-            HfApi(token=token()).upload_file(path_or_fileobj=local, path_in_repo=f"runs/done/{name}.json", repo_id=repo, repo_type="model",
-                                             commit_message=f"run {name}: {payload.get('status')}")
-            return
-        except Exception as e:
-            print(f"  marker upload failed ({type(e).__name__}); retry", flush=True)
-            time.sleep(10 * (attempt + 1))
+    try:
+        with_retries(lambda: HfApi(token=token()).upload_file(path_or_fileobj=local, path_in_repo=f"runs/done/{name}.json", repo_id=repo,
+                                                              repo_type="model", commit_message=f"run {name}: {payload.get('status')}"),
+                     f"marker {name}")
+    except Exception as e:      # a marker that cannot be written never stops the lane; the local copy stays in out_dir
+        print(f"  marker upload gave up ({type(e).__name__}: {str(e)[:120]}); the marker stays in {local}", flush=True)
 
 
 def run_spec(spec: dict, lane: str, repo: str, out_dir: str) -> dict:
@@ -233,8 +235,15 @@ def run_queue(lane: str, repo: str = REPO, out_dir: str = "/content/runs", idle_
     whatever idle_minutes says, and runs nothing past it meanwhile."""
     ran, idle_since, wait_since, waited_on = [], None, None, None
     while True:
-        specs = _fresh(f"runs/queue_{lane}.json", repo) or []
-        files = _repo_files(repo)
+        try:
+            specs = _fresh(f"runs/queue_{lane}.json", repo) or []
+            files = _repo_files(repo)
+        except Exception as e:      # the Hub still not answering after with_retries' waits: poll again, never leave on it
+            if not transient(e):
+                raise
+            print(f"[{lane}] the Hub is not answering ({type(e).__name__}); polling again in {poll_s} s", flush=True)
+            time.sleep(poll_s)
+            continue
         markers = _markers(repo, files)
         todo = [s for s in specs if (s["name"] not in markers or s.get("retry")) and runnable_here(s)]
         missing = missing_inputs(todo[0], files) if todo else []
@@ -264,7 +273,12 @@ def run_queue(lane: str, repo: str = REPO, out_dir: str = "/content/runs", idle_
         result = _run_marked(spec, lane, repo, out_dir)
         ran.append(spec["name"])
         if result["status"] == "done" and spec["kind"] == "train" and spec.get("after"):
-            markers = _markers(repo)
+            try:
+                markers = _markers(repo)
+            except Exception as e:  # a follow-up of a training just done has no marker unless retried by hand
+                if not transient(e):
+                    raise
+                markers = {}
             for follow in after_specs(spec, result["train"]["path_in_repo"], repo):
                 if follow["name"] in markers and not follow.get("retry"):
                     print(f"[{lane}] {follow['name']} already has a marker; skipped", flush=True)

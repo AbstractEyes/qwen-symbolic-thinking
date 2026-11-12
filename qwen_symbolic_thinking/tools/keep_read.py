@@ -145,14 +145,30 @@ def drift_summary(records: list) -> dict:
     return out
 
 
+def median(values: list):
+    xs = sorted(v for v in values if v is not None)
+    if not xs:
+        return None
+    m = len(xs) // 2
+    return xs[m] if len(xs) % 2 else (xs[m - 1] + xs[m]) / 2
+
+
 def takeover_summary(records: list) -> dict:
-    """Per category and overall: the share that take the row form, the share that end before the token cap, the mean length
-    ratio against the base's answer and the mean token F1 against it."""
+    """Per category and overall: the share that take the row form, the share that end before the token cap, the length against
+    the base's answer and the mean token F1 against it. The length is read three ways: length_ratio, the mean of the per-row
+    ratios (one row where the base answered in a few words pulls it far up), length_median, the median ratio, and length_total,
+    the answers' characters over the base's (rows that carry chars and base_chars)."""
     groups = {"all": list(records)}
     for r in records:
         groups.setdefault(r["category"], []).append(r)
+
+    def total(rs):
+        pairs = [(r["chars"], r["base_chars"]) for r in rs if r.get("chars") is not None and r.get("base_chars")]
+        return sum(a for a, _ in pairs) / sum(b for _, b in pairs) if pairs else None
+
     return {name: {"rows": len(rs), "takes_row_form": mean([float(r["takes_row_form"]) for r in rs]),
                    "ended": mean([float(r["ended"]) for r in rs]), "length_ratio": mean([r["length_ratio"] for r in rs]),
+                   "length_median": median([r["length_ratio"] for r in rs]), "length_total": total(rs),
                    "f1": mean([r["f1"] for r in rs])} for name, rs in groups.items()}
 
 
@@ -308,7 +324,8 @@ def run(model_id: str = "Qwen/Qwen3.5-4B", adapter: str | None = None, adapter_s
         for it, text, n, btext, bn in zip(plain_rows, texts, lens, base_text, base_len):
             text, btext = text or "", btext or ""
             rec = {"takes_row_form": takes_row_form(text), "ended": n < max_new_tokens,
-                   "length_ratio": len(text) / len(btext) if btext else None, "f1": token_f1(text, btext)}
+                   "length_ratio": len(text) / len(btext) if btext else None, "chars": len(text), "base_chars": len(btext),
+                   "f1": token_f1(text, btext)}
             take.append({"category": it["category"], **rec})
             by_id[it["id"]] = {**rec, "text": text, "new_tokens": n, "base_text": btext, "base_new_tokens": bn,
                                "base_takes_row_form": takes_row_form(btext), "base_ended": bn < max_new_tokens}
@@ -331,7 +348,8 @@ def run(model_id: str = "Qwen/Qwen3.5-4B", adapter: str | None = None, adapter_s
     if peft:
         set_scale(layers, 1.0)
     base_take = [{"category": it["category"], "takes_row_form": takes_row_form(t or ""), "ended": n < max_new_tokens,
-                  "length_ratio": 1.0, "f1": 1.0} for it, t, n in zip(plain_rows, base_text, base_len)]
+                  "length_ratio": 1.0, "chars": len(t or ""), "base_chars": len(t or ""), "f1": 1.0}
+                 for it, t, n in zip(plain_rows, base_text, base_len)]
     summary = {"package": __version__, "model": model_id, "adapter": adapter, "adapter_subfolder": adapter_subfolder, "held": held,
                "tag": tag, "scales": list(scales), "rows": len(rows), "detail_rows": len(detail_rows), "dropped_no_picture": dropped,
                "batch": batch, "max_new_tokens": max_new_tokens, "max_new_tokens_row": max_new_tokens_row,

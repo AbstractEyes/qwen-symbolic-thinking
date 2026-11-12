@@ -169,13 +169,17 @@ def keep_trainer(general_kl: float = 0.0, target_kl: float = 0.0, rehearsal: flo
     """A Trainer class whose loss adds the terms above to the stock cross-entropy on the training rows. The training rows'
     loss is the stock one (computed by super().compute_loss, so its normalization is the plain Trainer's); the added terms
     are micro-batch means, divided by the accumulation count exactly when the stock loss comes back already scaled for it.
-    stats, when given, collects the running sums of each term for the progress log."""
+    stats, when given, collects the running sums of each term for the progress log. KeepTrainer.keep_empty counts, per term,
+    the micro-batches where it had no answer position to act on (its value is 0 there by construction, so a term that never
+    fires would look like a term that fires and reads 0); train.run reports the counts."""
     from transformers import Trainer
 
     weights = {"general_kl": float(general_kl), "target_kl": float(target_kl), "rehearsal": float(rehearsal)}
+    empty = Counter()
 
     class KeepTrainer(Trainer):
         keep_weights = weights
+        keep_empty = empty
 
         def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=None):
             import torch
@@ -196,6 +200,8 @@ def keep_trainer(general_kl: float = 0.0, target_kl: float = 0.0, rehearsal: flo
             if base_side is not None:
                 mask, targets, zb = base_side
                 kt, kept = kl_target_masked(zb, outputs.logits[:, :-1][mask], targets, chunk)
+                if not kept:
+                    empty["target_kl"] += 1
                 extra = extra + weights["target_kl"] * kt
                 parts["target_kl"] = float(kt.detach())
                 parts["target_kl_kept"] = kept / max(int(targets.numel()), 1)
@@ -204,6 +210,10 @@ def keep_trainer(general_kl: float = 0.0, target_kl: float = 0.0, rehearsal: flo
                 a_plain = {k: v for k, v in anchor.items() if k not in ("labels", "num_items_in_batch")}
                 a_mask, a_targets = answer_positions(anchor["labels"])
                 zt = model(**a_plain).logits[:, :-1][a_mask]
+                if zt.shape[0] == 0:
+                    for k in ("general_kl", "rehearsal"):
+                        if weights[k] > 0:
+                            empty[k] += 1
                 if weights["general_kl"] > 0:
                     with torch.no_grad(), peft_model.disable_adapter():
                         zb = model(**a_plain).logits[:, :-1][a_mask]

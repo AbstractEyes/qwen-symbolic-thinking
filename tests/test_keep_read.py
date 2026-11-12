@@ -68,11 +68,23 @@ def test_takeover_and_detail_summaries():
             {"category": "text-held", "takes_row_form": False, "ended": False, "length_ratio": 1.0, "f1": 1.0},
             {"category": "picture-held", "takes_row_form": False, "ended": True, "length_ratio": None, "f1": 0.0}]
     out = kr.takeover_summary(take)
-    assert out["text-held"] == {"rows": 2, "takes_row_form": 0.5, "ended": 0.5, "length_ratio": 1.5, "f1": 0.75}
+    assert out["text-held"] == {"rows": 2, "takes_row_form": 0.5, "ended": 0.5, "length_ratio": 1.5, "length_median": 1.5,
+                                "length_total": None, "f1": 0.75}
     assert out["all"]["length_ratio"] == 1.5 and out["picture-held"]["length_ratio"] is None
     d = kr.detail_summary([{"recall": 0.5, "row_chars": 100, "row_tokens": 30, "ended": True},
                            {"recall": None, "row_chars": 300, "row_tokens": 50, "ended": False}])
     assert d == {"rows": 2, "recall": 0.5, "row_chars": 200.0, "row_tokens": 40.0, "ended": 0.5}
+
+
+def test_the_length_read_by_the_median_and_the_total_is_not_pulled_by_a_few_word_base_answer():
+    # three answers as long as the base's and one where the base wrote 4 characters and the model 200
+    take = [{"category": "text-held", "takes_row_form": False, "ended": True, "length_ratio": a / b, "chars": a, "base_chars": b,
+             "f1": 1.0} for a, b in ((300, 300), (310, 300), (290, 300), (200, 4))]
+    out = kr.takeover_summary(take)["text-held"]
+    assert out["length_ratio"] == pytest.approx((1 + 310 / 300 + 290 / 300 + 50) / 4)     # the mean of ratios: 13.25
+    assert out["length_median"] == pytest.approx((1 + 310 / 300) / 2)                      # the middle two of four
+    assert out["length_total"] == pytest.approx(1100 / 904)
+    assert kr.median([None, 3, 1, 2]) == 2 and kr.median([]) is None
 
 
 class Layer:

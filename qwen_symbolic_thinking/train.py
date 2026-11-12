@@ -359,6 +359,8 @@ def run(model_id: str = "Qwen/Qwen3.5-9B", inputs="hub:sft/sft_v1.json", out_dir
                   + (f"max_steps {max_steps} ({total / steps_per_epoch:.2f} of an epoch)" if max_steps else f"{epochs} epoch(s)"), flush=True)
 
         def on_log(self, args, state, control, logs=None, **kw):
+            if logs is not None and "loss" not in logs:     # the end-of-training summary log (train_loss, runtime): not a step
+                return
             spent = time.time() - self.t0
             done = max(state.global_step, 1)
             rec = {"step": state.global_step, "spent_s": round(spent), "left_s": round(spent / done * (total - done)),
@@ -417,19 +419,23 @@ def run(model_id: str = "Qwen/Qwen3.5-9B", inputs="hub:sft/sft_v1.json", out_dir
                "keys": keys, "max_steps": max_steps,
                "keep": {"general_kl": general_kl, "target_kl": target_kl, "rehearsal": rehearsal, "anchors": anchors,
                         "anchor_items": len(anchor_items), "anchor_batch": anchor_batch if anchor_items else 0,
-                        "anchor_examples_cut_at_max_len": anchor_collate.cut if anchor_collate else 0},
+                        "anchor_examples_cut_at_max_len": anchor_collate.cut if anchor_collate else 0,
+                        "empty_batches": dict(getattr(trainer_class, "keep_empty", {}))},
                "writers": writers, "items_by_writer": writers_seen, "seed_adapter": seed_adapter,
                "collated_examples": collate.collated, "examples_cut_at_max_len": collate.cut, "longest_example_tokens": collate.longest,
                "env": env, "log": log}
     print(f"  examples longer than max_len {max_len} (answer tail cut): {collate.cut} of {collate.collated} collated "
           f"(the longest {collate.longest} tokens)", flush=True)
+    if summary["keep"]["empty_batches"]:
+        print(f"  micro-batches where a keeping term had no answer position to act on: {summary['keep']['empty_batches']}", flush=True)
     with open(os.path.join(adapter_dir, "train_summary.json"), "w", encoding="utf-8") as fh:
         json.dump(summary, fh, indent=1)
     print(f"\ntrained in {summary['train_min']} min: {summary['steps']} steps, loss {summary['train_loss']:.4f}, "
           f"{summary['s_per_step']} s/step", flush=True)
     if do_ship:
         url = ship(adapter_dir, f"{path_in_repo}/final", f"{short} {'full' if full else f'r{rank}'} {stamp}: final ({summary['steps']} steps)", repo)
-        print(f"  shipped: {url}", flush=True)
+        summary["shipped"] = url is not None
+        print(f"  shipped: {url}" if url else f"  NOT SHIPPED: the trained folder stays at {adapter_dir} (ship it by hand)", flush=True)
     summary["adapter_dir"] = adapter_dir
     del trainer, model, processor
     import gc
