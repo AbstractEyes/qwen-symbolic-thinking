@@ -62,7 +62,19 @@ BANK = (
     "What objects are on the left side of the picture?",
 )
 DETAIL = "Describe this picture in detail: every person, garment, object, color, and any text you can see."
-CATEGORIES = ("picture-train", "picture-held", "picture-held-detail", "text-train", "text-held")
+TEXT_BANK = (   # the asks about the text a picture shows (bank="text"): the base model's own answers keep its reading of text
+    "What does the text in this picture say? Write it out exactly.",
+    "Read every word you can see in this picture, in order.",
+    "Is there any writing in this picture? Copy it exactly.",
+    "What is written on the sign, label or screen in this picture?",
+    "Transcribe the text in this picture, line by line.",
+    "Where in this picture is the text, and what does it say?",
+    "Describe this picture, quoting any text you can read exactly.",
+    "What name, brand or number can you read in this picture?",
+    "Write a one-sentence caption for this picture that includes any text you can read.",
+)
+BANKS = {"general": BANK, "text": TEXT_BANK}
+CATEGORIES =("picture-train", "picture-held", "picture-held-detail", "text-train", "text-held")
 REQUEST_CHARS = (20, 500)       # a request shorter than a phrase or longer than a paragraph is not an everyday request
 REQUEST_TOKENS = 160            # a request of 500 characters takes about 120 tokens; one still open at 160 is not one request
 USER_MARK = "USERTEXTMARKER"
@@ -110,14 +122,28 @@ def load_held(held_pictures) -> list:
     return out
 
 
-def draw_requests(n: int, seed: int) -> list:
+def bank_of(bank) -> tuple:
+    """The asks of a bank: a name of BANKS ("general", "text"), a list of asks, or None (the general bank)."""
+    if bank is None:
+        return BANK
+    if isinstance(bank, str):
+        if bank not in BANKS:
+            raise ValueError(f"unknown bank {bank!r}: one of {sorted(BANKS)}, or a list of asks")
+        return BANKS[bank]
+    asks = tuple(str(a).strip() for a in bank)
+    if not asks or not all(asks):
+        raise ValueError("a bank of asks must hold at least one non-empty ask")
+    return asks
+
+
+def draw_requests(n: int, seed: int, bank=None) -> list:
     """n requests from the bank, drawn in seeded shuffled passes over the whole bank, so each request is used about equally."""
     rng = random.Random(seed)
     out = []
     while len(out) < n:
-        bank = list(BANK)
-        rng.shuffle(bank)
-        out += bank
+        bank_list = list(bank_of(bank))
+        rng.shuffle(bank_list)
+        out += bank_list
     return out[:n]
 
 
@@ -263,7 +289,7 @@ def sample_requests(processor, model, need: int, batch: int, seed: int) -> tuple
 def run(model_id: str = "Qwen/Qwen3.5-4B", rows: str | None = None, n_picture: int = 1600, n_text: int = 800,
         n_held_picture: int = 200, n_held_text: int = 200, held_pictures: str = DEFAULT_HELD, batch: int = 32,
         max_new_tokens: int = 512, max_new_tokens_text: int = 768, seed: int = 20261110, tag: str = "", repo: str = REPO,
-        out_dir: str = "/content/anchors", do_ship: bool = True) -> dict:
+        out_dir: str = "/content/anchors", do_ship: bool = True, bank=None, detail: str | None = DETAIL) -> dict:
     """Write the general rows with the base model (no adapter) and ship anchors/<tag>/{anchors,held,summary}.json to the
     project repo. rows: an input file of training items (built by rows.build_api_rows), whose pictures the training picture rows
     use; held_pictures: an input file, or a list of them, whose picture items are held out of training (the screen set; the
@@ -298,15 +324,15 @@ def run(model_id: str = "Qwen/Qwen3.5-4B", rows: str | None = None, n_picture: i
     print(f"  {len(requests)} requests written ({request_drops})", flush=True)
 
     jobs = []     # (category, prompt, source item or None, picture key or None, token cap)
-    for i, (p, ask) in enumerate(zip(train_pics, draw_requests(len(train_pics), seed))):
+    for i, (p, ask) in enumerate(zip(train_pics, draw_requests(len(train_pics), seed, bank))):
         jobs.append(("picture-train", ask, p, f"train-{i}", max_new_tokens))
     for t in text_train:
         jobs.append(("text-train", t, None, None, max_new_tokens_text))
-    held_asks = draw_requests(len(held_pics), seed + 2)
+    held_asks = draw_requests(len(held_pics), seed + 2, bank)
     for i, (p, ask) in enumerate(zip(held_pics, held_asks)):
         jobs.append(("picture-held", ask, p, f"held-{i}", max_new_tokens))
-    for i, p in enumerate(held_pics):
-        jobs.append(("picture-held-detail", DETAIL, p, f"held-{i}", max_new_tokens_text))
+    for i, p in enumerate(held_pics if detail else []):   # detail None: no detail rows (a bank of its own asks instead)
+        jobs.append(("picture-held-detail", detail, p, f"held-{i}", max_new_tokens_text))
     for t in text_held:
         jobs.append(("text-held", t, None, None, max_new_tokens_text))
     ready = []
@@ -348,6 +374,7 @@ def run(model_id: str = "Qwen/Qwen3.5-4B", rows: str | None = None, n_picture: i
     n_rows = sum(len(v) for v in items.values())
     summary = {"package": __version__, "model": model_id, "tag": label, "seed": seed, "rows": rows, "held_pictures": held_pictures,
                "asked": {"n_picture": n_picture, "n_text": n_text, "n_held_picture": n_held_picture, "n_held_text": n_held_text},
+               "bank": bank if isinstance(bank, str) or bank is None else list(bank_of(bank)), "detail": detail,
                "counts": dict(Counter(it["category"] for v in items.values() for it in v)),
                "by_source": dict(Counter(it["source"] for v in items.values() for it in v if it["source"])),
                "dropped": {c: dict(d) for c, d in drops.items() if d}, "requests_dropped": request_drops,

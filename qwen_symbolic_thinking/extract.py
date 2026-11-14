@@ -34,11 +34,16 @@ TAGS_KEY = "animetimm_json"      # the booru tagger's structured caption, the so
 
 
 def load_manifest(manifest: str) -> list:
-    """Rows of a manifest: a local jsonl path, or hub:<repo>/<path> (a dataset repo)."""
+    """Rows of a manifest: a local jsonl path, hub:<repo>/<path> (a dataset repo), or repo:<path> (a file of the project repo,
+    hub.REPO: the private twin when QST_REPO names it)."""
     if manifest.startswith("hub:"):
         from huggingface_hub import hf_hub_download
         parts = manifest[4:].split("/")
         manifest = hf_hub_download("/".join(parts[:2]), "/".join(parts[2:]), repo_type="dataset", token=token())
+    elif manifest.startswith("repo:"):
+        from huggingface_hub import hf_hub_download
+        from .hub import REPO
+        manifest = hf_hub_download(REPO, manifest[5:], repo_type="model", token=token())
     with open(manifest, encoding="utf-8") as fh:
         return [json.loads(l) for l in fh if l.strip()]
 
