@@ -116,8 +116,14 @@ class Collator:
 
     def __call__(self, pairs: list) -> dict:
         texts, images, lengths = [], [], []
+        shown = [it["id"] for it, _ in pairs if it["kind"] in ("image", "anchor")]
+        many = getattr(self.pictures, "many", None)     # pictures held on disk (extract.LazyPictures): the batch's decoded together
+        decoded = many(shown) if many is not None else None
         for it, form in pairs:
-            image = self.pictures.get(it["id"]) if it["kind"] in ("image", "anchor") else None   # a general row may have none
+            if it["kind"] not in ("image", "anchor"):
+                image = None
+            else:                                       # a general row may have none
+                image = decoded.get(it["id"]) if decoded is not None else self.pictures.get(it["id"])
             messages, answer = conversation(it, form, image, self.system, self.mark, self.keys)
             prefix = self.processor.apply_chat_template(messages, add_generation_prompt=True, tokenize=False,
                                                         **family.thinking_kwargs(self.processor, False))
@@ -219,6 +225,41 @@ def restore(state: dict, collate, anchor_collate, data_collator, keep_empty=None
         keep_empty.update(state.get("keep_empty") or {})
 
 
+def trainer_arguments(run_dir: str, batch: int, grad_accum: int, epochs: float, lr: float, total: int, warmup: float, seed: int,
+                      max_steps: int | None = None, grad_checkpointing: bool = True) -> dict:
+    """The TrainingArguments a run asks for (those this transformers lacks are left out where they are built). Without
+    grad_checkpointing the Trainer checkpoints nothing either."""
+    wanted = dict(output_dir=run_dir, per_device_train_batch_size=batch, gradient_accumulation_steps=grad_accum,
+                  num_train_epochs=epochs, learning_rate=lr, lr_scheduler_type="cosine", warmup_steps=math.ceil(total * warmup),
+                  bf16=True, logging_steps=10, save_strategy="no", report_to=[], remove_unused_columns=False,
+                  dataloader_num_workers=0, seed=seed, gradient_checkpointing=bool(grad_checkpointing))
+    if grad_checkpointing:
+        wanted["gradient_checkpointing_kwargs"] = {"use_reentrant": False}
+    if max_steps:
+        wanted["max_steps"] = max_steps                       # the Trainer stops here, whatever num_train_epochs says
+    return wanted
+
+
+def prepare_checkpointing(model, grad_checkpointing: bool = True) -> bool:
+    """Gradient checkpointing on the model (non-reentrant), with the input-embedding grad mark that usually goes with it where
+    the family takes one (family.input_grads); without grad_checkpointing, neither. Returns whether the family takes the mark
+    (a family that does not has the hook PEFT may install removed after the LoRA is built)."""
+    input_grads = family.input_grads(model)
+    if grad_checkpointing:
+        model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
+        if input_grads:
+            model.enable_input_require_grads()
+    return input_grads
+
+
+def peak_gpu_gb(torch) -> float | None:
+    """The most GPU memory the process's tensors held since the last reset, in GB (torch.cuda.max_memory_allocated); None
+    without CUDA."""
+    if not torch.cuda.is_available():
+        return None
+    return round(torch.cuda.max_memory_allocated() / 1e9, 2)
+
+
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
@@ -289,6 +330,13 @@ def progress(total: int, first_line: str, log: list, keep_stats: dict, at_log=No
         def train_s(self) -> float:
             return spent_before + (time.time() - self.t0 if self.t0 is not None else 0.0)
 
+        def phase_s_per_step(self, step: int) -> float | None:
+            """The seconds a step of this machine's training phase alone (from the Trainer's start to now, over the steps it
+            trained here: no picture fetch, no model load), or None before the training began."""
+            if self.t0 is None:
+                return None
+            return round((time.time() - self.t0) / max(int(step) - self.step0, 1), 3)
+
         def on_train_begin(self, args, state, control, **kw):
             self.t0, self.step0 = time.time(), state.global_step
             print(f"  {first_line}" + (f"; continuing at step {self.step0}" if self.step0 else ""), flush=True)
@@ -322,7 +370,8 @@ def run(model_id: str = "Qwen/Qwen3.5-9B", inputs="hub:sft/sft_v1.json", out_dir
         targets: str | None = None, image_settings: dict | None = None, keys: str = "record",
         max_steps: int | None = None, anchors=None, anchor_batch: int = 4, general_kl: float = 0.0,
         target_kl: float = 0.0, rehearsal: float = 0.0, writers: list | None = None, seed_adapter: bool = False,
-        resume: bool = False, resume_every_h: float = 2.0, resume_before_h: float | None = 23.0) -> dict:
+        resume: bool = False, resume_every_h: float = 2.0, resume_before_h: float | None = 23.0,
+        lazy_pictures: bool = False, picture_workers: int = 16, grad_checkpointing: bool = True) -> dict:
     """Train the adapter; return {adapter_dir, path_in_repo, steps, s_per_step, train_loss, ...}. With init_adapter (see
     adapter_source) training continues from that trained adapter instead of a fresh LoRA; its rank and alpha must be the ones passed.
     With system (see prompts.system) every example carries that system turn before its user turn. Rank 0 is a full fine-tune of
@@ -342,7 +391,15 @@ def run(model_id: str = "Qwen/Qwen3.5-9B", inputs="hub:sft/sft_v1.json", out_dir
     resume (resume.py; a LoRA only, found by its tag): the whole training state saves to the repo under resume/<tag>/ every
     resume_every_h hours and once when the machine's age passes resume_before_h (None: no such save), and a run of the same tag
     that finds a saved state continues from it, in the same folder, on the same path; once the training has ended and shipped,
-    a run of the same tag returns that run's summary and its shipped adapter without training."""
+    a run of the same tag returns that run's summary and its shipped adapter without training.
+
+    lazy_pictures (extract.fetch_images(lazy=True)): the pictures stay on disk, one file a picture, and are decoded when a batch
+    is collated, instead of every picture decoded into memory before the first step; the same pictures load or fail either way
+    and a batch is the same. picture_workers: the threads that fetch the pictures (the items' and the general rows'). Neither is
+    among the settings a resumed run must match: a run may resume with other values. grad_checkpointing: gradient checkpointing
+    on the model and in the Trainer (on by default; off is the same arithmetic, faster, with more memory held). Also not a
+    setting a resume checks. The summary records the peak GPU memory, the seconds a step of the training phase alone and the
+    seconds the pictures took."""
     if keys not in chain.KEYS:
         raise ValueError(f"unknown keys {keys!r}: one of {chain.KEYS}")
     full = rank == 0
@@ -374,6 +431,8 @@ def run(model_id: str = "Qwen/Qwen3.5-9B", inputs="hub:sft/sft_v1.json", out_dir
             return summary
     import torch
     from transformers import AutoProcessor, Trainer, TrainingArguments
+    if torch.cuda.is_available():        # the peak in the summary is this run's, not an earlier run's in the same process
+        torch.cuda.reset_peak_memory_stats()
     if not full:
         from .checks import peft_beside_torchao
         peft_check = peft_beside_torchao()
@@ -400,7 +459,10 @@ def run(model_id: str = "Qwen/Qwen3.5-9B", inputs="hub:sft/sft_v1.json", out_dir
     t0 = time.time()
     why_missing = {}              # the picture items whose picture did not load, by reason (they leave the run)
     picture_items = [it for it in items if it["kind"] == "image"]
-    pictures = fetch_images(picture_items, os.path.join(out_dir, "images"), failures=why_missing)
+    print(f"pictures {'on disk, decoded when a batch is collated' if lazy_pictures else 'decoded into memory before step 1'}; "
+          f"{picture_workers} fetch threads; gradient checkpointing {'on' if grad_checkpointing else 'off'}", flush=True)
+    pictures = fetch_images(picture_items, os.path.join(out_dir, "images"), workers=picture_workers, failures=why_missing,
+                            lazy=lazy_pictures)
     missing = sorted(it["id"] for it in picture_items if it["id"] not in pictures)
     pictures_missing = {"n": len(missing), "by_reason": {}, "ids": missing[:200]}
     for m in missing:
@@ -409,10 +471,11 @@ def run(model_id: str = "Qwen/Qwen3.5-9B", inputs="hub:sft/sft_v1.json", out_dir
     items = [it for it in items if it["kind"] != "image" or it["id"] in pictures]
     if anchor_items:
         with_picture = [a for a in anchor_items if a.get("image_urls") or a.get("image")]
-        pictures.update(fetch_images(with_picture, os.path.join(out_dir, "images")))
+        pictures.update(fetch_images(with_picture, os.path.join(out_dir, "images"), workers=picture_workers, lazy=lazy_pictures))
         anchor_items = [a for a in anchor_items if not (a.get("image_urls") or a.get("image")) or a["id"] in pictures]
         print(f"general rows: {len(anchor_items)} ({sum(1 for a in anchor_items if a['id'] in pictures)} with a picture), "
               f"{anchor_batch} beside every micro-batch; general_kl {general_kl}, rehearsal {rehearsal}", flush=True)
+    pictures_s = round(time.time() - t0, 1)      # the items' pictures and the general rows' fetched (and proved to decode)
     pairs = examples_of(items)
     random.Random(seed).shuffle(pairs)
     examples_print = saved_state.fingerprint(pairs)
@@ -454,10 +517,7 @@ def run(model_id: str = "Qwen/Qwen3.5-9B", inputs="hub:sft/sft_v1.json", out_dir
               + (f"; repository code at {revision}" if trust_remote_code else "")
               + (f"; image processor {image_settings}" if image_settings else ""), flush=True)
     model.config.use_cache = False
-    model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
-    input_grads = family.input_grads(model)
-    if input_grads:
-        model.enable_input_require_grads()
+    input_grads = prepare_checkpointing(model, grad_checkpointing)
     if full:
         n_train = 0
         for name, p in model.named_parameters():
@@ -492,13 +552,7 @@ def run(model_id: str = "Qwen/Qwen3.5-9B", inputs="hub:sft/sft_v1.json", out_dir
     total = max_steps or math.ceil(steps_per_epoch * epochs)
     trainable = [p for p in model.parameters() if p.requires_grad]
     optimizer = torch.optim.Adam(trainable, lr=lr, betas=(0.9, 0.999))        # plain Adam, no weight decay
-    wanted = dict(output_dir=run_dir, per_device_train_batch_size=batch, gradient_accumulation_steps=grad_accum,
-                  num_train_epochs=epochs, learning_rate=lr, lr_scheduler_type="cosine", warmup_steps=math.ceil(total * warmup),
-                  bf16=True, logging_steps=10, save_strategy="no", report_to=[], remove_unused_columns=False,
-                  dataloader_num_workers=0, seed=seed, gradient_checkpointing=True,
-                  gradient_checkpointing_kwargs={"use_reentrant": False})
-    if max_steps:
-        wanted["max_steps"] = max_steps                       # the Trainer stops here, whatever num_train_epochs says
+    wanted = trainer_arguments(run_dir, batch, grad_accum, epochs, lr, total, warmup, seed, max_steps, grad_checkpointing)
     allowed = set(inspect.signature(TrainingArguments).parameters)
     dropped = [k for k in wanted if k not in allowed]
     if dropped:
@@ -570,7 +624,11 @@ def run(model_id: str = "Qwen/Qwen3.5-9B", inputs="hub:sft/sft_v1.json", out_dir
                "items_with_picture": n_img, "pictures_missing": pictures_missing, "examples": len(pairs), "examples_by_form": forms,
                "steps": result.global_step,
                "train_loss": train_loss, "s_per_step": round((minutes_before * 60 + time.time() - t0) / max(result.global_step, 1), 2),
-               "train_min": round(minutes_before + (time.time() - t0) / 60, 1), "lora_modules": report, "targets": targets, "inputs": inputs,
+               "train_min": round(minutes_before + (time.time() - t0) / 60, 1),
+               "train_s_per_step": progress_cb.phase_s_per_step(result.global_step), "pictures_s": pictures_s,
+               "peak_gpu_gb": peak_gpu_gb(torch), "lazy_pictures": lazy_pictures, "picture_workers": picture_workers,
+               "grad_checkpointing": grad_checkpointing,
+               "lora_modules": report, "targets": targets, "inputs": inputs,
                "model_type": family.model_type(model), "trust_remote_code": trust_remote_code, "revision": revision,
                "image_settings": image_settings,
                "init_adapter": init_adapter, "system": system, "system_tokens": system_tokens, "path_in_repo": path_in_repo,
@@ -591,7 +649,8 @@ def run(model_id: str = "Qwen/Qwen3.5-9B", inputs="hub:sft/sft_v1.json", out_dir
     with open(os.path.join(adapter_dir, "train_summary.json"), "w", encoding="utf-8") as fh:
         json.dump(summary, fh, indent=1)
     print(f"\ntrained in {summary['train_min']} min: {summary['steps']} steps, loss {summary['train_loss']:.4f}, "
-          f"{summary['s_per_step']} s/step", flush=True)
+          f"{summary['s_per_step']} s/step ({summary['train_s_per_step']} s/step in training alone; pictures {pictures_s} s; "
+          f"peak GPU memory {summary['peak_gpu_gb']} GB)", flush=True)
     if do_ship:
         url = ship(adapter_dir, f"{path_in_repo}/final", f"{short} {'full' if full else f'r{rank}'} {stamp}: final ({summary['steps']} steps)", repo)
         summary["shipped"] = url is not None

@@ -14,11 +14,14 @@ from __future__ import annotations
 
 import collections
 import gc
+import hashlib
 import io
 import json
 import os
+import threading
 import time
 import zipfile
+from collections.abc import Mapping
 from datetime import datetime, timezone
 
 from . import __version__, chain, family, prompts
@@ -111,12 +114,109 @@ def _image_from_bytes(b: bytes, max_side: int = MAX_SIDE):
     return bounded(Image.open(io.BytesIO(b)).convert("RGB"), max_side)
 
 
-def _fetch_url(urls: list, cache_path: str, max_side: int = MAX_SIDE):
-    """The picture behind the first url that answers, or (None, why)."""
-    import requests
+def _image_from_file(path: str, max_side: int = MAX_SIDE):
+    """A picture file decoded the way its bytes would be (_image_from_bytes): opened, converted to RGB, bounded."""
     from PIL import Image
+    with Image.open(path) as im:
+        return bounded(im.convert("RGB"), max_side)
+
+
+def _stored_name(cache_dir: str, key) -> str:
+    """The path of a picture's file in the cache folder, named by its locator (key)."""
+    name = "lazy_" + hashlib.sha1(json.dumps(key, sort_keys=True, default=str).encode("utf-8")).hexdigest()[:24] + ".img"
+    return os.path.join(cache_dir, name)
+
+
+class PictureStoreError(Exception):
+    """A picture's file could not be written to the cache folder (a full disk, for example). Not a fault of the picture: the
+    fetch stops here instead of dropping the picture, so a run never trains on a smaller set that nobody chose."""
+
+
+def _write_file(path: str, b: bytes) -> None:
+    """Write bytes to path through a .part file and os.replace, so a process killed mid-write leaves no partial file under the
+    final name; a failed write leaves no .part file and raises PictureStoreError naming the path and the OS error."""
+    tmp = f"{path}.{os.getpid()}.{threading.get_ident()}.part"
+    try:
+        with open(tmp, "wb") as fh:
+            fh.write(b)
+        os.replace(tmp, path)
+    except OSError as e:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        raise PictureStoreError(f"could not write the picture file {path}: {e}") from e
+
+
+def _stored(cache_dir: str, key, b: bytes) -> str:
+    """The file holding a picture's bytes in the cache folder, named by its locator (key), written once; its path."""
+    path = _stored_name(cache_dir, key)
+    if not (os.path.isfile(path) and os.path.getsize(path) == len(b)):
+        _write_file(path, b)
+    return path
+
+
+class LazyPictures(Mapping):
+    """{sample_id: picture} whose pictures stay on disk: a value is decoded when it is read (the same chain as fetch_images'
+    eager values: the stored bytes, Image.open, convert("RGB"), bounded), and a fresh copy comes back at every read. Rows that
+    share a picture share its file. Membership and length read the files, never the pictures. many(ids) decodes several at once
+    on a few threads (a batch's pictures)."""
+
+    def __init__(self, max_side: int = MAX_SIDE, threads: int | None = None):
+        self.paths, self.max_side = {}, max_side
+        self.threads = threads or min(16, os.cpu_count() or 4)
+        self._pool = None
+
+    def __getitem__(self, key):
+        return _image_from_file(self.paths[key], self.max_side)
+
+    def __setitem__(self, key, path):
+        if not isinstance(path, str):
+            raise TypeError(f"a lazy picture is a file path, not {type(path).__name__}")
+        self.paths[key] = path
+
+    def __contains__(self, key):
+        return key in self.paths
+
+    def __iter__(self):
+        return iter(self.paths)
+
+    def __len__(self):
+        return len(self.paths)
+
+    def update(self, other) -> None:
+        """Take another lazy mapping's files, or a {sample_id: path} dict."""
+        for k, v in (other.paths if isinstance(other, LazyPictures) else dict(other)).items():
+            self[k] = v
+
+    def many(self, keys) -> dict:
+        """{key: picture} for the keys held (each decoded once), decoded on a few threads."""
+        wanted = list(dict.fromkeys(k for k in keys if k in self.paths))
+        if len(wanted) <= 1:
+            return {k: self[k] for k in wanted}
+        if self._pool is None:
+            from concurrent.futures import ThreadPoolExecutor
+            self._pool = ThreadPoolExecutor(self.threads)
+        return dict(zip(wanted, self._pool.map(self.__getitem__, wanted)))
+
+    def __getstate__(self):          # the thread pool does not travel (a copy, a worker process)
+        state = dict(self.__dict__)
+        state["_pool"] = None
+        return state
+
+
+def _fetch_url(urls: list, cache_path: str, max_side: int = MAX_SIDE):
+    """The picture behind the first url that answers, or (None, why). The download is cached at cache_path (written whole, through
+    a .part file); a cached file that does not decode (a write cut short) is removed and fetched again."""
+    import requests
     if os.path.exists(cache_path):
-        return bounded(Image.open(cache_path).convert("RGB"), max_side), None
+        try:
+            return _image_from_file(cache_path, max_side), None
+        except Exception:
+            try:
+                os.remove(cache_path)
+            except OSError:
+                pass
     why = []
     for url in urls:
         for attempt in range(3):
@@ -132,8 +232,7 @@ def _fetch_url(urls: list, cache_path: str, max_side: int = MAX_SIDE):
                 except Exception as e:
                     why.append(f"undecodable ({type(e).__name__})")
                     break
-                with open(cache_path, "wb") as fh:
-                    fh.write(r.content)
+                _write_file(cache_path, r.content)
                 return im, None
             why.append(f"http {r.status_code}")
             if r.status_code in (429, 500, 502, 503, 504):
@@ -192,28 +291,65 @@ def locator_row(r: dict) -> dict:
     return r
 
 
-def fetch_images(rows: list, cache_dir: str, workers: int = 16, failures: dict | None = None, max_side: int = MAX_SIDE) -> dict:
+def fetch_images(rows: list, cache_dir: str, workers: int = 16, failures: dict | None = None, max_side: int = MAX_SIDE,
+                 lazy: bool = False):
     """{sample_id: image} for the rows whose picture answers (an item's id when it has no sample_id); grouped by locator kind so
     shards, zips and archives download once; pictures bounded to max_side. When a dict is passed as failures, it collects
-    {sample_id: why} for the pictures that did not answer."""
+    {sample_id: why} for the pictures that did not answer.
+
+    lazy: the pictures stay on disk, one file a picture in cache_dir (rows that share a picture share the file; a tar archive's
+    members are read where it was unpacked, and a url's download is its own file), and a LazyPictures mapping comes back whose
+    values decode when read, by the same chain as the eager values. Every picture is still decoded once here, so the pictures
+    that fail, and their reasons, are the same as without lazy. Every locator kind is held this way.
+
+    A picture's file that cannot be written to cache_dir (a full disk) raises PictureStoreError: the fetch stops instead of
+    leaving the picture out, since the fault is the machine's, not the picture's."""
     from concurrent.futures import ThreadPoolExecutor
     from huggingface_hub import hf_hub_download
     os.makedirs(cache_dir, exist_ok=True)
-    out = {}
+    out = LazyPictures(max_side) if lazy else {}
     failures = failures if failures is not None else {}
     rows = [locator_row(r) for r in rows]
     by_kind = collections.defaultdict(list)
     for r in rows:
         by_kind[(r.get("image") or {}).get("kind", "pending")].append(r)
+
+    def held(b: bytes, key):
+        """A picture's value once its bytes decode: the decoded picture, or (lazy) its file in the cache folder."""
+        im = _image_from_bytes(b, max_side)
+        return _stored(cache_dir, key, b) if lazy else im
+
+    def share(value, j: int):
+        """The value for the j-th row written on one picture: each row its own decoded copy, or the one file."""
+        return value if (lazy or j == 0) else value.copy()
+
     # urls, in parallel
     url_rows = by_kind.get("url", [])
-    with ThreadPoolExecutor(workers) as pool:
-        got = list(pool.map(lambda r: _fetch_url(r["image"]["urls"], os.path.join(cache_dir, r["sample_id"] + ".img"), max_side), url_rows))
-    for r, (im, why) in zip(url_rows, got):
-        if im is not None:
-            out[r["sample_id"]] = im
-        else:
-            failures[r["sample_id"]] = why
+    if lazy:            # one download a url list, its file shared by the rows that name it; the decoded picture is not kept
+        by_urls = collections.defaultdict(list)
+        for r in url_rows:
+            by_urls[tuple(r["image"]["urls"])].append(r)
+
+        def one_url(urls):
+            path = _stored_name(cache_dir, ["url", list(urls)])
+            im, why = _fetch_url(list(urls), path, max_side)
+            return (path if im is not None else None), why
+
+        with ThreadPoolExecutor(workers) as pool:
+            for (urls, rs), (path, why) in zip(by_urls.items(), pool.map(one_url, list(by_urls))):
+                for r in rs:
+                    if path is not None:
+                        out[r["sample_id"]] = path
+                    else:
+                        failures[r["sample_id"]] = why
+    else:
+        with ThreadPoolExecutor(workers) as pool:
+            got = list(pool.map(lambda r: _fetch_url(r["image"]["urls"], os.path.join(cache_dir, r["sample_id"] + ".img"), max_side), url_rows))
+        for r, (im, why) in zip(url_rows, got):
+            if im is not None:
+                out[r["sample_id"]] = im
+            else:
+                failures[r["sample_id"]] = why
     # parquet shards: one download and one read per shard; the shards in parallel (a repo of one-picture shards downloads
     # one file a row, and one at a time it is the slowest part of a read)
     by_shard = collections.defaultdict(list)
@@ -241,18 +377,22 @@ def fetch_images(rows: list, cache_dir: str, workers: int = 16, failures: dict |
                         cell = tbl.column(col)[i - start].as_py()
                         b = cell.get("bytes") if isinstance(cell, dict) else cell
                         try:
-                            im = _image_from_bytes(b, max_side)
+                            im = held(b, ["hf_parquet", repo, rtype, path, i, col])
+                        except PictureStoreError:
+                            raise
                         except Exception as e:
                             for r in wanted[i]:
                                 fails[r["sample_id"]] = f"undecodable ({type(e).__name__})"
                             continue
                         for j, r in enumerate(wanted[i]):       # a picture several rows were written on loads for each
-                            got[r["sample_id"]] = im if j == 0 else im.copy()
+                            got[r["sample_id"]] = share(im, j)
                 start += n
             for i, group in wanted.items():
                 if not 0 <= i < start:
                     for r in group:
                         fails[r["sample_id"]] = "row index outside the shard"
+        except PictureStoreError:
+            raise
         except Exception as e:
             print(f"  shard {path} failed: {type(e).__name__}: {str(e)[:120]}", flush=True)
             for r in rs:
@@ -267,8 +407,11 @@ def fetch_images(rows: list, cache_dir: str, workers: int = 16, failures: dict |
     # single files on the Hub
     def one_file(r):
         try:
-            local = hf_hub_download(r["image"]["repo"], r["image"]["path"], repo_type=r["image"].get("repo_type", "dataset"), token=token())
-            return _image_from_bytes(open(local, "rb").read(), max_side), None
+            rtype = r["image"].get("repo_type", "dataset")
+            local = hf_hub_download(r["image"]["repo"], r["image"]["path"], repo_type=rtype, token=token())
+            return held(open(local, "rb").read(), ["hf_file", r["image"]["repo"], rtype, r["image"]["path"]]), None
+        except PictureStoreError:
+            raise
         except Exception as e:
             return None, f"{type(e).__name__}"
     file_rows = by_kind.get("hf_file", [])
@@ -289,9 +432,13 @@ def fetch_images(rows: list, cache_dir: str, workers: int = 16, failures: dict |
             with zipfile.ZipFile(local) as zf:
                 for r in rs:
                     try:
-                        out[r["sample_id"]] = _image_from_bytes(zf.read(r["image"]["member"]), max_side)
+                        out[r["sample_id"]] = held(zf.read(r["image"]["member"]), ["zip_member", repo, rtype, path, r["image"]["member"]])
+                    except PictureStoreError:
+                        raise
                     except Exception as e:
                         failures[r["sample_id"]] = f"zip member ({type(e).__name__})"
+        except PictureStoreError:
+            raise
         except Exception as e:
             print(f"  zip {path} failed: {type(e).__name__}: {str(e)[:120]}", flush=True)
             for r in rs:
@@ -307,10 +454,12 @@ def fetch_images(rows: list, cache_dir: str, workers: int = 16, failures: dict |
                 with zipfile.ZipFile(local) as zf:
                     for r in rs:
                         try:
-                            out[r["sample_id"]] = _image_from_bytes(zf.read(r["image"]["member"]), max_side)
+                            out[r["sample_id"]] = held(zf.read(r["image"]["member"]), ["url_archive", url, r["image"]["member"]])
+                        except PictureStoreError:
+                            raise
                         except Exception as e:
                             failures[r["sample_id"]] = f"archive member ({type(e).__name__})"
-            else:
+            elif not lazy:
                 xdir = _extracted(local)          # a tar is unpacked once; members are then plain files
                 for r in rs:
                     try:
@@ -318,6 +467,26 @@ def fetch_images(rows: list, cache_dir: str, workers: int = 16, failures: dict |
                             out[r["sample_id"]] = _image_from_bytes(fh.read(), max_side)
                     except Exception as e:
                         failures[r["sample_id"]] = f"archive member ({type(e).__name__})"
+            else:                                 # lazy: the unpacked member is the picture's file; each decoded once, in parallel
+                xdir = _extracted(local)
+
+                def member_file(r):
+                    try:
+                        p = os.path.join(xdir, r["image"]["member"])
+                        with open(p, "rb") as fh:
+                            _image_from_bytes(fh.read(), max_side)
+                        return p, None
+                    except Exception as e:
+                        return None, f"archive member ({type(e).__name__})"
+
+                with ThreadPoolExecutor(workers) as pool:
+                    for r, (p, why) in zip(rs, pool.map(member_file, rs)):
+                        if p is not None:
+                            out[r["sample_id"]] = p
+                        else:
+                            failures[r["sample_id"]] = why
+        except PictureStoreError:
+            raise
         except Exception as e:
             print(f"  archive {url} failed: {type(e).__name__}: {str(e)[:120]}", flush=True)
             for r in rs:
@@ -353,16 +522,20 @@ def fetch_images(rows: list, cache_dir: str, workers: int = 16, failures: dict |
                             cell = imgs[i].as_py()
                             b = cell.get("bytes") if isinstance(cell, dict) else cell
                             try:
-                                im = _image_from_bytes(b, max_side)
+                                im = held(b, ["hf_dataset_row", repo, split, f, k])
+                            except PictureStoreError:
+                                raise
                             except Exception as e:
                                 for r in group:
                                     failures[r["sample_id"]] = f"undecodable ({type(e).__name__})"
                                 continue
                             for j, r in enumerate(group):
-                                out[r["sample_id"]] = im if j == 0 else im.copy()
+                                out[r["sample_id"]] = share(im, j)
             for group in wanted.values():
                 for r in group:
                     failures.setdefault(r["sample_id"], "key not in the split's files")
+        except PictureStoreError:
+            raise
         except Exception as e:
             print(f"  dataset rows {repo}/{split} failed: {type(e).__name__}: {str(e)[:120]}", flush=True)
             for r in rs:

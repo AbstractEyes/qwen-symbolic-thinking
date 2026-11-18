@@ -116,6 +116,21 @@ Runs that follow a training under `after` are not resumed: one that a runtime's 
 Tested on the CPU with a small model: runs stopped and resumed in the first epoch, in the second, at an epoch's end and twice
 over give the uninterrupted run's loss log and final adapter.
 
+**Large picture sets** (from 0.1.66). By default every picture of a training set is decoded into memory before the first step,
+one copy an item. With `lazy_pictures=True` the pictures stay on disk, one file a picture in the run's image folder (rows that
+share a picture share the file; a tar archive's members are read where it was unpacked), and each batch's pictures are decoded
+when it is collated, on a few threads, by the same chain as before (the stored bytes, opened, converted to RGB, bounded). Every
+picture is still decoded once while it is fetched, so the pictures that fail, and their reasons, are the same either way, and the
+same pairs collate to the same tensors (tested for every locator kind). A picture's file that cannot be written (a full disk)
+stops the fetch with `extract.PictureStoreError`, naming the file, instead of leaving the picture out of the run. A url's
+download is cached through a `.part` file, so a process killed mid-write leaves no partial file; a cached download that does not
+decode is fetched again once (eager or lazy alike; a healthy cache reads as before). `picture_workers` sets the threads that fetch the
+pictures (16 by default). `grad_checkpointing=False` turns gradient checkpointing off in the model and the Trainer (the same
+arithmetic, faster, with more memory held). None of the three is a setting a resumed run must match. The summary records the
+peak GPU memory (`peak_gpu_gb`), the seconds a step of the training phase alone (`train_s_per_step`; `s_per_step` also counts
+the picture fetch and the model load) and the seconds the pictures took (`pictures_s`). A queue train spec with `"screen": false`
+runs no screen; with `"do_ship": false` among its `train` keys it leaves nothing on the Hub but its marker (a smoke run).
+
 ## Training rules
 
 - Every training item names its writer: the model, or the people, whose text the item teaches (`writer`). Rows written by an

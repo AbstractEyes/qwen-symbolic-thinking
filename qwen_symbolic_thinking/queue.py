@@ -5,7 +5,8 @@
 
 The queue is runs/queue_<lane>.json in the project repo: a list of specs, each {"name", "kind": "train" | "synth" |
 "throughput" | "extract" | "pe" | "screen" | "tool", ...}. A train spec trains (its "train" keys go to train.run) and then screens the adapter (its "screen" keys go
-to screen.run, with the trained model's forms by default). A synth spec generates synthetic items (synth.generate). A
+to screen.run, with the trained model's forms by default; "screen": false runs no screen, and with "do_ship": false among its
+"train" keys such a run leaves nothing on the Hub but its marker, which holds the training's summary). A synth spec generates synthetic items (synth.generate). A
 throughput spec measures rows an hour by batch size (screen.throughput, with an adapter when given). An extract spec writes
 whole rows for a manifest's pictures with the trained model (extract.run; its "extract" keys). A pe spec has one of the Qwen-Image 2.1
 prompt enhancers read a manifest's pictures or rewrite the seeds' prompts (pe.run; its "pe" keys). A screen spec screens a model, with
@@ -88,6 +89,10 @@ def run_spec(spec: dict, lane: str, repo: str, out_dir: str) -> dict:
         from . import screen, train
         t = train.run(**spec["train"], tag=name, repo=repo)
         result["train"] = {k: v for k, v in t.items() if k not in ("log", "env")}
+        if spec.get("screen") is False:          # "screen": false: no screen (a smoke run that measures the training only)
+            result["screen"] = None
+            result["finished"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
+            return result
         s = dict(DEFAULT_SCREEN, **spec.get("screen", {}))
         s["forms"] = tuple(s["forms"])
         s.setdefault("system", spec["train"].get("system"))     # an arm trained with a system prompt is screened with it
