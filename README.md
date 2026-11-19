@@ -243,6 +243,11 @@ with the picture's plain-text captions, then `Helper tags:` with the booru tagge
 (`girl (solo) · pants (blue) · jeans · doing: standing`, `extract.tag_line`). Each row records the lines it was given. The
 grounding read is against the same captions, so a helped extraction's said and backed are not comparable to an unhelped one's.
 
+`ask_suffix` (from 0.1.67) adds text after the trained ask for every picture, as written: a leading space continues the ask's
+line, a newline starts a line of its own, and helper lines come after it (`extract.ask_for(row, helpers, ask_suffix)` is the
+ask a manifest row is given). Each row and the summary record it. A run with a suffix reads the model off its trained ask, so
+its rows say how the model answers a different request, for example one that asks for the words a picture shows.
+
 `wordings` (from 0.1.64) reads a whole row by the wordings of the rows its model learned (`chain.wordings_whole`). The rule of
 version 1's rows counts them: a caption at simple, a caption and one of a prompt or tags at medium, all four at deep. The version
 1.1 rows carry a caption, a prompt and tags at medium, so a model taught them is read with `wordings="v1.1"`; read by the count,

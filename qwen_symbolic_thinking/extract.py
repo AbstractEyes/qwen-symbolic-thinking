@@ -102,6 +102,13 @@ def with_helpers(ask: str, lines: dict) -> str:
     return ask + "".join(f"\n{HELPERS[k]}: {lines[k]}" for k in HELPERS if k in lines)
 
 
+def ask_for(row: dict, helpers: tuple | None = None, ask_suffix: str | None = None) -> str:
+    """The ask one manifest row is given: the trained ask at the row's planned depth, then ask_suffix as written (a leading space
+    continues the ask's line, a newline starts a line of its own), then the helper lines when helpers are asked for."""
+    ask = prompts.full(DEPTHS.get(row.get("depth_plan"), "medium")) + (ask_suffix or "")
+    return with_helpers(ask, helper_lines(row, helpers)) if helpers else ask
+
+
 def bounded(im, max_side: int = MAX_SIDE):
     """The picture with its longer side at most max_side (in place when it is larger)."""
     if max(im.size) > max_side:
@@ -577,7 +584,7 @@ def run(manifest: str, out_repo: str = "AbstractPhil/qwen-thinking-images", mode
         chunk: int = 512, max_side: int = MAX_SIDE, out_dir: str = "/content/extract", repo_type: str = "dataset",
         do_ship: bool = True, tag: str = "pilot", system: str | None = None, trust_remote_code: bool = False,
         revision: str | None = None, image_settings: dict | None = None, helpers: tuple | None = None,
-        adapter_scale: float = 1.0, wordings: str | None = None) -> dict:
+        adapter_scale: float = 1.0, wordings: str | None = None, ask_suffix: str | None = None) -> dict:
     """Extract whole rows for the manifest's pictures (those of one split, of some sources or all but some); the next chunk's
     pictures are fetched while the current chunk generates (bounded to max_side); a batch that runs out of memory is retried
     in halves; ship extractions/<stamp>_<tag>/ (rows.jsonl, missing.jsonl, summary.json) to the dataset repo.
@@ -587,7 +594,8 @@ def run(manifest: str, out_repo: str = "AbstractPhil/qwen-thinking-images", mode
     comparable to an unhelped one's. adapter_scale: the strength the adapter is merged at (screen.load_model: 1 = as trained,
     0 = the base); recorded in the summary. wordings: the convention a whole row's wordings are read by (chain.wordings_whole:
     None = version 1's count; "v1.1" for a model taught the version 1.1 rows, whose medium rows carry a caption, a prompt and
-    tags); recorded in the summary."""
+    tags); recorded in the summary. ask_suffix: text added after the trained ask for every picture, as written (ask_for: before
+    any helper lines); recorded in the summary and on each row. A run with one reads the model off its trained ask."""
     if wordings is not None and wordings not in chain.CONVENTIONS:
         raise ValueError(f"unknown wordings convention {wordings!r}: one of {sorted(chain.CONVENTIONS)}")
     from concurrent.futures import ThreadPoolExecutor
@@ -606,7 +614,8 @@ def run(manifest: str, out_repo: str = "AbstractPhil/qwen-thinking-images", mode
                 raise ValueError(f"unknown helper {kind!r}: one of {sorted(HELPERS)}")
     print(f"extract {stamp}: {len(rows)} pictures from {len({r['source'] for r in rows})} sources; {model_id}"
           + (f" + {adapter}/{adapter_subfolder or ''}" if adapter else "") + (f"; system prompt {system!r}" if system_text else "")
-          + (f"; helper lines {list(helpers)}" if helpers else ""), flush=True)
+          + (f"; helper lines {list(helpers)}" if helpers else "") + (f"; ask suffix {ask_suffix!r}" if ask_suffix else ""),
+          flush=True)
     processor, model = load_model(model_id, False, adapter, adapter_subfolder, trust_remote_code, revision, image_settings,
                                   adapter_scale)
     mark = family.marker(model)
@@ -624,8 +633,7 @@ def run(manifest: str, out_repo: str = "AbstractPhil/qwen-thinking-images", mode
         return ims, fails
 
     def ask_of(r):
-        ask = prompts.full(DEPTHS.get(r.get("depth_plan"), "medium"))
-        return with_helpers(ask, helper_lines(r, helpers)) if helpers else ask
+        return ask_for(r, helpers, ask_suffix)
 
     def gen(part, pictures):
         head = [{"role": "system", "content": system_text}] if system_text else []
@@ -685,6 +693,8 @@ def run(manifest: str, out_repo: str = "AbstractPhil/qwen-thinking-images", mode
                            "hinted": bool(hint), "image": r["image"]}
                     if helpers:
                         out["helpers"] = helper_lines(r, helpers)
+                    if ask_suffix:
+                        out["ask_suffix"] = ask_suffix
                     fh.write(json.dumps(out, ensure_ascii=False) + "\n")
             n_done += len(part)
             spent = time.time() - t0
@@ -703,7 +713,7 @@ def run(manifest: str, out_repo: str = "AbstractPhil/qwen-thinking-images", mode
                "trust_remote_code": trust_remote_code, "revision": revision, "image_settings": image_settings,
                "manifest": manifest, "split": split, "sources": list(sources) if sources else None, "exclude": list(exclude) if exclude else None,
                "batch": batch, "chunk": chunk, "max_side": max_side, "max_new_tokens": max_new_tokens, "floors": {"min_backed": min_backed, "min_said": min_said},
-               "helpers": list(helpers) if helpers else None, "wordings": wordings or "v1",
+               "helpers": list(helpers) if helpers else None, "wordings": wordings or "v1", "ask_suffix": ask_suffix,
                "rows": len(rows), "pictures_missing": n_missing, "pictures_missing_by_source": dict(missing_by_source), "oom": dict(oom),
                "kept": counts["kept"], "rejected": dict(reasons),
                "s_per_row": round((time.time() - t0) / max(n_done, 1), 3), "tok_per_s": round(n_tok / max(time.time() - t0, 1e-9), 1),
