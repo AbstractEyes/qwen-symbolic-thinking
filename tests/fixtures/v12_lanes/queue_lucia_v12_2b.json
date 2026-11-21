@@ -1,0 +1,449 @@
+[
+ {
+  "name": "v11a_2b",
+  "kind": "tool",
+  "needs": "0.1.67",
+  "tool": {
+   "module": "anchors",
+   "args": {
+    "model_id": "Qwen/Qwen3.5-2B",
+    "rows": "hub:sft/v11_rows_a.json",
+    "held_pictures": [
+     "hub:screens/inputs/screen_v1.json",
+     "hub:sft/v11_rows_a_held.json"
+    ],
+    "n_picture": 4000,
+    "n_text": 2000,
+    "n_held_picture": 200,
+    "n_held_text": 200,
+    "batch": 64,
+    "max_new_tokens": 512,
+    "max_new_tokens_text": 768,
+    "seed": 20261110
+   }
+  }
+ },
+ {
+  "name": "v11a_2b_by",
+  "kind": "tool",
+  "needs": "0.1.67",
+  "tool": {
+   "module": "filter_anchors",
+   "args": {
+    "anchors": "hub:anchors/v11a_2b/anchors.json",
+    "own_license_sources": [
+     "coco",
+     "localized_narratives"
+    ],
+    "picture_licenses": "hub:licenses/coco_photo_licenses.json",
+    "licenses": [
+     "CC BY 4.0",
+     "Apache-2.0",
+     "Attribution License",
+     "No known copyright restrictions",
+     "United States Government Work"
+    ]
+   }
+  },
+  "waits_for": [
+   "anchors/v11a_2b/anchors.json"
+  ]
+ },
+ {
+  "name": "v11txt_2b",
+  "kind": "tool",
+  "needs": "0.1.67",
+  "tool": {
+   "module": "anchors",
+   "args": {
+    "rows": "hub:text/anchor_pool_v1.json",
+    "held_pictures": "hub:text/anchor_held_v1.json",
+    "n_picture": 1726,
+    "n_text": 0,
+    "n_held_picture": 300,
+    "n_held_text": 0,
+    "batch": 64,
+    "max_new_tokens": 512,
+    "max_new_tokens_text": 768,
+    "seed": 20261113,
+    "bank": "text",
+    "detail": null,
+    "model_id": "Qwen/Qwen3.5-2B"
+   }
+  }
+ },
+ {
+  "name": "S_v12_smoke_gc1_2b",
+  "kind": "train",
+  "needs": "0.1.67",
+  "train": {
+   "model_id": "Qwen/Qwen3.5-2B",
+   "rank": 32,
+   "alpha": 64,
+   "batch": 8,
+   "grad_accum": 2,
+   "max_len": 2048,
+   "epochs": 1,
+   "lr": 0.0002,
+   "seed": 20261030,
+   "seed_adapter": true,
+   "writers": [
+    "gpt-6-luna",
+    "deepseek-flash",
+    "gemini-4-argon",
+    "gemini-3.8-flash",
+    "Qwen/Qwen3.5-2B"
+   ],
+   "inputs": [
+    "hub:sft/v12_rows_a_by.json"
+   ],
+   "anchors": "hub:anchors/v11a_2b_by/anchors.json",
+   "anchor_batch": 4,
+   "general_kl": 1.0,
+   "grad_checkpointing": true,
+   "resume": false,
+   "lazy_pictures": true,
+   "picture_workers": 64,
+   "n_items": 2000,
+   "max_steps": 30,
+   "do_ship": false
+  },
+  "screen": false,
+  "waits_for": [
+   "sft/v12_rows_a_by.json",
+   "anchors/v11a_2b_by/anchors.json"
+  ]
+ },
+ {
+  "name": "V12_A1_gkl1_1ep_2b_by",
+  "kind": "train",
+  "needs": "0.1.67",
+  "train": {
+   "model_id": "Qwen/Qwen3.5-2B",
+   "rank": 32,
+   "alpha": 64,
+   "batch": 8,
+   "grad_accum": 2,
+   "max_len": 2048,
+   "epochs": 1,
+   "lr": 0.0002,
+   "seed": 20261030,
+   "seed_adapter": true,
+   "writers": [
+    "gpt-6-luna",
+    "deepseek-flash",
+    "gemini-4-argon",
+    "gemini-3.8-flash",
+    "Qwen/Qwen3.5-2B"
+   ],
+   "inputs": [
+    "hub:sft/v12_rows_a_by.json"
+   ],
+   "anchors": "hub:anchors/v11a_2b_by/anchors.json",
+   "anchor_batch": 4,
+   "general_kl": 1.0,
+   "grad_checkpointing": true,
+   "resume": true,
+   "ship_every": 1000,
+   "lazy_pictures": true,
+   "picture_workers": 64
+  },
+  "screen": {
+   "forms": [
+    "full",
+    "short",
+    "spec_full"
+   ],
+   "batch": 4,
+   "max_new_tokens": 800
+  },
+  "waits_for": [
+   "sft/v12_rows_a_by.json",
+   "anchors/v11a_2b_by/anchors.json",
+   "anchors/v11a_2b/held.json",
+   "anchors/v11txt_2b/held.json"
+  ],
+  "after": [
+   {
+    "name": "P_probe_v12_A1_2b_by",
+    "kind": "extract",
+    "extract": {
+     "manifest": "hub:AbstractPhil/qwen-thinking-images/manifest_v1.4.jsonl",
+     "split": "probe",
+     "batch": 64,
+     "max_new_tokens": 800,
+     "chunk": 512,
+     "out_repo": "AbstractPhil/qwen-symbolic-thinking-image-training-private",
+     "repo_type": "model"
+    }
+   },
+   {
+    "name": "P_museum_v12_A1_2b_by",
+    "kind": "extract",
+    "extract": {
+     "manifest": "hub:AbstractPhil/qwen-thinking-images/manifest_v1.2.jsonl",
+     "split": "main",
+     "sources": [
+      "aic",
+      "nga",
+      "cleveland",
+      "met"
+     ],
+     "per_source": 50,
+     "batch": 64,
+     "max_new_tokens": 800,
+     "chunk": 512,
+     "out_repo": "AbstractPhil/qwen-symbolic-thinking-image-training-private",
+     "repo_type": "model"
+    }
+   },
+   {
+    "name": "K_v12_A1_2b_by",
+    "kind": "tool",
+    "tool": {
+     "module": "keep_read",
+     "args": {
+      "held": "hub:anchors/v11a_2b/held.json",
+      "scales": [
+       1.0,
+       0.5
+      ],
+      "batch": 32
+     }
+    }
+   },
+   {
+    "name": "XT_v12_2b_by_s1",
+    "kind": "extract",
+    "extract": {
+     "manifest": "repo:text/text_held_v1.jsonl",
+     "split": "text_held",
+     "batch": 64,
+     "max_new_tokens": 800,
+     "chunk": 512,
+     "out_repo": "AbstractPhil/qwen-symbolic-thinking-image-training-private",
+     "repo_type": "model",
+     "adapter_scale": 1.0,
+     "wordings": "v1.1"
+    }
+   },
+   {
+    "name": "KT_v12_2b_by",
+    "kind": "tool",
+    "tool": {
+     "module": "keep_read",
+     "args": {
+      "held": "hub:anchors/v11txt_2b/held.json",
+      "scales": [
+       1.0,
+       0.5
+      ],
+      "batch": 32
+     }
+    }
+   },
+   {
+    "name": "XT_v12_2b_by_s1_deep",
+    "kind": "extract",
+    "extract": {
+     "manifest": "repo:text/text_held_v1_deep.jsonl",
+     "split": "text_held",
+     "batch": 64,
+     "max_new_tokens": 800,
+     "chunk": 512,
+     "out_repo": "AbstractPhil/qwen-symbolic-thinking-image-training-private",
+     "repo_type": "model",
+     "adapter_scale": 1.0,
+     "wordings": "v1.1"
+    }
+   },
+   {
+    "name": "XTA_v12_2b_by_s1",
+    "kind": "extract",
+    "extract": {
+     "manifest": "repo:text/text_held_v1.jsonl",
+     "split": "text_held",
+     "batch": 64,
+     "max_new_tokens": 800,
+     "chunk": 512,
+     "out_repo": "AbstractPhil/qwen-symbolic-thinking-image-training-private",
+     "repo_type": "model",
+     "adapter_scale": 1.0,
+     "wordings": "v1.1",
+     "ask_suffix": " Ensure you include visible text and the expression related to it into the rows."
+    }
+   },
+   {
+    "name": "XCA2_v12_2b_by_s1",
+    "kind": "extract",
+    "extract": {
+     "manifest": "repo:text/notext_control_v1.jsonl",
+     "split": "notext_control",
+     "batch": 64,
+     "max_new_tokens": 800,
+     "chunk": 512,
+     "out_repo": "AbstractPhil/qwen-symbolic-thinking-image-training-private",
+     "repo_type": "model",
+     "adapter_scale": 1.0,
+     "wordings": "v1.1",
+     "ask_suffix": " Ensure you include visible text and the expression related to it into the rows."
+    }
+   },
+   {
+    "name": "XC2_v12_2b_by_s1",
+    "kind": "extract",
+    "extract": {
+     "manifest": "repo:text/notext_control_v1.jsonl",
+     "split": "notext_control",
+     "batch": 64,
+     "max_new_tokens": 800,
+     "chunk": 512,
+     "out_repo": "AbstractPhil/qwen-symbolic-thinking-image-training-private",
+     "repo_type": "model",
+     "adapter_scale": 1.0,
+     "wordings": "v1.1"
+    }
+   }
+  ]
+ },
+ {
+  "name": "XT_base_2b_noadapter",
+  "kind": "extract",
+  "needs": "0.1.67",
+  "extract": {
+   "manifest": "repo:text/text_held_v1.jsonl",
+   "split": "text_held",
+   "batch": 64,
+   "max_new_tokens": 800,
+   "chunk": 512,
+   "out_repo": "AbstractPhil/qwen-symbolic-thinking-image-training-private",
+   "repo_type": "model",
+   "adapter": null,
+   "model_id": "Qwen/Qwen3.5-2B"
+  }
+ },
+ {
+  "name": "XT_base_2b_deep",
+  "kind": "extract",
+  "needs": "0.1.67",
+  "extract": {
+   "manifest": "repo:text/text_held_v1_deep.jsonl",
+   "split": "text_held",
+   "batch": 64,
+   "max_new_tokens": 800,
+   "chunk": 512,
+   "out_repo": "AbstractPhil/qwen-symbolic-thinking-image-training-private",
+   "repo_type": "model",
+   "adapter": null,
+   "model_id": "Qwen/Qwen3.5-2B"
+  }
+ },
+ {
+  "name": "XTA_base_2b",
+  "kind": "extract",
+  "needs": "0.1.67",
+  "extract": {
+   "manifest": "repo:text/text_held_v1.jsonl",
+   "split": "text_held",
+   "batch": 64,
+   "max_new_tokens": 800,
+   "chunk": 512,
+   "out_repo": "AbstractPhil/qwen-symbolic-thinking-image-training-private",
+   "repo_type": "model",
+   "adapter": null,
+   "model_id": "Qwen/Qwen3.5-2B",
+   "ask_suffix": " Ensure you include visible text and the expression related to it into the rows."
+  }
+ },
+ {
+  "name": "XCA2_base_2b",
+  "kind": "extract",
+  "needs": "0.1.67",
+  "extract": {
+   "manifest": "repo:text/notext_control_v1.jsonl",
+   "split": "notext_control",
+   "batch": 64,
+   "max_new_tokens": 800,
+   "chunk": 512,
+   "out_repo": "AbstractPhil/qwen-symbolic-thinking-image-training-private",
+   "repo_type": "model",
+   "adapter": null,
+   "model_id": "Qwen/Qwen3.5-2B",
+   "ask_suffix": " Ensure you include visible text and the expression related to it into the rows."
+  }
+ },
+ {
+  "name": "XC2_base_2b",
+  "kind": "extract",
+  "needs": "0.1.67",
+  "extract": {
+   "manifest": "repo:text/notext_control_v1.jsonl",
+   "split": "notext_control",
+   "batch": 64,
+   "max_new_tokens": 800,
+   "chunk": 512,
+   "out_repo": "AbstractPhil/qwen-symbolic-thinking-image-training-private",
+   "repo_type": "model",
+   "adapter": null,
+   "model_id": "Qwen/Qwen3.5-2B"
+  }
+ },
+ {
+  "name": "K0_lucia1_2b",
+  "kind": "tool",
+  "needs": "0.1.67",
+  "tool": {
+   "module": "keep_read",
+   "args": {
+    "model_id": "Qwen/Qwen3.5-2B",
+    "adapter": "AbstractPhil/qwen-symbolic-thinking-image-training",
+    "adapter_subfolder": "lora/Qwen3.5-2B/r32/20261101_041601_G_med4_2ep_2b/final",
+    "held": "hub:anchors/v11a_2b/held.json",
+    "scales": [
+     0.0,
+     1.0
+    ],
+    "batch": 32
+   }
+  },
+  "waits_for": [
+   "anchors/v11a_2b/held.json"
+  ]
+ },
+ {
+  "name": "XT_v1_2b_s1_deep",
+  "kind": "extract",
+  "needs": "0.1.67",
+  "extract": {
+   "manifest": "repo:text/text_held_v1_deep.jsonl",
+   "split": "text_held",
+   "batch": 64,
+   "max_new_tokens": 800,
+   "chunk": 512,
+   "out_repo": "AbstractPhil/qwen-symbolic-thinking-image-training-private",
+   "repo_type": "model",
+   "model_id": "Qwen/Qwen3.5-2B",
+   "adapter": "AbstractPhil/qwen-symbolic-thinking-image-training",
+   "adapter_subfolder": "lora/Qwen3.5-2B/r32/20261101_041601_G_med4_2ep_2b/final",
+   "adapter_scale": 1.0
+  }
+ },
+ {
+  "name": "XT_v1_2b_s1",
+  "kind": "extract",
+  "needs": "0.1.67",
+  "extract": {
+   "manifest": "repo:text/text_held_v1.jsonl",
+   "split": "text_held",
+   "batch": 64,
+   "max_new_tokens": 800,
+   "chunk": 512,
+   "out_repo": "AbstractPhil/qwen-symbolic-thinking-image-training-private",
+   "repo_type": "model",
+   "model_id": "Qwen/Qwen3.5-2B",
+   "adapter": "AbstractPhil/qwen-symbolic-thinking-image-training",
+   "adapter_subfolder": "lora/Qwen3.5-2B/r32/20261101_041601_G_med4_2ep_2b/final",
+   "adapter_scale": 1.0
+  }
+ }
+]
