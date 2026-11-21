@@ -1,0 +1,590 @@
+"""The model registry: one entry per model of the version-1 list, holding what a v1.2 lane needs (the base, its pins, the recipe,
+the picture budget, the smoke's limits), what its card and release need (the repos, the tags, the older versions) and its
+looker's settings in the testbed Space. `lines.py` builds a lane (its queue and its notebook) from an entry.
+
+    from qwen_symbolic_thinking import registry
+    entry = registry.get("2b")               # by its run key, its base id, a release repo or a Space looker key
+    registry.recipe(entry)                   # the train keys of its v1.2 training
+    registry.smoke_stop(entry, "apache")     # the limits its smoke stops at
+    registry.todo()                          # every value the records do not give yet, and what decides it
+
+    python -m qwen_symbolic_thinking.registry [<key> ...]      (prints the entries and every open value)
+
+Where each value comes from is written beside it: a record (a run's marker in the record repo, a release tag, a model's
+config), a measurement (a v1.2 run's own numbers), or an estimate (the v1.2 / v1 step ratio times the model's own v1 pace,
+labeled as such until its smoke measures it). A value no record gives is None, and the entry's `todo` names what decides it;
+nothing is filled in by guess. `blockers` lists what stops a model's lane from running as generated.
+
+An entry's fields:
+
+| field | what it holds |
+|---|---|
+| key | the short key in its run names (V12_A1_gkl1_1ep_<key>_by, S_v12_smoke_gc1_<key>, v11a_<key>, ...) |
+| name, line_name, family, model_type | its name on the cards, its named line (Lucia, Ulisse) or None, the model family, the config's model_type |
+| base, base_revision | the base model's Hub id, and the revision its repository code is pinned to (None: not pinned) |
+| trust_remote_code, transformers, install | whether its repository's code runs; the transformers release its specs ask for (None: 5 or later, the queue's default); the notebook's install line and whether it builds the linear-attention kernels |
+| lines, scheduled | the v1.2 lines the catalogue gives it ("apache", "nc"); whether it is trained (False: training instructions only) |
+| lane | its lane: the queue runs/queue_<lane>.json and the notebook <lane>.ipynb |
+| lora, lr, batch, grad_accum, max_len, image_settings | its training settings (the rest of the recipe is V12_RECIPE, the same for every model) |
+| read_batch, keep_batch | the batch of its extraction reads and general answers; of its preservation reads |
+| general_answers | the project-repo folders of its base model's own answers (anchors/<name>/anchors.json, held.json) |
+| template | what the package does differently for its family (read from the model; noted here for people) |
+| pace, peak | per line: the seconds a training step takes and the peak GPU memory, measured or estimated, with the source |
+| repos, tags, licenses | its public release repos per line (and the full fine-tune's), their tags, each line's license |
+| versions | its trained versions: where each adapter lives (the record repo, or PROJECT: the project repo the lane runs on) |
+| comparisons | the reads of the base and of older versions its v1.2 card compares against (None: the generator's default set) |
+| space | its looker in the testbed Space: the looker keys, gb (bf16 weights on the card), tps (new tokens a second) |
+| todo, blockers | what is open and what decides it; what keeps its lane from running |
+"""
+from __future__ import annotations
+
+import copy
+import json
+
+OWNER = "AbstractPhil"
+# The public record repo: every version-1 adapter lives here (lora/<model>/r32/<stamp>_<run>/final), with its run's marker.
+RECORD = "AbstractPhil/qwen-symbolic-thinking-image-training"
+# An adapter that lives in the lane's own project repo, the repo its training ran in (the project repo a lane is generated for).
+PROJECT = "project"
+LINES = ("apache", "nc")
+
+# The v1.2 recipe, the same for every model (the v1.2 training specs of the 4B, 9B and 2B lanes, key for key): one pass over the
+# rows at 8 x 2 sequences a step, the keeping objective at weight 1 on the base model's own answers, gradient checkpointing, the
+# training state saved for a resume, a ship every 1,000 steps, the pictures held on disk. The per-model settings (LoRA rank and
+# alpha, learning rate, batch, max length, picture budget) are the entries' own.
+V12_RECIPE = {"epochs": 1, "seed": 20261030, "seed_adapter": True, "anchor_batch": 4, "general_kl": 1.0,
+              "grad_checkpointing": True, "resume": True, "ship_every": 1000, "lazy_pictures": True, "picture_workers": 64}
+# The writers whose text the release's rows carry (the dataset card's "Rows by source and writer"), in the order the v1.2 lanes
+# list them; the base model that answered the general rows is appended per model.
+V12_WRITERS = ("gpt-6-luna", "deepseek-flash", "gemini-4-argon", "gemini-3.8-flash")
+# The two training sets of the v1.2 line (release 5 of the public dataset, split by license), as paths in the project repo; the
+# same rows for every model (pictures that fail to load or examples cut at max_len can move a model's counts slightly).
+V12_SETS = {
+    "apache": {"path": "sft/v12_rows_a_by.json", "items": 91_138, "examples": 162_183, "steps": 10_137},
+    "nc": {"path": "sft/v12_rows_nc.json", "items": 184_562, "examples": 349_031, "steps": 21_815},
+}
+# The smoke that runs before each training: the set's first 2,000 items, 30 steps, nothing shipped, no screen, and the stop rule
+# of the v1.2 lanes: its steady pace (the steps after the first ten) above 1.25 x the pace basis (the measured v1.2 pace where one
+# exists, else the estimate), or its peak memory above 85 GB, fails the smoke and holds its training back.
+SMOKE = {"n_items": 2000, "max_steps": 30, "resume": False, "do_ship": False}
+STOP_FACTOR, STOP_PEAK_GB, STOP_AFTER_STEP = 1.25, 85, 10
+KEEP_BATCH = 32          # the preservation reads' batch in the v1.2 lanes (tools.keep_read)
+
+# An estimate: a v1.2 step costs about 1.5 times a v1 step of the same model on the Apache rows and about 1.4 times on the -nc
+# rows (the measured v1.2 paces of the 9B, 4B and 2B against their own v1 paces), times the model's own measured v1 pace.
+_EST = "estimate: the v1.2 / v1 step ratio (about 1.5 Apache, 1.4 -nc) x its v1 pace {v1} s ({run}); its smoke measures it"
+
+_QWEN_TEMPLATE = ("Qwen3.5: thinking off through the chat template's enable_thinking switch; the assistant turn ends <|im_end|>; "
+                  "the config's end id is <|endoftext|>, so generation also stops on the template's turn end (template.stop_ids); "
+                  "the linear-attention kernels (causal-conv1d, flash-linear-attention) are optional and all or nothing")
+_GEMMA_TEMPLATE = ("Gemma 4: the same enable_thinking switch (off: an empty thought block opens the answer); the assistant turn "
+                   "ends <turn|>; the processor takes one list of pictures per text (screen.encode tries the flat form first); a "
+                   "thought lives in a channel of special tokens, mapped for the parse")
+
+
+def _version(version: str, line: str, adapter: str, subfolder: str | None, release: tuple | None, tag: str,
+             keep_tag: str | None = None, wordings: str | None = None, source: str = "", ready: bool = True) -> dict:
+    """One trained version: where its adapter lives (RECORD, PROJECT or a repo id) and in which folder; its release (repo, tag);
+    the stem of its comparison reads' names (XT_<tag>, XT_<tag>_deep, XTA_<tag>, ...; K0_<keep_tag> for its keep read); the
+    wordings its rows carry (None: version 1's, the default)."""
+    return {"version": version, "line": line, "adapter": adapter, "subfolder": subfolder,
+            "release": {"repo": release[0], "tag": release[1]} if release else None, "tag": tag, "keep_tag": keep_tag,
+            "wordings": wordings, "ready": ready, "source": source}
+
+
+def _pace(s: float, measured: bool, source: str) -> dict:
+    return {"s": s, "measured": measured, "source": source}
+
+
+ENTRIES = {
+    # ------------------------------------------------------------------------------------------------ Lucia (Qwen3.5)
+    "9b": {
+        "key": "9b", "name": "Lucia", "line_name": "Lucia", "family": "Qwen3.5", "model_type": "qwen3_5",
+        "base": "Qwen/Qwen3.5-9B", "base_revision": None,                 # not pinned (no lane pinned it)
+        "trust_remote_code": False, "transformers": None, "install": {"transformers": "transformers>=5.0", "fast_path": True},
+        "lines": ("apache", "nc"), "scheduled": True, "lane": "lucia_v12_9b",          # the lane both 9B lines ran in
+        "lora": {"rank": 32, "alpha": 64}, "lr": 2e-4, "batch": 8, "grad_accum": 2, "max_len": 2048,   # V12_A1_gkl1_1ep_9b_by's spec
+        "image_settings": None,
+        "read_batch": 64, "keep_batch": KEEP_BATCH,                          # the 9B v1.2 lane's reads
+        "general_answers": {"anchors": "anchors/v11a_9b", "anchors_by": "anchors/v11a_9b_by", "text": "anchors/v11txt_9b"},
+        "template": _QWEN_TEMPLATE,
+        "pace": {"apache": _pace(9.03, True, "measured: V12_A1_gkl1_1ep_9b_by, 10,137 steps in 1,525.9 min over two machines"),
+                 "nc": _pace(8.1, True, "measured: V12NC_A1_gkl1_1ep_9b's first steps, 8.0-8.1 s a step (training)")},
+        "peak": {"apache": {"gb": 58.7, "source": "measured: V12_A1_gkl1_1ep_9b_by (its smoke 51.3)"},
+                 "nc": {"gb": None, "source": "its smoke S_v12_smoke_gc1_9b_nc 41.7; the training's own when it ends"}},
+        "repos": {"apache": "AbstractPhil/qwen3.5-9b-think-symbolic-image", "nc": "AbstractPhil/qwen3.5-9b-think-symbolic-image-nc",
+                  "full": None},                                   # no full fine-tune of the 9B (its states do not fit one card)
+        "tags": {"AbstractPhil/qwen3.5-9b-think-symbolic-image": ["legacy-e-all-2ep", "lucia-v1", "lucia-v1.1", "lucia-v1.2"],
+                 "AbstractPhil/qwen3.5-9b-think-symbolic-image-nc": ["lucia-v1.1"]},
+        "licenses": {"apache": "Apache-2.0", "nc": "CC BY-NC-SA 4.0"},              # the release cards
+        "versions": [
+            _version("v1", "apache", RECORD, "lora/Qwen3.5-9B/r32/20261031_085915_G_med4_2ep/final",
+                     ("AbstractPhil/qwen3.5-9b-think-symbolic-image", "lucia-v1"), "v1_9b_s1", "lucia1_9b",
+                     source="G_med4_2ep's marker in the record repo"),
+            _version("v1.1", "apache", PROJECT, "lora/Qwen3.5-9B/r32/20261112_121904_V11R_A1_gkl1_2ep_9b_by/final",
+                     ("AbstractPhil/qwen3.5-9b-think-symbolic-image", "lucia-v1.1"), "v11_9b_by_s1", wordings="v1.1",
+                     source="V11R_A1_gkl1_2ep_9b_by, trained in the project repo"),
+            _version("v1.1", "nc", PROJECT, "lora/Qwen3.5-9B/r32/20261112_213632_V11RNC_A1_gkl1_2ep_9b/final",
+                     ("AbstractPhil/qwen3.5-9b-think-symbolic-image-nc", "lucia-v1.1"), "v11nc_9b_s1", wordings="v1.1",
+                     source="V11RNC_A1_gkl1_2ep_9b, trained in the project repo"),
+            _version("v1.2", "apache", PROJECT, "lora/Qwen3.5-9B/r32/20261120_062038_V12_A1_gkl1_1ep_9b_by/final",
+                     ("AbstractPhil/qwen3.5-9b-think-symbolic-image", "lucia-v1.2"), "v12_9b_by_s1", wordings="v1.1",
+                     source="V12_A1_gkl1_1ep_9b_by"),
+            _version("v1.2", "nc", PROJECT, "lora/Qwen3.5-9B/r32/20261121_100931_V12NC_A1_gkl1_1ep_9b/final", None,
+                     "v12_9b_nc_s1", wordings="v1.1", ready=False,
+                     source="V12NC_A1_gkl1_1ep_9b: training; its final folder ships when the training ends"),
+        ],
+        # the 9B lane compared the base and both v1.1 lines; their closer-look reads (XT_base_9b_noadapter, the v1.1 lines'
+        # closer reads) and Lucia v1's reads existed from earlier runs
+        "comparisons": [{"of": "base", "reads": ["deep", "lettering", "control_lettering", "control"]},
+                        {"of": "v1.1", "line": "apache", "reads": ["deep", "lettering", "control_lettering", "control"]},
+                        {"of": "v1.1", "line": "nc", "reads": ["deep", "lettering", "control_lettering", "control"]}],
+        "space": {"lookers": {"v1": "lucia-9b", "v1.1": "lucia-9b-v1.1", "v1.1-nc": "lucia-9b-v1.1-nc", "v1.2": "lucia-9b-v1.2"},
+                  "gb": 19.31, "tps": 20},
+        "todo": ["versions v1.2 nc: its release (the -nc repo's lucia-v1.2 tag) and its final folder, when the training ends",
+                 "peak nc: the -nc training's own peak, from its marker when it ends"],
+        "blockers": [],
+    },
+    "4b": {
+        "key": "4b", "name": "Lucia 4B", "line_name": "Lucia", "family": "Qwen3.5", "model_type": "qwen3_5",
+        "base": "Qwen/Qwen3.5-4B", "base_revision": None,
+        "trust_remote_code": False, "transformers": None, "install": {"transformers": "transformers>=5.0", "fast_path": True},
+        "lines": ("apache", "nc"), "scheduled": True, "lane": "lucia_v12_4b",          # both lines trained and released
+        "lora": {"rank": 32, "alpha": 64}, "lr": 2e-4, "batch": 8, "grad_accum": 2, "max_len": 2048,   # V12_A1_gkl1_1ep_4b_by
+        "image_settings": None,
+        "read_batch": 64, "keep_batch": KEEP_BATCH,
+        # the 4B came first: its general answers carry no size in their names
+        "general_answers": {"anchors": "anchors/v11a", "anchors_by": "anchors/v11a_by", "text": "anchors/v11txt_4b"},
+        "template": _QWEN_TEMPLATE,
+        "pace": {"apache": _pace(6.23, True, "measured: V12_A1_gkl1_1ep_4b_by, 10,137 steps in 1,053 min"),
+                 "nc": _pace(5.6, True, "measured: V12NC_A1_gkl1_1ep_4b, 5.63 s a training step (5.81 with the picture fetch)")},
+        "peak": {"apache": {"gb": 50.3, "source": "measured: V12_A1_gkl1_1ep_4b_by"},
+                 "nc": {"gb": 50.2, "source": "measured: V12NC_A1_gkl1_1ep_4b"}},
+        "repos": {"apache": "AbstractPhil/qwen3.5-4b-think-symbolic-image", "nc": "AbstractPhil/qwen3.5-4b-think-symbolic-image-nc",
+                  "full": "AbstractPhil/qwen3.5-4b-think-symbolic-image-full"},
+        "tags": {"AbstractPhil/qwen3.5-4b-think-symbolic-image": ["lucia-v1", "lucia-v1.1", "lucia-v1.2"],
+                 "AbstractPhil/qwen3.5-4b-think-symbolic-image-nc": ["lucia-v1.1", "lucia-v1.2"],
+                 "AbstractPhil/qwen3.5-4b-think-symbolic-image-full": ["lucia-v1"]},
+        "licenses": {"apache": "Apache-2.0", "nc": "CC BY-NC-SA 4.0"},
+        "versions": [
+            _version("v1", "apache", RECORD, "lora/Qwen3.5-4B/r32/20261101_010422_G_med4_2ep_4b/final",
+                     ("AbstractPhil/qwen3.5-4b-think-symbolic-image", "lucia-v1"), "v1_4b_s1", "lucia1_4b",
+                     source="G_med4_2ep_4b's marker in the record repo"),
+            _version("v1.1", "apache", PROJECT, "lora/Qwen3.5-4B/r32/20261112_053335_V11R_A1_gkl1_2ep_4b_by/final",
+                     ("AbstractPhil/qwen3.5-4b-think-symbolic-image", "lucia-v1.1"), "v11_4b_by_s1", wordings="v1.1",
+                     source="V11R_A1_gkl1_2ep_4b_by, trained in the project repo"),
+            _version("v1.1", "nc", PROJECT, "lora/Qwen3.5-4B/r32/20261112_034547_V11RNC_A1_gkl1_2ep_4b/final",
+                     ("AbstractPhil/qwen3.5-4b-think-symbolic-image-nc", "lucia-v1.1"), "v11nc_4b_s1", wordings="v1.1",
+                     source="V11RNC_A1_gkl1_2ep_4b, trained in the project repo"),
+            _version("v1.2", "apache", PROJECT, "lora/Qwen3.5-4B/r32/20261118_112850_V12_A1_gkl1_1ep_4b_by/final",
+                     ("AbstractPhil/qwen3.5-4b-think-symbolic-image", "lucia-v1.2"), "v12_4b_by_s1", wordings="v1.1",
+                     source="V12_A1_gkl1_1ep_4b_by"),
+            _version("v1.2", "nc", PROJECT, "lora/Qwen3.5-4B/r32/20261118_111935_V12NC_A1_gkl1_1ep_4b/final",
+                     ("AbstractPhil/qwen3.5-4b-think-symbolic-image-nc", "lucia-v1.2"), "v12_4b_nc_s1", wordings="v1.1",
+                     source="V12NC_A1_gkl1_1ep_4b"),
+        ],
+        # the 4B v1.2 lanes compared the base and both v1.1 lines (deep, lettering, both controls)
+        "comparisons": [{"of": "base", "reads": ["deep", "lettering", "control_lettering", "control"]},
+                        {"of": "v1.1", "line": "apache", "reads": ["deep", "lettering", "control_lettering", "control"]},
+                        {"of": "v1.1", "line": "nc", "reads": ["deep", "lettering", "control_lettering", "control"]}],
+        "space": {"lookers": {"v1": "lucia-4b", "v1.1": "lucia-4b-v1.1", "v1.1-nc": "lucia-4b-v1.1-nc", "v1.2": "lucia-4b-v1.2",
+                              "v1.2-nc": "lucia-4b-v1.2-nc"}, "gb": 9.32, "tps": 24},
+        "todo": [],
+        "blockers": [],
+    },
+    "2b": {
+        "key": "2b", "name": "Lucia 2B", "line_name": "Lucia", "family": "Qwen3.5", "model_type": "qwen3_5",
+        "base": "Qwen/Qwen3.5-2B", "base_revision": None,
+        "trust_remote_code": False, "transformers": None, "install": {"transformers": "transformers>=5.0", "fast_path": True},
+        "lines": ("apache", "nc"), "scheduled": True, "lane": "lucia_v12_2b",          # the lane both 2B lines ran in
+        "lora": {"rank": 32, "alpha": 64}, "lr": 2e-4, "batch": 8, "grad_accum": 2, "max_len": 2048,   # V12_A1_gkl1_1ep_2b_by
+        "image_settings": None,
+        "read_batch": 64, "keep_batch": KEEP_BATCH,
+        "general_answers": {"anchors": "anchors/v11a_2b", "anchors_by": "anchors/v11a_2b_by", "text": "anchors/v11txt_2b"},
+        "template": _QWEN_TEMPLATE,
+        "pace": {"apache": _pace(3.18, True, "measured: V12_A1_gkl1_1ep_2b_by, 10,137 steps in 538.4 min"),
+                 "nc": _pace(2.87, True, "measured: V12NC_A1_gkl1_1ep_2b mid-run (its final marker: 2.89 s a training step)")},
+        "peak": {"apache": {"gb": 44.2, "source": "measured: V12_A1_gkl1_1ep_2b_by (its smoke 33.3)"},
+                 "nc": {"gb": 44.1, "source": "measured: V12NC_A1_gkl1_1ep_2b (its smoke 24.4)"}},
+        "repos": {"apache": "AbstractPhil/qwen3.5-2b-think-symbolic-image", "nc": None,
+                  "full": "AbstractPhil/qwen3.5-2b-think-symbolic-image-full"},
+        "tags": {"AbstractPhil/qwen3.5-2b-think-symbolic-image": ["lucia-v1", "lucia-v1.2"],
+                 "AbstractPhil/qwen3.5-2b-think-symbolic-image-full": ["lucia-v1"]},
+        "licenses": {"apache": "Apache-2.0", "nc": "CC BY-NC-SA 4.0"},
+        "versions": [
+            _version("v1", "apache", RECORD, "lora/Qwen3.5-2B/r32/20261101_041601_G_med4_2ep_2b/final",
+                     ("AbstractPhil/qwen3.5-2b-think-symbolic-image", "lucia-v1"), "v1_2b_s1", "lucia1_2b",
+                     source="G_med4_2ep_2b's marker in the record repo"),
+            _version("v1.2", "apache", PROJECT, "lora/Qwen3.5-2B/r32/20261120_064248_V12_A1_gkl1_1ep_2b_by/final",
+                     ("AbstractPhil/qwen3.5-2b-think-symbolic-image", "lucia-v1.2"), "v12_2b_by_s1", wordings="v1.1",
+                     source="V12_A1_gkl1_1ep_2b_by"),
+            _version("v1.2", "nc", PROJECT, "lora/Qwen3.5-2B/r32/20261120_161853_V12NC_A1_gkl1_1ep_2b/final", None,
+                     "v12_2b_nc_s1", wordings="v1.1", source="V12NC_A1_gkl1_1ep_2b (trained; not released yet)"),
+        ],
+        # the 2B lane compared the base (closer and deep text reads, the lettering read, both controls) and Lucia 2B v1 (her keep
+        # read at strengths 0 and 1, her deep and closer text reads), in that order
+        "comparisons": [{"of": "base", "reads": ["closer", "deep", "lettering", "control_lettering", "control"]},
+                        {"of": "v1", "line": "apache", "reads": ["keep", "deep", "closer"]}],
+        "space": {"lookers": {"v1": "lucia-2b", "v1.2": "lucia-2b-v1.2"}, "gb": 4.55, "tps": 28},
+        "todo": ["repos nc: the 2B -nc release repo, created at its release (released by decision, not yet)",
+                 "versions v1.2 nc: its release tag, at that release"],
+        "blockers": [],
+    },
+    "08b": {
+        "key": "08b", "name": "Lucia 0.8B", "line_name": "Lucia", "family": "Qwen3.5", "model_type": "qwen3_5",
+        "base": "Qwen/Qwen3.5-0.8B", "base_revision": None,
+        "trust_remote_code": False, "transformers": None, "install": {"transformers": "transformers>=5.0", "fast_path": True},
+        "lines": ("apache", "nc"), "scheduled": True,
+        "lane": "lucia_v12_08b",                               # the generator's rule (<line>_v12_<key>); no v1.2 lane has run
+        # the v1.2 recipe; Lucia 0.8B v1 is the recipe's verbatim arm (lr 2e-4, 8 x 2; G_med4_2ep_08b), chosen over a
+        # three-epoch lr 3e-4 arm
+        "lora": {"rank": 32, "alpha": 64}, "lr": 2e-4, "batch": 8, "grad_accum": 2, "max_len": 2048,
+        "image_settings": None,
+        "read_batch": 64, "keep_batch": KEEP_BATCH,                     # her v1 reads ran at 64 (P_probe_08b)
+        "general_answers": {"anchors": "anchors/v11a_08b", "anchors_by": "anchors/v11a_08b_by", "text": "anchors/v11txt_08b"},
+        "template": _QWEN_TEMPLATE,
+        "pace": {"apache": _pace(2.1, False, _EST.format(v1=1.36, run="G_med4_2ep_08b")),
+                 "nc": _pace(1.9, False, _EST.format(v1=1.36, run="G_med4_2ep_08b"))},
+        "peak": {"apache": {"gb": None, "source": "not measured: her smoke measures it"},
+                 "nc": {"gb": None, "source": "not measured: her smoke measures it"}},
+        "repos": {"apache": "AbstractPhil/qwen3.5-0.8b-think-symbolic-image", "nc": None,
+                  "full": "AbstractPhil/qwen3.5-0.8b-think-symbolic-image-full"},
+        "tags": {"AbstractPhil/qwen3.5-0.8b-think-symbolic-image": ["lucia-v1"],
+                 "AbstractPhil/qwen3.5-0.8b-think-symbolic-image-full": ["lucia-v1"]},
+        "licenses": {"apache": "Apache-2.0", "nc": "CC BY-NC-SA 4.0"},
+        "versions": [
+            _version("v1", "apache", RECORD, "lora/Qwen3.5-0.8B/r32/20261101_041418_G_med4_2ep_08b/final",
+                     ("AbstractPhil/qwen3.5-0.8b-think-symbolic-image", "lucia-v1"), "v1_08b_s1", "lucia1_08b",
+                     source="G_med4_2ep_08b's marker in the record repo"),
+        ],
+        "comparisons": None,
+        "space": {"lookers": {"v1": "lucia-0.8b"}, "gb": 1.75, "tps": 30},
+        "todo": ["peak apache, nc: measured by her smokes",
+                 "comparisons: none recorded; the generator's default set applies until her lane's plan names one",
+                 "repos nc: the 0.8B -nc release repo, created at its release"],
+        "blockers": [],
+    },
+    # ------------------------------------------------------------------------------------------------ Ulisse (Gemma 4)
+    "ge4b": {
+        "key": "ge4b", "name": "Ulisse E4B", "line_name": "Ulisse", "family": "Gemma 4", "model_type": "gemma4",
+        "base": "google/gemma-4-E4B-it", "base_revision": None,
+        "trust_remote_code": False, "transformers": None, "install": {"transformers": "transformers>=5.0", "fast_path": False},
+        "lines": ("apache", "nc"), "scheduled": True, "lane": "ulisse_v12_ge4b",       # the generator's rule
+        # the v1.2 recipe; Ulisse E4B v1 trained at 2e-4, 8 x 2, max_len 2,048 and saw (G_med4_2ep_ge4b)
+        "lora": {"rank": 32, "alpha": 64}, "lr": 2e-4, "batch": 8, "grad_accum": 2, "max_len": 2048,
+        "image_settings": None,                                      # his v1: the processor's default (280 picture tokens)
+        "read_batch": 64, "keep_batch": KEEP_BATCH,                  # P_probe_ge4b ran at 64
+        "general_answers": {"anchors": "anchors/v11a_ge4b", "anchors_by": "anchors/v11a_ge4b_by", "text": "anchors/v11txt_ge4b"},
+        "template": _GEMMA_TEMPLATE + "; a separate vision tower (frozen under the LoRA)",
+        "pace": {"apache": _pace(4.1, False, _EST.format(v1=2.67, run="G_med4_2ep_ge4b")),
+                 "nc": _pace(3.7, False, _EST.format(v1=2.67, run="G_med4_2ep_ge4b"))},
+        "peak": {"apache": {"gb": None, "source": "not measured: his smoke measures it"},
+                 "nc": {"gb": None, "source": "not measured: his smoke measures it"}},
+        "repos": {"apache": "AbstractPhil/gemma-4-e4b-think-symbolic-image", "nc": None, "full": None},
+        "tags": {"AbstractPhil/gemma-4-e4b-think-symbolic-image": ["ulisse-v1", "v1"]},
+        "licenses": {"apache": "Apache-2.0", "nc": "CC BY-NC-SA 4.0"},
+        "versions": [
+            _version("v1", "apache", RECORD, "lora/gemma-4-E4B-it/r32/20261101_093141_G_med4_2ep_ge4b/final",
+                     ("AbstractPhil/gemma-4-e4b-think-symbolic-image", "ulisse-v1"), "v1_ge4b_s1", "ulisse1_ge4b",
+                     source="G_med4_2ep_ge4b's marker in the record repo"),
+        ],
+        "comparisons": None,
+        "space": {"lookers": {"v1": "ulisse-e4b"}, "gb": 15.99, "tps": 25},
+        "todo": ["peak apache, nc: measured by his smokes",
+                 "comparisons: none recorded; the generator's default set applies until his lane's plan names one",
+                 "repos nc: the E4B -nc release repo, created at its release"],
+        "blockers": [],
+    },
+    "g12b": {
+        "key": "g12b", "name": "Ulisse 12B", "line_name": "Ulisse", "family": "Gemma 4", "model_type": "gemma4_unified",
+        "base": "google/gemma-4-12B-it", "base_revision": None,
+        "trust_remote_code": False, "transformers": None, "install": {"transformers": "transformers>=5.0", "fast_path": False},
+        "lines": ("apache", "nc"), "scheduled": True, "lane": "ulisse_v12_g12b",       # the generator's rule
+        # lr 5e-5: at the recipe's 2e-4 his first v1 arm went blind to the picture (a loss spike near step 440); at 5e-5 two
+        # seeds saw (G_med4_2ep_g12b_lr5, released; G_med4_2ep_g12b_lr5_s2)
+        "lora": {"rank": 32, "alpha": 64}, "lr": 5e-5, "batch": 8, "grad_accum": 2, "max_len": 2048,
+        "image_settings": None,
+        "read_batch": 64, "keep_batch": KEEP_BATCH,                  # P_probe_g12b_lr5 ran at 64
+        "general_answers": {"anchors": "anchors/v11a_g12b", "anchors_by": "anchors/v11a_g12b_by", "text": "anchors/v11txt_g12b"},
+        "template": (_GEMMA_TEMPLATE + "; encoder-free: the early language layers read the picture and sit under the LoRA, so "
+                     "an arm's picture dependence is read at its early checkpoints (tools.picture_probe), not only at the end"),
+        "pace": {"apache": _pace(7.0, False, _EST.format(v1=4.49, run="G_med4_2ep_g12b_lr5")),
+                 "nc": _pace(6.3, False, _EST.format(v1=4.49, run="G_med4_2ep_g12b_lr5"))},
+        "peak": {"apache": {"gb": None, "source": "not measured: his smoke measures it"},
+                 "nc": {"gb": None, "source": "not measured: his smoke measures it"}},
+        "repos": {"apache": "AbstractPhil/gemma-4-12b-think-symbolic-image", "nc": None, "full": None},
+        "tags": {"AbstractPhil/gemma-4-12b-think-symbolic-image": ["ulisse-v1", "v1"]},
+        "licenses": {"apache": "Apache-2.0", "nc": "CC BY-NC-SA 4.0"},
+        "versions": [
+            _version("v1", "apache", RECORD, "lora/gemma-4-12B-it/r32/20261101_151340_G_med4_2ep_g12b_lr5/final",
+                     ("AbstractPhil/gemma-4-12b-think-symbolic-image", "ulisse-v1"), "v1_g12b_s1", "ulisse1_g12b",
+                     source="G_med4_2ep_g12b_lr5's marker in the record repo"),
+        ],
+        "comparisons": None,
+        "space": {"lookers": {"v1": "ulisse-12b"}, "gb": 23.92, "tps": 18},
+        "todo": ["peak apache, nc: measured by his smokes",
+                 "comparisons: none recorded; the generator's default set applies until his lane's plan names one",
+                 "repos nc: the 12B -nc release repo, created at its release"],
+        "blockers": [],
+    },
+    # ------------------------------------------------------------------------------------------------ the other families
+    "north": {
+        "key": "north", "name": "North-Micro-Vision", "line_name": None, "family": "North", "model_type": "cohere_compass",
+        "base": "CohereLabs/North-Micro-Vision-Instruct", "base_revision": None,
+        "trust_remote_code": False, "transformers": None, "install": {"transformers": "transformers>=5.0", "fast_path": False},
+        "lines": ("apache",), "scheduled": True, "lane": "north_v12",                  # the generator's rule
+        "lora": {"rank": 32, "alpha": 64}, "lr": 2e-4, "batch": 8, "grad_accum": 2, "max_len": 2048,   # G_med4_2ep_north
+        "image_settings": None,
+        "read_batch": 64, "keep_batch": KEEP_BATCH,                  # P_probe_north ran at 64
+        "general_answers": {"anchors": "anchors/v11a_north", "anchors_by": "anchors/v11a_north_by",
+                            "text": "anchors/v11txt_north"},
+        "template": "no family-specific handling: the shared path (the chat template's own picture parts and turn end)",
+        "pace": {"apache": _pace(3.6, False, _EST.format(v1=2.29, run="G_med4_2ep_north"))},
+        "peak": {"apache": {"gb": None, "source": "not measured: its smoke measures it"}},
+        "repos": {"apache": "AbstractPhil/north-micro-vision-think-symbolic-image", "nc": None, "full": None},
+        "tags": {"AbstractPhil/north-micro-vision-think-symbolic-image": ["v1"]},
+        "licenses": {"apache": "Apache-2.0"},
+        "versions": [
+            _version("v1", "apache", RECORD, "lora/North-Micro-Vision-Instruct/r32/20261102_041917_G_med4_2ep_north/final",
+                     ("AbstractPhil/north-micro-vision-think-symbolic-image", "v1"), "v1_north_s1", "v1_north",
+                     source="G_med4_2ep_north's marker in the record repo"),
+        ],
+        "comparisons": None,
+        "space": {"lookers": {"v1": "north"}, "gb": 4.97, "tps": 45},
+        "todo": ["peak apache: measured by its smoke",
+                 "comparisons: none recorded; the generator's default set applies until its lane's plan names one"],
+        "blockers": [],
+    },
+    "glm46v": {
+        "key": "glm46v", "name": "GLM-4.6V-Flash", "line_name": None, "family": "GLM-4.6V", "model_type": "glm4v",
+        "base": "zai-org/GLM-4.6V-Flash", "base_revision": None,
+        "trust_remote_code": False, "transformers": None, "install": {"transformers": "transformers>=5.0", "fast_path": False},
+        "lines": ("apache",), "scheduled": True, "lane": "glm46v_v12",                 # the generator's rule
+        "lora": {"rank": 32, "alpha": 64}, "lr": 2e-4, "batch": 8, "grad_accum": 2,
+        "max_len": 2560,                                             # G_med4_2ep_glm46v: its pictures take more tokens
+        "image_settings": None,
+        "read_batch": 64, "keep_batch": KEEP_BATCH,                  # P_probe_glm46v ran at 64
+        "general_answers": {"anchors": "anchors/v11a_glm46v", "anchors_by": "anchors/v11a_glm46v_by",
+                            "text": "anchors/v11txt_glm46v"},
+        "template": "GLM-4V: the MLP fuses its gate and up projections (gate_up_proj), which the LoRA targets name",
+        "pace": {"apache": _pace(14.4, False, _EST.format(v1=9.31, run="G_med4_2ep_glm46v"))},
+        "peak": {"apache": {"gb": None, "source": "not measured: its smoke measures it"}},
+        "repos": {"apache": "AbstractPhil/glm-4.6v-flash-think-symbolic-image", "nc": None, "full": None},
+        "tags": {"AbstractPhil/glm-4.6v-flash-think-symbolic-image": ["v1"]},
+        "licenses": {"apache": "MIT"},                               # its card follows the base's MIT license
+        "versions": [
+            _version("v1", "apache", RECORD, "lora/GLM-4.6V-Flash/r32/20261102_041223_G_med4_2ep_glm46v/final",
+                     ("AbstractPhil/glm-4.6v-flash-think-symbolic-image", "v1"), "v1_glm46v_s1", "v1_glm46v",
+                     source="G_med4_2ep_glm46v's marker in the record repo"),
+        ],
+        "comparisons": None,
+        "space": {"lookers": {"v1": "glm"}, "gb": 20.59, "tps": 20},
+        "todo": ["peak apache: measured by its smoke",
+                 "comparisons: none recorded; the generator's default set applies until its lane's plan names one"],
+        "blockers": [],
+    },
+    "molmo2o": {
+        "key": "molmo2o", "name": "Molmo2-O-7B", "line_name": None, "family": "Molmo2", "model_type": "molmo2",
+        "base": "allenai/Molmo2-O-7B", "base_revision": "784410650d12be9bc086118fdefa32d2c3bced86",   # its v1 arm's pin
+        "trust_remote_code": True, "transformers": "==4.57.6",       # its code was built on transformers 4.57
+        "install": {"transformers": "transformers==4.57.6", "fast_path": False},
+        "lines": ("apache",), "scheduled": False, "lane": "molmo2o_v12",               # training instructions only
+        "lora": {"rank": 32, "alpha": 64}, "lr": 2e-4, "batch": 8, "grad_accum": 2,
+        "max_len": 2560,                                             # G_med4_2ep_molmo2o_v4
+        "image_settings": None,
+        "read_batch": 32, "keep_batch": KEEP_BATCH,                  # P_probe_molmo2o_v4 ran at 32 (its attention cache is large)
+        "general_answers": {"anchors": "anchors/v11a_molmo2o", "anchors_by": "anchors/v11a_molmo2o_by",
+                            "text": "anchors/v11txt_molmo2o"},
+        "template": ("Molmo2 (repository code): the processor assumes left padding, so the training mask is rebuilt from the pad "
+                     "id; the picture features are added in place, so no input-embedding grad mark; a batch mixing picture "
+                     "rows with text rows is built one picture row at a time (family.prepare_model)"),
+        "pace": {"apache": _pace(11.5, False, _EST.format(v1=7.43, run="G_med4_2ep_molmo2o_v4"))},
+        "peak": {"apache": {"gb": None, "source": "not measured: its smoke measures it"}},
+        "repos": {"apache": "AbstractPhil/molmo2-o-7b-think-symbolic-image", "nc": None, "full": None},
+        "tags": {"AbstractPhil/molmo2-o-7b-think-symbolic-image": ["v1"]},
+        "licenses": {"apache": "Apache-2.0"},
+        "versions": [
+            _version("v1", "apache", RECORD, "lora/Molmo2-O-7B/r32/20261102_123335_G_med4_2ep_molmo2o_v4/final",
+                     ("AbstractPhil/molmo2-o-7b-think-symbolic-image", "v1"), "v1_molmo2o_s1", "v1_molmo2o",
+                     source="G_med4_2ep_molmo2o_v4's marker in the record repo"),
+        ],
+        "comparisons": None,
+        "space": {"lookers": {"v1": "molmo2"}, "gb": 15.52, "disk_gb": 31.04, "tps": 16, "remote": True},
+        "todo": ["peak apache: measured by its smoke",
+                 "comparisons: none recorded; the generator's default set applies until its lane's plan names one"],
+        "blockers": ["the general answers (tools.anchors) and the preservation reads (tools.keep_read) load the base without "
+                     "its repository code and pinned revision: they cannot run for this model until they take "
+                     "trust_remote_code and revision"],
+    },
+    "phi4rv": {
+        "key": "phi4rv", "name": "Phi-4-reasoning-vision-15B", "line_name": None, "family": "Phi-4-reasoning-vision",
+        "model_type": "phi4-siglip",
+        "base": "microsoft/Phi-4-reasoning-vision-15B", "base_revision": "c3e4fac79ddace21976ced56fbf1564b8bd8c89f",   # its v1 pin
+        "trust_remote_code": True, "transformers": "==4.57.6",       # its code subclasses an image-processor module 5.x rewrote
+        "install": {"transformers": "transformers==4.57.6", "fast_path": False},
+        "lines": ("apache",), "scheduled": False, "lane": "phi4rv_v12",                # training instructions only
+        "lora": {"rank": 32, "alpha": 64}, "lr": 2e-4, "batch": 8, "grad_accum": 2, "max_len": 2048,   # G_med4_2ep_phi4rv_p1024_v3
+        # 1,024 picture patches: at the processor's full budget a step took 39 s; its base grounded the same at 1,024
+        "image_settings": {"max_num_patches": 1024},
+        "read_batch": 64, "keep_batch": KEEP_BATCH,                  # P_probe_phi4rv_p1024_v3 ran at 64
+        "general_answers": {"anchors": "anchors/v11a_phi4rv", "anchors_by": "anchors/v11a_phi4rv_by",
+                            "text": "anchors/v11txt_phi4rv"},
+        "template": ("Phi-4-reasoning-vision (repository code): the processor has no chat template (the tokenizer renders it); "
+                     "a picture row's content is one string with <image>; one picture slot per row of a batch; batched "
+                     "generation runs from left-padded embeddings; a <nothink> mode tag is stripped from answers"),
+        "pace": {"apache": _pace(21.8, False, _EST.format(v1=14.07, run="G_med4_2ep_phi4rv_p1024_v3"))},
+        "peak": {"apache": {"gb": None, "source": "not measured: its smoke measures it"}},
+        "repos": {"apache": "AbstractPhil/phi-4-reasoning-vision-15b-think-symbolic-image", "nc": None, "full": None},
+        "tags": {"AbstractPhil/phi-4-reasoning-vision-15b-think-symbolic-image": ["v1"]},
+        "licenses": {"apache": "MIT"},                               # its card follows the base's MIT license
+        "versions": [
+            _version("v1", "apache", RECORD,
+                     "lora/Phi-4-reasoning-vision-15B/r32/20261102_141924_G_med4_2ep_phi4rv_p1024_v3/final",
+                     ("AbstractPhil/phi-4-reasoning-vision-15b-think-symbolic-image", "v1"), "v1_phi4rv_s1", "v1_phi4rv",
+                     source="G_med4_2ep_phi4rv_p1024_v3's marker in the record repo"),
+        ],
+        "comparisons": None,
+        "space": {"lookers": {"v1": "phi4"}, "gb": 30.24, "tps": 12, "remote": True, "settings": {"max_num_patches": 1024}},
+        "todo": ["peak apache: measured by its smoke",
+                 "comparisons: none recorded; the generator's default set applies until its lane's plan names one"],
+        "blockers": ["the general answers (tools.anchors) and the preservation reads (tools.keep_read) load the base without "
+                     "its repository code, pinned revision and picture budget: they cannot run for this model until they "
+                     "take trust_remote_code, revision and image_settings"],
+    },
+    "mi14": {
+        "key": "mi14", "name": "Ministral 3 14B", "line_name": None, "family": "Ministral 3", "model_type": "mistral3",
+        "base": "mistralai/Ministral-3-14B-Instruct-2512-BF16", "base_revision": None,
+        "trust_remote_code": False, "transformers": None, "install": {"transformers": "transformers>=5.0", "fast_path": False},
+        "lines": ("apache",), "scheduled": False, "lane": "mi14_v12",                  # training instructions only
+        "lora": {"rank": 32, "alpha": 64}, "lr": 2e-4, "batch": 8, "grad_accum": 2,
+        "max_len": 2560,                                             # G_med4_2ep_mi14
+        "image_settings": None,
+        "read_batch": 64, "keep_batch": KEEP_BATCH,                  # its reads at 64 once its pictures went one at a time (0.1.38)
+        "general_answers": {"anchors": "anchors/v11a_mi14", "anchors_by": "anchors/v11a_mi14_by", "text": "anchors/v11txt_mi14"},
+        "template": ("Ministral 3: the image processor pads (its config leaves do_pad unset); its vision tower takes a batch's "
+                     "pictures one at a time (in one packed sequence the later pictures came out wrong on the card)"),
+        "pace": {"apache": _pace(31.6, False, _EST.format(v1=20.41, run="G_med4_2ep_mi14"))},
+        "peak": {"apache": {"gb": None, "source": "not measured: its smoke measures it"}},
+        "repos": {"apache": "AbstractPhil/ministral-3-14b-think-symbolic-image", "nc": None, "full": None},
+        "tags": {"AbstractPhil/ministral-3-14b-think-symbolic-image": ["v1"]},
+        "licenses": {"apache": "Apache-2.0"},
+        "versions": [
+            _version("v1", "apache", RECORD, "lora/Ministral-3-14B-Instruct-2512-BF16/r32/20261102_060730_G_med4_2ep_mi14/final",
+                     ("AbstractPhil/ministral-3-14b-think-symbolic-image", "v1"), "v1_mi14_s1", "v1_mi14",
+                     source="G_med4_2ep_mi14's marker in the record repo"),
+        ],
+        "comparisons": None,
+        "space": {"lookers": {"v1": "ministral-14b"}, "gb": 27.89, "tps": 14, "skip": ["consolidated*"]},
+        "todo": ["peak apache: measured by its smoke",
+                 "comparisons: none recorded; the generator's default set applies until its lane's plan names one"],
+        "blockers": [],
+    },
+}
+
+FIELDS = ("key", "name", "line_name", "family", "model_type", "base", "base_revision", "trust_remote_code", "transformers",
+          "install", "lines", "scheduled", "lane", "lora", "lr", "batch", "grad_accum", "max_len", "image_settings", "read_batch",
+          "keep_batch", "general_answers", "template", "pace", "peak", "repos", "tags", "licenses", "versions", "comparisons",
+          "space", "todo", "blockers")
+
+
+def keys() -> list:
+    return list(ENTRIES)
+
+
+def get(name: str) -> dict:
+    """An entry (a deep copy) by its run key, its base model id, one of its release repos or one of its Space looker keys
+    (case does not matter)."""
+    want = str(name).strip().lower()
+    for key, e in ENTRIES.items():
+        names = {key, e["base"].lower(), e["base"].split("/")[-1].lower(), e["name"].lower()}
+        names |= {r.lower() for r in e["repos"].values() if r} | {r.split("/")[-1].lower() for r in e["repos"].values() if r}
+        names |= {str(k).lower() for k in (e.get("space") or {}).get("lookers", {}).values()}
+        if want in names:
+            return copy.deepcopy(e)
+    raise KeyError(f"no model {name!r} in the registry; its keys: {', '.join(ENTRIES)}")
+
+
+def recipe(entry: dict) -> dict:
+    """The train keys of the model's v1.2 training, in the order the v1.2 specs carry them (without its inputs, general rows
+    and writers, which the lane fills): its own settings and V12_RECIPE."""
+    out = {"model_id": entry["base"]}
+    if entry["trust_remote_code"]:
+        out.update(trust_remote_code=True, revision=entry["base_revision"])
+    if entry["image_settings"]:
+        out["image_settings"] = copy.deepcopy(entry["image_settings"])
+    out.update(rank=entry["lora"]["rank"], alpha=entry["lora"]["alpha"], batch=entry["batch"], grad_accum=entry["grad_accum"],
+               max_len=entry["max_len"], epochs=V12_RECIPE["epochs"], lr=entry["lr"], seed=V12_RECIPE["seed"],
+               seed_adapter=V12_RECIPE["seed_adapter"])
+    return out
+
+
+def writers(entry: dict) -> list:
+    """The writers a v1.2 training of this model accepts: the release rows' writers, then its base (the general rows)."""
+    return list(V12_WRITERS) + [entry["base"]]
+
+
+def smoke_stop(entry: dict, line: str) -> dict:
+    """The limits a smoke of this model's line stops at (queue: a train spec's "stop_if"): its steady pace after step 10 above
+    1.25 x the pace basis (measured where a v1.2 run measured it, else the estimate), or its peak above 85 GB."""
+    pace = entry["pace"][line]["s"]
+    return {"steady_s_per_step": round(STOP_FACTOR * pace, 2), "peak_gb": STOP_PEAK_GB, "after_step": STOP_AFTER_STEP}
+
+
+def hours(entry: dict, line: str) -> float:
+    """The training's hours at the pace basis (the set's steps x the seconds a step), training alone."""
+    return round(V12_SETS[line]["steps"] * entry["pace"][line]["s"] / 3600.0, 1)
+
+
+def version(entry: dict, version: str, line: str = "apache") -> dict:
+    """One of the model's trained versions, by its name and line."""
+    for v in entry["versions"]:
+        if v["version"] == version and v["line"] == line:
+            return v
+    raise KeyError(f"{entry['name']} has no version {version} on the {line} line")
+
+
+def todo(keys_: list | None = None) -> list:
+    """Every open value: (key, what is open and what decides it)."""
+    return [(k, t) for k in (keys_ or list(ENTRIES)) for t in ENTRIES[k]["todo"]]
+
+
+def describe(entry: dict) -> str:
+    """The entry as lines of text: its settings, its paces and limits with their sources, its repos, versions and the open
+    values."""
+    e = entry
+    out = [f"{e['key']}: {e['name']} ({e['family']}, {e['model_type']}) on {e['base']}"
+           + (f" at {e['base_revision']}" if e["base_revision"] else ""),
+           f"  lines {', '.join(e['lines'])}; " + ("trained" if e["scheduled"] else "training instructions only")
+           + f"; lane {e['lane']}",
+           f"  LoRA r{e['lora']['rank']} alpha {e['lora']['alpha']}; lr {e['lr']}; batch {e['batch']} x {e['grad_accum']}; "
+           f"max_len {e['max_len']}; pictures {e['image_settings'] or 'the processor default'}; reads at batch {e['read_batch']}",
+           f"  transformers {e['transformers'] or '>=5 (the queue default)'}; repository code "
+           f"{'yes' if e['trust_remote_code'] else 'no'}; install {e['install']['transformers']}"
+           + ("; the linear-attention kernels" if e["install"]["fast_path"] else "")]
+    for line in e["lines"]:
+        p, pk = e["pace"][line], e["peak"][line]
+        out.append(f"  {line}: {p['s']} s a step ({p['source']}); about {hours(e, line)} h of training; peak "
+                   f"{pk['gb'] if pk['gb'] is not None else '-'} GB ({pk['source']}); smoke stops at {smoke_stop(e, line)}")
+    out.append(f"  repos {json.dumps(e['repos'])}")
+    for v in e["versions"]:
+        where = "the project repo" if v["adapter"] == PROJECT else v["adapter"]
+        rel = f"{v['release']['repo']}@{v['release']['tag']}" if v["release"] else "not released"
+        out.append(f"  {v['version']} {v['line']}: {where} {v['subfolder']} ({rel}){'' if v['ready'] else ' [not ready]'}")
+    out.append(f"  comparisons: {json.dumps(e['comparisons']) if e['comparisons'] is not None else 'the default set'}")
+    if e["space"]:
+        out.append(f"  Space: lookers {json.dumps(e['space']['lookers'])}; {e['space']['gb']} GB; {e['space']['tps']} tokens a second")
+    out += [f"  TODO {t}" for t in e["todo"]] + [f"  BLOCKER {b}" for b in e["blockers"]]
+    return "\n".join(out)
+
+
+def main(argv=None) -> None:
+    import argparse
+    ap = argparse.ArgumentParser(description="Print the registry's entries and their open values.")
+    ap.add_argument("keys", nargs="*", help="model keys (default: every entry)")
+    args = ap.parse_args(argv)
+    for k in args.keys or keys():
+        print(describe(get(k)) + "\n")
+
+
+if __name__ == "__main__":
+    main()
