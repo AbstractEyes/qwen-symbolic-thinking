@@ -131,6 +131,15 @@ peak GPU memory (`peak_gpu_gb`), the seconds a step of the training phase alone 
 the picture fetch and the model load) and the seconds the pictures took (`pictures_s`). A queue train spec with `"screen": false`
 runs no screen; with `"do_ship": false` among its `train` keys it leaves nothing on the Hub but its marker (a smoke run).
 
+**A model's lane from its record** (from 0.1.68; [docs/registry_and_lanes.md](docs/registry_and_lanes.md)). `registry.py` holds
+every model of the version-1 list (its base, pins, settings, measured or estimated pace, repos, versions and open values), and
+`python -m qwen_symbolic_thinking.lines <model> <apache|nc|both> --project-repo <repo>` writes its v1.2 lane's queue and notebook
+from it. A smoke spec's `"stop_if"` limits (its steady pace after the first steps, its peak memory) fail it when it runs past them,
+and a spec that says `"waits_for_runs": [<names>]` starts only once those runs' markers say done (held back, never started, while
+one of them says failed).
+`"progress_every_min"` among a training's keys writes `runs/progress/<run>.json` to the project repo every so many minutes, best
+effort; `python -m qwen_symbolic_thinking.tools.progress <repo>` prints every run's line.
+
 ## Training rules
 
 - Every training item names its writer: the model, or the people, whose text the item teaches (`writer`). Rows written by an
