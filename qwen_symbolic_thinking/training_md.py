@@ -161,8 +161,8 @@ generator leaves their comparison reads out of your lane and says so.
 
 When a line's reads are done, two commands read them from the project repo (they run no model and write nothing to it):
 
-    python -m qwen_symbolic_thinking.reads {key} <line> bars --project-repo <you>/<project> --out reads
-    python -m qwen_symbolic_thinking.reads {key} <line> text --project-repo <you>/<project> --out reads
+    python -m qwen_symbolic_thinking.reads {key} {read_line} bars --project-repo <you>/<project> --out reads
+    python -m qwen_symbolic_thinking.reads {key} {read_line} text --project-repo <you>/<project> --out reads
 
 The bars compare the line's training with a yardstick: an arm of the same line trained without the keeping objective
 ({yardstick_runs}). {yardstick_source}
@@ -378,7 +378,8 @@ def render(entry: dict, version: str = __version__) -> tuple:
         general_time=general_time(entry), smoke_steps=registry.SMOKE["max_steps"], smoke_items=registry.SMOKE["n_items"],
         stop_rule=stop_rule, late_save=LATE_SAVE_H, comparisons=comparisons(entry), yardstick_runs=yruns,
         yardstick_source=yardstick_source, bars_table=bars_table(entry), names_source=names_source,
-        lines_heading="Its lines and their licenses" if len(entry["lines"]) > 1 else "Its line and its license")
+        lines_heading="Its lines and their licenses" if len(entry["lines"]) > 1 else "Its line and its license",
+        read_line="<" + "|".join(entry["lines"]) + ">" if len(entry["lines"]) > 1 else entry["lines"][0])
     return text, page.placeholders
 
 

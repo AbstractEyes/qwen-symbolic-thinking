@@ -14,6 +14,8 @@ def test_every_model_gets_a_page_from_its_registry_entry(key):
     text, placeholders = training_md.render(e, "9.9.9")
     assert text.startswith(f"# Training {e['name']} v1.2\n") and f"](https://huggingface.co/{e['base']})" in text
     assert "@v9.9.9" in text and f"python -m qwen_symbolic_thinking.lines {key} " in text
+    line = "<apache|nc>" if len(e["lines"]) > 1 else "apache"
+    assert f"python -m qwen_symbolic_thinking.reads {key} {line} bars --project-repo" in text
     for line in e["lines"]:
         s = registry.V12_SETS[line]
         assert f"`{s['path']}`" in text and f"{s['items']:,} items" in text and e["licenses"][line] in text
