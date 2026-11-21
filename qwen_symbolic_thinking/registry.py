@@ -32,7 +32,7 @@ An entry's fields:
 | pace, peak | per line: the seconds a training step takes and the peak GPU memory, measured or estimated, with the source |
 | repos, tags, licenses | its public release repos per line (and the full fine-tune's), their tags, each line's license |
 | versions | its trained versions: where each adapter lives (the record repo, or PROJECT: the project repo the lane runs on) |
-| comparisons | the reads of the base and of older versions its v1.2 card compares against (None: the generator's default set) |
+| comparisons | the reads of the base and of older versions its v1.2 card compares against (None: the generator's default set); "earlier": the reads of the same that earlier lanes made, by kind, under the names they ran with (the reads command reads them; the generator does not make them again) |
 | space | its looker in the testbed Space: the looker keys, gb (bf16 weights on the card), tps (new tokens a second) |
 | todo, blockers | what is open and what decides it; what keeps its lane from running |
 """
@@ -70,6 +70,44 @@ V12_SETS = {
 SMOKE = {"n_items": 2000, "max_steps": 30, "resume": False, "do_ship": False}
 STOP_FACTOR, STOP_FACTOR_ESTIMATE, STOP_PEAK_GB, STOP_AFTER_STEP = 1.25, 1.5, 85, 10
 KEEP_BATCH = 32          # the preservation reads' batch in the v1.2 lanes (tools.keep_read)
+
+# The bars' yardstick (tools.bars; `python -m qwen_symbolic_thinking.reads <key> <line> bars`): per line, the plain arm of
+# version 1.1 at 4B, trained on that version's rows of the line without the keeping objective; every v1.2 line's bars are read
+# against its line's arm (across sizes, as registered). Its values as the bars print them (the yardstick column of every
+# v1.2 bars table): the screen's hint said and backed, the probe, the drift per answer token at strength 1, the row form's
+# excess over the base.
+YARDSTICK = {
+    "apache": {"run": "V11_A0_rep_2ep_4b", "tag": "v11_A0",
+               "values": {"said": 0.209, "backed": 0.225, "probe": 143, "kl_picture": 1.597, "kl_text": 0.593, "kl_all": 1.154,
+                          "form_excess": 0.949}},
+    "nc": {"run": "V11NC_A0_rep_2ep_4b_r2", "tag": "v11nc_A0_r2",
+           "values": {"said": 0.241, "backed": 0.244, "probe": 134, "kl_picture": 1.762, "kl_text": 0.714, "kl_all": 1.291,
+                      "form_excess": 0.976}},
+}
+# The bars our v1.2 lines read (tools.bars, each line's training against its line's yardstick), as the tables print them,
+# with the day they were read. TRAINING.md shows them as the numbers to compare against.
+BARS = {
+    ("4b", "apache"): {"run": "V12_A1_gkl1_1ep_4b_by", "read": "2026-11-20", "format": 1.0, "full_rows": 1.0, "said": 0.210,
+                       "backed": 0.264, "probe": 150, "kl_picture": 0.071, "kl_text": 0.082, "kl_all": 0.084, "form": 0.0,
+                       "ended": 0.904, "base_ended": 0.907, "pass": True},
+    ("4b", "nc"): {"run": "V12NC_A1_gkl1_1ep_4b", "read": "2026-11-19", "format": 1.0, "full_rows": 1.0, "said": 0.239,
+                   "backed": 0.244, "probe": 160, "kl_picture": 0.096, "kl_text": 0.124, "kl_all": 0.119, "form": 0.0,
+                   "ended": 0.922, "base_ended": 0.910, "pass": True},
+    ("2b", "apache"): {"run": "V12_A1_gkl1_1ep_2b_by", "read": "2026-11-20", "format": 1.0, "full_rows": 1.0, "said": 0.217,
+                       "backed": 0.220, "probe": 154, "kl_picture": 0.066, "kl_text": 0.069, "kl_all": 0.085, "form": 0.0,
+                       "ended": 0.883, "base_ended": 0.887, "pass": True},
+    ("2b", "nc"): {"run": "V12NC_A1_gkl1_1ep_2b", "read": "2026-11-21", "format": 1.0, "full_rows": 1.0, "said": 0.231,
+                   "backed": 0.246, "probe": 147, "kl_picture": 0.079, "kl_text": 0.102, "kl_all": 0.124, "form": 0.0,
+                   "ended": 0.874, "base_ended": 0.887, "pass": True},
+    ("9b", "apache"): {"run": "V12_A1_gkl1_1ep_9b_by", "read": "2026-11-21", "format": 1.0, "full_rows": 1.0, "said": 0.194,
+                       "backed": 0.258, "probe": 165, "kl_picture": 0.054, "kl_text": 0.062, "kl_all": 0.066, "form": 0.0,
+                       "ended": 0.930, "base_ended": 0.918, "pass": True},
+}
+# The general answers' time on a G4, measured where a lane made them (the first start to the last end of its three runs).
+GENERAL_ANSWERS_MINUTES = {
+    "2b": {"minutes": 30.4, "source": "its lane's v11a_2b 24 min 51 s, v11a_2b_by 3 s, v11txt_2b 5 min 25 s, 2026-11-20"},
+    "08b": {"minutes": 26.3, "source": "her lane's v11a_08b 21 min 40 s, v11a_08b_by 3 s, v11txt_08b 4 min 33 s, 2026-11-21"},
+}
 
 # An estimate: a v1.2 step costs about 1.5 times a v1 step of the same model on the Apache rows and about 1.4 times on the -nc
 # rows (the measured v1.2 paces of the 9B, 4B and 2B against their own v1 paces), times the model's own measured v1 pace.
@@ -136,10 +174,13 @@ ENTRIES = {
                      source="V12NC_A1_gkl1_1ep_9b: training; its final folder ships when the training ends"),
         ],
         # the 9B lane compared the base and both v1.1 lines; their closer-look reads (XT_base_9b_noadapter, the v1.1 lines'
-        # closer reads) and Lucia v1's reads existed from earlier runs
-        "comparisons": [{"of": "base", "reads": ["deep", "lettering", "control_lettering", "control"]},
-                        {"of": "v1.1", "line": "apache", "reads": ["deep", "lettering", "control_lettering", "control"]},
-                        {"of": "v1.1", "line": "nc", "reads": ["deep", "lettering", "control_lettering", "control"]}],
+        # closer reads), Lucia v1.1's text preservation read and Lucia v1's reads existed from earlier runs ("earlier")
+        "comparisons": [{"of": "base", "reads": ["deep", "lettering", "control_lettering", "control"],
+                         "earlier": {"closer": "XT_base_9b_noadapter"}},
+                        {"of": "v1.1", "line": "apache", "reads": ["deep", "lettering", "control_lettering", "control"],
+                         "earlier": {"closer": "XT_v11_9b_s1", "keep_text": "KT_v11_9b_by"}},
+                        {"of": "v1.1", "line": "nc", "reads": ["deep", "lettering", "control_lettering", "control"],
+                         "earlier": {"closer": "XT_v11nc_9b_s1"}}],
         "space": {"lookers": {"v1": "lucia-9b", "v1.1": "lucia-9b-v1.1", "v1.1-nc": "lucia-9b-v1.1-nc", "v1.2": "lucia-9b-v1.2"},
                   "gb": 19.31, "tps": 20},
         "todo": ["versions v1.2 nc: its release (the -nc repo's lucia-v1.2 tag) and its final folder, when the training ends",
@@ -184,10 +225,14 @@ ENTRIES = {
                      ("AbstractPhil/qwen3.5-4b-think-symbolic-image-nc", "lucia-v1.2"), "v12_4b_nc_s1", wordings="v1.1",
                      source="V12NC_A1_gkl1_1ep_4b"),
         ],
-        # the 4B v1.2 lanes compared the base and both v1.1 lines (deep, lettering, both controls)
-        "comparisons": [{"of": "base", "reads": ["deep", "lettering", "control_lettering", "control"]},
-                        {"of": "v1.1", "line": "apache", "reads": ["deep", "lettering", "control_lettering", "control"]},
-                        {"of": "v1.1", "line": "nc", "reads": ["deep", "lettering", "control_lettering", "control"]}],
+        # the 4B v1.2 lanes compared the base and both v1.1 lines (deep, lettering, both controls); the closer-look reads and
+        # Lucia 4B v1.1's text preservation read existed from earlier runs ("earlier")
+        "comparisons": [{"of": "base", "reads": ["deep", "lettering", "control_lettering", "control"],
+                         "earlier": {"closer": "XT_base_4b_noadapter"}},
+                        {"of": "v1.1", "line": "apache", "reads": ["deep", "lettering", "control_lettering", "control"],
+                         "earlier": {"closer": "XT_v11_4b_s1", "keep_text": "KT_v11_4b_by"}},
+                        {"of": "v1.1", "line": "nc", "reads": ["deep", "lettering", "control_lettering", "control"],
+                         "earlier": {"closer": "XT_v11nc_4b_s1"}}],
         "space": {"lookers": {"v1": "lucia-4b", "v1.1": "lucia-4b-v1.1", "v1.1-nc": "lucia-4b-v1.1-nc", "v1.2": "lucia-4b-v1.2",
                               "v1.2-nc": "lucia-4b-v1.2-nc"}, "gb": 9.32, "tps": 24},
         "todo": [],
@@ -244,9 +289,10 @@ ENTRIES = {
         "read_batch": 64, "keep_batch": KEEP_BATCH,                     # her v1 reads ran at 64 (P_probe_08b)
         "general_answers": {"anchors": "anchors/v11a_08b", "anchors_by": "anchors/v11a_08b_by", "text": "anchors/v11txt_08b"},
         "template": _QWEN_TEMPLATE,
-        "pace": {"apache": _pace(2.1, False, _EST.format(v1=1.36, run="G_med4_2ep_08b")),
+        "pace": {"apache": _pace(2.1, False, _EST.format(v1=1.36, run="G_med4_2ep_08b")
+                                 + "; her smoke S_v12_smoke_gc1_08b: 1.95 s a step over steps 10-30 on its 2,000 items"),
                  "nc": _pace(1.9, False, _EST.format(v1=1.36, run="G_med4_2ep_08b"))},
-        "peak": {"apache": {"gb": None, "source": "not measured: her smoke measures it"},
+        "peak": {"apache": {"gb": None, "source": "her smoke S_v12_smoke_gc1_08b 29.92; the training's own when it ends"},
                  "nc": {"gb": None, "source": "not measured: her smoke measures it"}},
         "repos": {"apache": "AbstractPhil/qwen3.5-0.8b-think-symbolic-image", "nc": None,
                   "full": "AbstractPhil/qwen3.5-0.8b-think-symbolic-image-full"},
@@ -260,7 +306,8 @@ ENTRIES = {
         ],
         "comparisons": None,
         "space": {"lookers": {"v1": "lucia-0.8b"}, "gb": 1.75, "tps": 30},
-        "todo": ["peak apache, nc: measured by her smokes",
+        "todo": ["peak apache, nc: the trainings' own, from their markers when they end (the Apache smoke's is in its source)",
+                 "pace apache, nc: the trainings' own, from their markers when they end",
                  "comparisons: none recorded; the generator's default set applies until her lane's plan names one",
                  "repos nc: the 0.8B -nc release repo, created at its release"],
         "blockers": [],

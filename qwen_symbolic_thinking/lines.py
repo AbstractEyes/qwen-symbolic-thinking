@@ -69,6 +69,8 @@ TEXT_READS = {                                      # kind -> (the read's own ke
                           "XCA2_", ""),
     "control": ({"manifest": "repo:text/notext_control_v1.jsonl", "split": "notext_control"}, "XC2_", ""),
 }
+# The nine reads after a training, by kind, in the order they run (names()["reads"]; names()["by_kind"] maps them).
+AFTER_KINDS = ("probe", "museum", "keep", "closer", "keep_text", "deep", "lettering", "control_lettering", "control")
 SCREEN = {"forms": ["full", "short", "spec_full"], "batch": 4, "max_new_tokens": 800}
 MAX_NEW_TOKENS, CHUNK = 800, 512
 OWN_WORDINGS = "v1.1"          # the wordings the v1.2 rows carry at each depth (the whole-row check reads them)
@@ -115,13 +117,36 @@ def _top(entry: dict, name: str, kind: str, needs: str) -> dict:
 
 
 def names(entry: dict, line: str) -> dict:
-    """The run names of a line: the smoke, the training and its nine reads."""
+    """The run names of a line: the smoke, the training and its nine reads (in order, and by kind)."""
     k, t = entry["key"], TAG[line]
+    reads = [f"P_probe_v12_A1_{k}_{t}", f"P_museum_v12_A1_{k}_{t}", f"K_v12_A1_{k}_{t}", f"XT_v12_{k}_{t}_s1",
+             f"KT_v12_{k}_{t}", f"XT_v12_{k}_{t}_s1_deep", f"XTA_v12_{k}_{t}_s1", f"XCA2_v12_{k}_{t}_s1",
+             f"XC2_v12_{k}_{t}_s1"]
     return {"smoke": f"S_v12_smoke_gc1_{k}" + ("_nc" if line == "nc" else ""),
             "train": f"V12_A1_gkl1_1ep_{k}_by" if line == "apache" else f"V12NC_A1_gkl1_1ep_{k}",
-            "reads": [f"P_probe_v12_A1_{k}_{t}", f"P_museum_v12_A1_{k}_{t}", f"K_v12_A1_{k}_{t}", f"XT_v12_{k}_{t}_s1",
-                      f"KT_v12_{k}_{t}", f"XT_v12_{k}_{t}_s1_deep", f"XTA_v12_{k}_{t}_s1", f"XCA2_v12_{k}_{t}_s1",
-                      f"XC2_v12_{k}_{t}_s1"]}
+            "reads": reads, "by_kind": dict(zip(AFTER_KINDS, reads))}
+
+
+def comparison_plan(entry: dict) -> list:
+    """The comparisons a model's cards need: the registry's, or the default set (the base model's text reads; each older
+    version's keep, long and closer reads), as [{"of": "base" | <version>, "line", "reads": [kinds], "earlier": {kind: run}}]."""
+    if entry["comparisons"] is not None:
+        return entry["comparisons"]
+    plan = [{"of": "base", "reads": list(DEFAULT_COMPARISONS["base"])}]
+    return plan + [{"of": v["version"], "line": v["line"], "reads": list(DEFAULT_COMPARISONS["older"])}
+                   for v in entry["versions"] if v["version"] != "v1.2"]
+
+
+def comparison_name(entry: dict, kind: str, version: dict | None = None) -> str:
+    """The run name of a comparison read of the base model (version None) or of an older version."""
+    if version is None and kind not in TEXT_READS:
+        raise LaneError(f"{entry['key']}: a base comparison of kind {kind!r} (the base's own text reads only)")
+    if kind == "keep":
+        return f"K0_{version['keep_tag']}"
+    _, prefix, suffix = TEXT_READS[kind]
+    if version is None:
+        return f"XT_base_{entry['key']}_noadapter" if kind == "closer" else f"{prefix}base_{entry['key']}{suffix}"
+    return f"{prefix}{version['tag']}{suffix}"
 
 
 def general_answer_specs(entry: dict, lines: tuple, files: set, needs: str) -> tuple:
@@ -232,13 +257,10 @@ def line_specs(entry: dict, line: str, project: str, needs: str, progress_every_
 
 def comparison_specs(entry: dict, project: str, files: set | None, needs: str) -> tuple:
     """The comparison reads the model's cards need (the registry's, or the default set), and the choices."""
-    k, model, ga = entry["key"], entry["base"], entry["general_answers"]
-    plan = entry["comparisons"]
+    model, ga = entry["base"], entry["general_answers"]
+    plan = comparison_plan(entry)
     choices = []
-    if plan is None:
-        plan = [{"of": "base", "reads": list(DEFAULT_COMPARISONS["base"])}]
-        plan += [{"of": v["version"], "line": v["line"], "reads": list(DEFAULT_COMPARISONS["older"])}
-                 for v in entry["versions"] if v["version"] != "v1.2"]
+    if entry["comparisons"] is None:
         choices.append("comparisons: none recorded for this model; the default set: the base model's "
                        f"{', '.join(DEFAULT_COMPARISONS['base'])} reads; each older version's "
                        f"{', '.join(DEFAULT_COMPARISONS['older'])} reads")
@@ -246,11 +268,7 @@ def comparison_specs(entry: dict, project: str, files: set | None, needs: str) -
     for c in plan:
         if c["of"] == "base":
             for kind in c["reads"]:
-                if kind not in TEXT_READS:
-                    raise LaneError(f"{entry['key']}: a base comparison of kind {kind!r} (the base's own text reads only)")
-                _, prefix, suffix = TEXT_READS[kind]
-                name = f"XT_base_{k}_noadapter" if kind == "closer" else f"{prefix}base_{k}{suffix}"
-                s = _top(entry, name, "extract", needs)
+                s = _top(entry, comparison_name(entry, kind), "extract", needs)
                 s["extract"] = _text_read(entry, kind, project, {"adapter": None, "model_id": model, **_remote(entry)})
                 specs.append(s)
             choices.append(f"comparisons of the base {model}: {', '.join(c['reads'])}")
@@ -266,15 +284,13 @@ def comparison_specs(entry: dict, project: str, files: set | None, needs: str) -
                            "project repo; it was trained in another)")
             continue
         for kind in c["reads"]:
+            s = _top(entry, comparison_name(entry, kind, v), "tool" if kind == "keep" else "extract", needs)
             if kind == "keep":
-                s = _top(entry, f"K0_{v['keep_tag']}", "tool", needs)
                 s["tool"] = {"module": "keep_read", "args": {"model_id": model, "adapter": repo, "adapter_subfolder": v["subfolder"],
                                                              "held": f"hub:{ga['anchors']}/held.json", "scales": [0.0, 1.0],
                                                              "batch": entry["keep_batch"]}}
                 s["waits_for"] = [f"{ga['anchors']}/held.json"]
             else:
-                _, prefix, suffix = TEXT_READS[kind]
-                s = _top(entry, f"{prefix}{v['tag']}{suffix}", "extract", needs)
                 extra = {"model_id": model, "adapter": repo, "adapter_subfolder": v["subfolder"], "adapter_scale": 1.0}
                 if v["wordings"]:
                     extra["wordings"] = v["wordings"]
