@@ -20,7 +20,19 @@ leaves runs/done/<name>.json on the Hub (started, then done or failed, with the 
 skipped unless it says "retry", or unless it is a train spec with resume on whose marker still says started (its machine ended
 mid-run; it continues from its saved state, resume.py). A spec may say "waits_for": [paths in the project repo]; until they all exist it waits, unmarked,
 and the lane runs nothing past it (two lanes can share one build this way). When the queue is empty the lane waits for new specs,
-polling every minute, and leaves after idle_minutes without any."""
+polling every minute, and leaves after idle_minutes without any.
+
+A failed run leaves a marker that says failed, and the lane goes on to the next spec. Two keys (from 0.1.68) let a run's result
+hold others back:
+- "stop_if" on a train spec, {"steady_s_per_step": x, "peak_gb": y, "after_step": n}: once the training ends, its steady pace
+  (the seconds a step over the steps after step n, read from its own step log) and its peak GPU memory are compared with the
+  limits; past either, the run's marker says failed, with the reason in plain words, and its screen and reads do not run (the
+  smoke that measures a long training before it starts carries it).
+- "waits_for_runs": [names of other runs]: the spec starts only once every named run's marker says done. While one has no
+  marker yet, or says started, the spec waits as it would for its "waits_for" paths; once one says failed, the spec is held back
+  for good (never started, never marked) and the lane goes on with the specs that do not wait for that run. It starts once that
+  run's marker says done (the run run again and passed), or once its "waits_for_runs" names the run that replaces it.
+A spec without these keys runs as before."""
 from __future__ import annotations
 
 import json
@@ -80,6 +92,44 @@ def _mark(name: str, payload: dict, repo: str, out_dir: str) -> None:
         print(f"  marker upload gave up ({type(e).__name__}: {str(e)[:120]}); the marker stays in {local}", flush=True)
 
 
+def steady_pace(log: list, after_step: int) -> dict | None:
+    """The seconds a step of a training after step `after_step`, from its own step log (train.progress's records: the step and
+    the seconds spent at each log step): from the last record at or before after_step (or the first record, when none is) to the
+    last record. None when no step was logged past that start."""
+    recs = [r for r in log or [] if isinstance(r, dict) and r.get("step") is not None and r.get("spent_s") is not None]
+    if not recs:
+        return None
+    before = [r for r in recs if r["step"] <= after_step]
+    start, end = (before[-1] if before else recs[0]), recs[-1]
+    if end["step"] <= start["step"]:
+        return None
+    return {"from_step": int(start["step"]), "to_step": int(end["step"]),
+            "s_per_step": round((float(end["spent_s"]) - float(start["spent_s"])) / (end["step"] - start["step"]), 3)}
+
+
+def smoke_verdict(log: list, peak_gb, stop_if: dict) -> dict:
+    """A finished training read against its "stop_if" limits: {"passed", "steady_s_per_step", "from_step", "to_step", "peak_gb",
+    "limits", "reason"}. Past the pace limit (or a pace that cannot be read) or past the peak limit it fails, and the reason says
+    so in plain words. A peak that was not measured (no GPU) is not held against it."""
+    after = int(stop_if.get("after_step") or 0)
+    pace_limit, peak_limit = stop_if.get("steady_s_per_step"), stop_if.get("peak_gb")
+    pace = steady_pace(log, after)
+    why = []
+    if pace_limit is not None:
+        if pace is None:
+            why.append(f"its steady pace could not be read (no step was logged after step {after})")
+        elif pace["s_per_step"] > float(pace_limit):
+            why.append(f"its steady pace was {pace['s_per_step']} s a step (steps {pace['from_step'] + 1}-{pace['to_step']}), "
+                       f"above its limit of {pace_limit} s a step")
+    if peak_limit is not None and peak_gb is not None and float(peak_gb) > float(peak_limit):
+        why.append(f"its peak GPU memory was {peak_gb} GB, above its limit of {peak_limit} GB")
+    return {"passed": not why, "steady_s_per_step": pace["s_per_step"] if pace else None,
+            "from_step": pace["from_step"] if pace else None, "to_step": pace["to_step"] if pace else None, "peak_gb": peak_gb,
+            "limits": dict(stop_if),
+            "reason": None if not why else ("stopped by its limits: " + "; and ".join(why) + ". The runs that wait for it "
+                                            "(waits_for_runs) do not start unless it is run again and passes.")}
+
+
 def run_spec(spec: dict, lane: str, repo: str, out_dir: str) -> dict:
     name = spec["name"]
     started = datetime.now(timezone.utc).isoformat(timespec="seconds")
@@ -89,6 +139,12 @@ def run_spec(spec: dict, lane: str, repo: str, out_dir: str) -> dict:
         from . import screen, train
         t = train.run(**spec["train"], tag=name, repo=repo)
         result["train"] = {k: v for k, v in t.items() if k not in ("log", "env")}
+        if spec.get("stop_if"):                  # a smoke's limits: past them the run fails and its waiters stay held back
+            result["stop"] = smoke_verdict(t.get("log") or [], t.get("peak_gpu_gb"), spec["stop_if"])
+            if not result["stop"]["passed"]:
+                result["status"], result["error"] = "failed", result["stop"]["reason"]
+                result["finished"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
+                return result
         if spec.get("screen") is False:          # "screen": false: no screen (a smoke run that measures the training only)
             result["screen"] = None
             result["finished"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
@@ -232,6 +288,22 @@ def resumes(spec: dict, repo: str, read=None) -> bool:
     return isinstance(marker, dict) and marker.get("status") == "started"
 
 
+def run_states(spec: dict, markers: dict, repo: str, outcomes: dict | None = None, read=None) -> dict:
+    """The state of each run a spec waits for ("waits_for_runs"): "done", "failed", "started", or None (no marker yet, or one
+    that could not be read this poll). A run this lane ran in this process is read from outcomes; another from its marker (read:
+    the marker reader, queue._fresh, looked up at the call); a run without a marker is not fetched."""
+    out = {}
+    for name in spec.get("waits_for_runs") or []:
+        if outcomes and name in outcomes:
+            out[name] = outcomes[name]
+        elif name in markers:
+            marker = (read or _fresh)(f"runs/done/{name}.json", repo)
+            out[name] = marker.get("status") if isinstance(marker, dict) else None
+        else:
+            out[name] = None
+    return out
+
+
 def _run_marked(spec: dict, lane: str, repo: str, out_dir: str) -> dict:
     """One spec, start to marker: started, then done (with the summaries) or failed (with the error)."""
     print(f"\n[{lane}] == {spec['name']} ({spec['kind']}) at {datetime.now(timezone.utc).strftime('%H:%M:%S')} UTC", flush=True)
@@ -241,6 +313,9 @@ def _run_marked(spec: dict, lane: str, repo: str, out_dir: str) -> dict:
         result = {"status": "failed", "lane": lane, "spec": spec, "error": f"{type(e).__name__}: {str(e)[:500]}",
                   "traceback": traceback.format_exc()[-3000:]}
         print(f"[{lane}] FAILED {spec['name']}: {result['error']}", flush=True)
+    else:
+        if result.get("status") == "failed":     # a run that judged its own result (a smoke past its limits)
+            print(f"[{lane}] FAILED {spec['name']}: {result.get('error')}", flush=True)
     _mark(spec["name"], result, repo, out_dir)
     return result
 
@@ -249,8 +324,10 @@ def run_queue(lane: str, repo: str = REPO, out_dir: str = "/content/runs", idle_
               wait_hours: float = 12.0) -> list:
     """Work through runs/queue_<lane>.json until it is empty for idle_minutes; returns the names run. The specs run in queue
     order: when the next one waits for inputs another lane builds ("waits_for"), the lane polls for them for up to wait_hours,
-    whatever idle_minutes says, and runs nothing past it meanwhile."""
+    whatever idle_minutes says, and runs nothing past it meanwhile; a spec whose "waits_for_runs" names a run that failed is held
+    back (never started, never marked) and the lane goes on with the rest."""
     ran, idle_since, wait_since, waited_on = [], None, None, None
+    outcomes, told_held = {}, set()      # the runs this process ran, by name: their status; the held-back specs already reported
     while True:
         try:
             specs = _fresh(f"runs/queue_{lane}.json", repo) or []
@@ -263,7 +340,22 @@ def run_queue(lane: str, repo: str = REPO, out_dir: str = "/content/runs", idle_
             continue
         markers = _markers(repo, files)
         todo = [s for s in specs if (s["name"] not in markers or s.get("retry") or resumes(s, repo)) and runnable_here(s)]
+        kept, states = [], {}
+        for s in todo:                   # a spec waiting for runs: held back for good once one of them failed
+            if s.get("waits_for_runs"):
+                states[s["name"]] = run_states(s, markers, repo, outcomes)
+                failed = [n for n, st in states[s["name"]].items() if st == "failed"]
+                if failed:
+                    if s["name"] not in told_held:
+                        told_held.add(s["name"])
+                        print(f"[{lane}] {s['name']} is held back and does not start: the run it waits for "
+                              f"({', '.join(failed)}) failed; its marker says why", flush=True)
+                    continue
+            kept.append(s)
+        todo = kept
         missing = missing_inputs(todo[0], files) if todo else []
+        missing += [f"run {n} to finish done (its marker: {st or 'none yet'})"
+                    for n, st in (states.get(todo[0]["name"], {}) if todo else {}).items() if st != "done"]
         if missing:
             if wait_since is None:
                 wait_since = time.time()
@@ -289,6 +381,7 @@ def run_queue(lane: str, repo: str = REPO, out_dir: str = "/content/runs", idle_
         spec = todo[0]
         result = _run_marked(spec, lane, repo, out_dir)
         ran.append(spec["name"])
+        outcomes[spec["name"]] = result["status"]
         if result["status"] == "done" and spec["kind"] == "train" and spec.get("after"):
             try:
                 markers = _markers(repo)
@@ -300,5 +393,5 @@ def run_queue(lane: str, repo: str = REPO, out_dir: str = "/content/runs", idle_
                 if follow["name"] in markers and not follow.get("retry"):
                     print(f"[{lane}] {follow['name']} already has a marker; skipped", flush=True)
                     continue
-                _run_marked(follow, lane, repo, out_dir)
+                outcomes[follow["name"]] = _run_marked(follow, lane, repo, out_dir)["status"]
                 ran.append(follow["name"])
