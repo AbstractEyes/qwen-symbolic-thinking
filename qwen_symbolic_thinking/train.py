@@ -371,7 +371,8 @@ def run(model_id: str = "Qwen/Qwen3.5-9B", inputs="hub:sft/sft_v1.json", out_dir
         max_steps: int | None = None, anchors=None, anchor_batch: int = 4, general_kl: float = 0.0,
         target_kl: float = 0.0, rehearsal: float = 0.0, writers: list | None = None, seed_adapter: bool = False,
         resume: bool = False, resume_every_h: float = 2.0, resume_before_h: float | None = 23.0,
-        lazy_pictures: bool = False, picture_workers: int = 16, grad_checkpointing: bool = True) -> dict:
+        lazy_pictures: bool = False, picture_workers: int = 16, grad_checkpointing: bool = True,
+        progress_every_min: float | None = None) -> dict:
     """Train the adapter; return {adapter_dir, path_in_repo, steps, s_per_step, train_loss, ...}. With init_adapter (see
     adapter_source) training continues from that trained adapter instead of a fresh LoRA; its rank and alpha must be the ones passed.
     With system (see prompts.system) every example carries that system turn before its user turn. Rank 0 is a full fine-tune of
@@ -399,7 +400,12 @@ def run(model_id: str = "Qwen/Qwen3.5-9B", inputs="hub:sft/sft_v1.json", out_dir
     among the settings a resumed run must match: a run may resume with other values. grad_checkpointing: gradient checkpointing
     on the model and in the Trainer (on by default; off is the same arithmetic, faster, with more memory held). Also not a
     setting a resume checks. The summary records the peak GPU memory, the seconds a step of the training phase alone and the
-    seconds the pictures took."""
+    seconds the pictures took.
+
+    progress_every_min (tools.progress): the training writes runs/progress/<tag>.json to the repo at its first log step, then
+    every so many minutes, and once at its end (the step, the loss, the pace, the peak, the last saved and shipped steps), best
+    effort, on a thread of its own, never holding the training; None (the default) writes nothing. Not a setting a resume
+    checks."""
     if keys not in chain.KEYS:
         raise ValueError(f"unknown keys {keys!r}: one of {chain.KEYS}")
     full = rank == 0
@@ -559,12 +565,14 @@ def run(model_id: str = "Qwen/Qwen3.5-9B", inputs="hub:sft/sft_v1.json", out_dir
         print("  this transformers' TrainingArguments lacks", dropped, "(left out)", flush=True)
     args = TrainingArguments(**{k: v for k, v in wanted.items() if k in allowed})
     log, keep_stats, spent_before = carried(found)   # the log, the keeping terms' running sums between two log lines, the seconds trained
+    shipped = {"step": None}                          # the last step whose adapter shipped during training (the progress file)
 
     def at_log(step: int) -> None:      # the step ships
         if do_ship and ship_every and step and step % ship_every == 0 and step < total:
             model.save_pretrained(adapter_dir)
             name_base(adapter_dir, base_dir, model_id, repo)
-            ship(adapter_dir, f"{path_in_repo}/step_{step}", f"{short} r{rank} {stamp}: step {step}", repo)
+            if ship(adapter_dir, f"{path_in_repo}/step_{step}", f"{short} r{rank} {stamp}: step {step}", repo) is not None:
+                shipped["step"] = step
 
     first_line = (f"{total} steps of {batch} x {grad_accum} sequences; "
                   + (f"max_steps {max_steps} ({total / steps_per_epoch:.2f} of an epoch)" if max_steps else f"{epochs} epoch(s)"))
@@ -594,6 +602,14 @@ def run(model_id: str = "Qwen/Qwen3.5-9B", inputs="hub:sft/sft_v1.json", out_dir
         age = saved_state.machine_age_h()
         print(f"  the training state saves to {repo} under {saved_state.ROOT}/{tag}/ every {resume_every_h} h"
               + (f" and once after the machine's {resume_before_h} h (it is {age:.1f} h old)" if resume_before_h and age is not None else ""),
+              flush=True)
+    if progress_every_min:              # after the progress callback, which appends each log step's record
+        from .tools.progress import ProgressWriter, path_of, progress_callback
+        writer = ProgressWriter(tag or stamp, total, repo, every_min=progress_every_min, local_dir=run_dir,
+                                peak=lambda: peak_gpu_gb(torch), shipped=lambda: shipped["step"],
+                                saved=lambda: (rs.saves()[-1]["step"] if rs is not None and rs.saves() else None))
+        callbacks.append(progress_callback(writer, log))
+        print(f"  the progress file {path_of(tag or stamp)} writes to {repo} every {progress_every_min} min (best effort)",
               flush=True)
     trainer = trainer_class(model=model, args=args, train_dataset=Pairs(pairs), data_collator=data_collator,
                             optimizers=(optimizer, None), callbacks=callbacks)

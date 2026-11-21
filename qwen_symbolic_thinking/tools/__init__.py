@@ -5,6 +5,7 @@
     python -m qwen_symbolic_thinking.tools.museum_read P_museum_med4
     python -m qwen_symbolic_thinking.tools.museum_mismatch P_museum_med4
     python -m qwen_symbolic_thinking.tools.screen_conflicts 20261031_131844_G_med4_2ep
+    python -m qwen_symbolic_thinking.tools.progress <project repo> [<run> ...]      (each training's progress file, one line a run)
 
 `mix` builds the mixes of several lookers' rows over the same pictures (the agreement pick, the field picks, the kind vote, the
 caption and prompt pools) and reads them beside every looker; `picture_probe` measures how much a model's answer depends on the
