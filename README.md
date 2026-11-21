@@ -140,6 +140,13 @@ one of them says failed).
 `"progress_every_min"` among a training's keys writes `runs/progress/<run>.json` to the project repo every so many minutes, best
 effort; `python -m qwen_symbolic_thinking.tools.progress <repo>` prints every run's line.
 
+**A line's reads, and how to train a model** (from 0.1.69; the same page). `python -m qwen_symbolic_thinking.reads <model>
+<apache|nc> <bars|text> --project-repo <repo> --out <folder>` reads a v1.2 line's checks from the project repo's records, with the
+lane generator's run names: the bars (the pass marks beside a yardstick arm) or the seven text and lettering reads. Each read is
+also a tool of its own (`tools.bars`, `tools.text_names`, `tools.keep_text_names`, `tools.lettering_ask`,
+`tools.quote_precision`). `python -m qwen_symbolic_thinking.training_md <model> --out TRAINING.md` writes the page a model repo
+carries on how to train its v1.2 from a fresh account, from the registry; a file with no public source yet is a marked placeholder.
+
 ## Training rules
 
 - Every training item names its writer: the model, or the people, whose text the item teaches (`writer`). Rows written by an
