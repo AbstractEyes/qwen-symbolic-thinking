@@ -125,9 +125,33 @@ def test_the_lane_runs_again_a_resumable_training_whose_machine_ended():
     assert asked == []                                                          # no read without resume on
 
 
+def test_the_late_save_comes_after_23_and_a_half_hours_and_stays_a_setting():
+    assert resume.LATE_SAVE_H == 23.5
+    assert inspect.signature(resume.Schedule).parameters["before_h"].default == resume.LATE_SAVE_H
+    now, age = [0.0], [1.0]
+    s = resume.Schedule(every_h=2.0, clock=lambda: now[0], age=lambda: age[0])            # the default late save
+    s.start()
+    now[0] = 60.0
+    age[0] = 23.2
+    assert s.due(10, 10, 100) is None                         # past 23.0 h: no longer the late save's hour
+    age[0] = 23.5
+    assert s.due(20, 10, 100) == "age"
+    s.saved("age")
+    assert s.due(30, 10, 100) is None
+    hours = [22.0]
+    old = resume.Schedule(every_h=2.0, before_h=23.0, clock=lambda: now[0], age=lambda: hours[0])   # the old hour, as a setting
+    old.start()
+    hours[0] = 23.2
+    assert old.due(10, 10, 100) == "age"
+    none = resume.Schedule(every_h=2.0, before_h=None, clock=lambda: now[0], age=lambda: 23.9)        # None: no late save
+    none.start()
+    assert none.due(10, 10, 100) is None
+
+
 def test_run_takes_resume_off_by_default_and_refuses_it_without_a_tag_or_on_a_full_finetune():
     params = inspect.signature(train.run).parameters
-    assert params["resume"].default is False and params["resume_every_h"].default == 2.0 and params["resume_before_h"].default == 23.0
+    assert params["resume"].default is False and params["resume_every_h"].default == 2.0
+    assert params["resume_before_h"].default == resume.LATE_SAVE_H == 23.5
     with pytest.raises(ValueError, match="pass tag"):
         train.run(resume=True)
     with pytest.raises(ValueError, match="full fine-tune"):

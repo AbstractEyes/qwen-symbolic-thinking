@@ -370,7 +370,7 @@ def run(model_id: str = "Qwen/Qwen3.5-9B", inputs="hub:sft/sft_v1.json", out_dir
         targets: str | None = None, image_settings: dict | None = None, keys: str = "record",
         max_steps: int | None = None, anchors=None, anchor_batch: int = 4, general_kl: float = 0.0,
         target_kl: float = 0.0, rehearsal: float = 0.0, writers: list | None = None, seed_adapter: bool = False,
-        resume: bool = False, resume_every_h: float = 2.0, resume_before_h: float | None = 23.0,
+        resume: bool = False, resume_every_h: float = 2.0, resume_before_h: float | None = saved_state.LATE_SAVE_H,
         lazy_pictures: bool = False, picture_workers: int = 16, grad_checkpointing: bool = True,
         progress_every_min: float | None = None) -> dict:
     """Train the adapter; return {adapter_dir, path_in_repo, steps, s_per_step, train_loss, ...}. With init_adapter (see
@@ -390,7 +390,8 @@ def run(model_id: str = "Qwen/Qwen3.5-9B", inputs="hub:sft/sft_v1.json", out_dir
     is built, so the adapter's starting matrices follow the seed (by default they do not: the seed reaches the Trainer only).
 
     resume (resume.py; a LoRA only, found by its tag): the whole training state saves to the repo under resume/<tag>/ every
-    resume_every_h hours and once when the machine's age passes resume_before_h (None: no such save), and a run of the same tag
+    resume_every_h hours and once when the machine's age passes resume_before_h (resume.LATE_SAVE_H, 23.5 h from 0.1.69; None:
+    no such save), and a run of the same tag
     that finds a saved state continues from it, in the same folder, on the same path; once the training has ended and shipped,
     a run of the same tag returns that run's summary and its shipped adapter without training.
 

@@ -102,7 +102,7 @@ adapter it trained with the model it trained, so one queue entry trains, screens
 **A training longer than a runtime** (from 0.1.63). A rented runtime ends at a fixed age (Colab's at about 24 hours). With
 `resume=True` (`"resume": true` among a train spec's `train` keys) a LoRA run saves its whole training state to the repo it ships
 to, under `resume/<tag>/`, every `resume_every_h` hours (2 by default) and once more when the machine's age passes
-`resume_before_h` (23 by default; the age read from `/proc/uptime`). Saves fall on log steps only. A run of the same tag that finds
+`resume_before_h` (23.5 by default from 0.1.69, 23 before; the age read from `/proc/uptime`). Saves fall on log steps only. A run of the same tag that finds
 a saved state continues from it, in the first run's folder and along the uninterrupted run's path: the Trainer's own checkpoint
 (the adapter, the optimizer's moments, the schedule, the step, the random state) is read back, the batches already trained are
 skipped in the same seeded order, the general rows drawn for them are drawn again from the seed, and the collators' counts, the

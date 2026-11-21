@@ -37,6 +37,7 @@ import sys
 
 from . import __version__, registry
 from .registry import PROJECT, V12_SETS
+from .resume import LATE_SAVE_H
 
 # The files a v1.2 lane reads from the project repo (paths in it), and what each holds. The two training sets come from the
 # public dataset's release 5 split by license; the rest are the inputs of the general answers and of the text reads.
@@ -465,10 +466,10 @@ def notebook(entry: dict, built: dict, project: str, version: str = __version__)
           "on every row of the release; the held-out pictures are the same for both, so their reads compare.\n\n"
           f"The queue runs, in order: {'; '.join(order)}. A smoke that runs slower or holds more memory than its limits fails, and "
           f"its training does not start. {hours[0].upper() + hours[1:]}.\n\n"
-          "The training runs with resume on: its whole state saves to the project repo every 2 hours and once more after the "
-          "runtime's 23rd hour. If the runtime ends mid-run, open this notebook on a fresh runtime and run it again: the lane "
-          "continues the training from its saved state. Its progress file (runs/progress/<run>.json in the project repo) says "
-          "where it stands: `python -m qwen_symbolic_thinking.tools.progress <project repo>`.\n\n"
+          "The training runs with resume on: its whole state saves to the project repo every 2 hours and once more after "
+          f"{LATE_SAVE_H:g} hours of the runtime. If the runtime ends mid-run, open this notebook on a fresh runtime and run it "
+          "again: the lane continues the training from its saved state. Its progress file (runs/progress/<run>.json in the "
+          "project repo) says where it stands: `python -m qwen_symbolic_thinking.tools.progress <project repo>`.\n\n"
           f"Runtime: a GPU (the RTX PRO 6000, 95 GB) and the `HF_TOKEN` secret with write access to the project repo `{project}`, "
           "where every file of this lane lives (its training sets and inputs first: see the package's docs/registry_and_lanes.md). "
           "Run C1, restart the session (Runtime > Restart session), then run C2.\n")

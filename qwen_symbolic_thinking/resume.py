@@ -34,6 +34,10 @@ from datetime import datetime, timezone
 
 STATE = "resume.json"      # the run's own part of a saved state, beside the Trainer's checkpoint files
 ROOT = "resume"            # resume/<tag>/ in the project repo
+# The once-per-machine late save: after this many hours of the machine's age (a Colab runtime ends at about 24). 23.5 from
+# 0.1.69 (23.0 before): the half hour later halves the steps a fresh runtime trains again after the move. train.run's
+# resume_before_h (a train key of a queue spec) sets another; None, none at all.
+LATE_SAVE_H = 23.5
 SKIP_FILES = ("README.md", "training_args.bin")   # in a checkpoint folder and not needed to resume (PEFT's card, a pickle)
 
 
@@ -138,7 +142,7 @@ class Schedule:
     adapter ships then). A save that fails is tried again retry_min minutes later. at_steps: saves at these steps instead of
     by the clock (tests)."""
 
-    def __init__(self, every_h: float = 2.0, before_h: float = 23.0, retry_min: float = 15.0, clock=time.time,
+    def __init__(self, every_h: float = 2.0, before_h: float | None = LATE_SAVE_H, retry_min: float = 15.0, clock=time.time,
                  age=machine_age_h, at_steps=None):
         self.every_s, self.before_h, self.retry_s = float(every_h) * 3600.0, before_h, float(retry_min) * 60.0
         self.clock, self.age = clock, age
