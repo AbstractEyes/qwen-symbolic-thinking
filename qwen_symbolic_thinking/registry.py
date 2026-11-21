@@ -64,10 +64,11 @@ V12_SETS = {
     "nc": {"path": "sft/v12_rows_nc.json", "items": 184_562, "examples": 349_031, "steps": 21_815},
 }
 # The smoke that runs before each training: the set's first 2,000 items, 30 steps, nothing shipped, no screen, and the stop rule
-# of the v1.2 lanes: its steady pace (the steps after the first ten) above 1.25 x the pace basis (the measured v1.2 pace where one
-# exists, else the estimate), or its peak memory above 85 GB, fails the smoke and holds its training back.
+# of the v1.2 lanes: its steady pace (the steps after the first ten) above 1.25 x the measured v1.2 pace, or above 1.5 x the
+# estimate where no v1.2 run has measured one (an estimate carries more doubt than a measurement), or its peak memory above 85 GB,
+# fails the smoke and holds its training back.
 SMOKE = {"n_items": 2000, "max_steps": 30, "resume": False, "do_ship": False}
-STOP_FACTOR, STOP_PEAK_GB, STOP_AFTER_STEP = 1.25, 85, 10
+STOP_FACTOR, STOP_FACTOR_ESTIMATE, STOP_PEAK_GB, STOP_AFTER_STEP = 1.25, 1.5, 85, 10
 KEEP_BATCH = 32          # the preservation reads' batch in the v1.2 lanes (tools.keep_read)
 
 # An estimate: a v1.2 step costs about 1.5 times a v1 step of the same model on the Apache rows and about 1.4 times on the -nc
@@ -525,9 +526,10 @@ def writers(entry: dict) -> list:
 
 def smoke_stop(entry: dict, line: str) -> dict:
     """The limits a smoke of this model's line stops at (queue: a train spec's "stop_if"): its steady pace after step 10 above
-    1.25 x the pace basis (measured where a v1.2 run measured it, else the estimate), or its peak above 85 GB."""
-    pace = entry["pace"][line]["s"]
-    return {"steady_s_per_step": round(STOP_FACTOR * pace, 2), "peak_gb": STOP_PEAK_GB, "after_step": STOP_AFTER_STEP}
+    1.25 x the pace a v1.2 run measured, or 1.5 x the estimate where none has, or its peak above 85 GB."""
+    basis = entry["pace"][line]
+    factor = STOP_FACTOR if basis["measured"] else STOP_FACTOR_ESTIMATE
+    return {"steady_s_per_step": round(factor * basis["s"], 2), "peak_gb": STOP_PEAK_GB, "after_step": STOP_AFTER_STEP}
 
 
 def hours(entry: dict, line: str) -> float:

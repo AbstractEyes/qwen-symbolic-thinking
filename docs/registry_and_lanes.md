@@ -82,8 +82,9 @@ Earlier versions trained in a project repo other than yours are left out of the 
 
 A smoke carries its limits, `"stop_if": {"steady_s_per_step": x, "peak_gb": y, "after_step": n}`. When it ends, its pace over
 the steps after step n (read from its own step log) and its peak GPU memory are compared with them. Past either, its marker says
-failed, with the reason in plain words. The registry sets the limits from one rule: 1.25 times the measured or estimated
-seconds a step, 85 GB, after the first ten steps.
+failed, with the reason in plain words. The registry sets the limits from one rule: 1.25 times the seconds a step a v1.2 run
+measured, or 1.5 times the estimate where none has measured it yet (an estimate carries more doubt), 85 GB, after the first ten
+steps.
 
 Its training says `"waits_for_runs": [<the smoke's name>]`: it starts only once the smoke's marker says done. If the smoke
 failed, the training is held back (never started, never marked) and the lane goes on with whatever does not wait for the smoke.

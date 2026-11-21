@@ -81,7 +81,8 @@ def test_the_smoke_limits_follow_the_stop_rule(key):
     e = registry.get(key)
     for line in e["lines"]:
         stop = registry.smoke_stop(e, line)
-        assert stop == {"steady_s_per_step": round(1.25 * e["pace"][line]["s"], 2), "peak_gb": 85, "after_step": 10}
+        factor = 1.25 if e["pace"][line]["measured"] else 1.5
+        assert stop == {"steady_s_per_step": round(factor * e["pace"][line]["s"], 2), "peak_gb": 85, "after_step": 10}
         assert registry.hours(e, line) == round(registry.V12_SETS[line]["steps"] * e["pace"][line]["s"] / 3600, 1)
     assert registry.describe(e).startswith(f"{key}: ")
 
