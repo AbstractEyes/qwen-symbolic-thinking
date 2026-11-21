@@ -217,7 +217,8 @@ def line_specs(entry: dict, line: str, project: str, needs: str, progress_every_
                f"{V12_SETS[line]['steps']:,} steps); the general rows {anchors}",
                f"  smoke {n['smoke']}: {registry.SMOKE['max_steps']} steps on the set's first {registry.SMOKE['n_items']:,} items, "
                f"nothing shipped; stops at a steady pace above {stop['steady_s_per_step']} s a step after step "
-               f"{stop['after_step']} (1.25 x {pace['s']} s, {pace['source']}) or a peak above {stop['peak_gb']} GB",
+               f"{stop['after_step']} ({registry.STOP_FACTOR if pace['measured'] else registry.STOP_FACTOR_ESTIMATE} x "
+               f"{pace['s']} s, {pace['source']}) or a peak above {stop['peak_gb']} GB",
                f"  training {n['train']}: LoRA r{full['rank']} alpha {full['alpha']}, lr {full['lr']}, {full['batch']} x "
                f"{full['grad_accum']}, max_len {full['max_len']}, one pass, general_kl {full['general_kl']}"
                + (f", pictures {entry['image_settings']}" if entry["image_settings"] else "")
