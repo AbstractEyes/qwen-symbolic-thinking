@@ -91,6 +91,43 @@ def test_keep_requests_drops_by_reason_and_remembers_repeats_case_folded():
     assert anchors.keep_requests(["x" * 20, "y" * 500], set())[0] == ["x" * 20, "y" * 500]          # the bounds are in
 
 
+def test_split_requests_keeps_the_old_split_when_enough_and_fills_held_first_when_short():
+    reqs = [f"request {i}" for i in range(10)]
+    assert anchors.split_requests(reqs, 6, 3) == (reqs[:6], reqs[6:9])          # enough: the split before 0.1.70, exactly
+    assert anchors.split_requests(reqs, 8, 2) == (reqs[:8], reqs[8:10])
+    assert anchors.split_requests(reqs[:5], 6, 3) == (reqs[3:5], reqs[:3])      # short: held first, training the rest
+    assert anchors.split_requests(reqs[:2], 6, 3) == ([], reqs[:2])
+    assert anchors.split_requests(reqs[:4], 0, 3) == ([], reqs[:3])            # a held-only run takes the first n either way
+    assert anchors.split_requests([], 6, 3) == ([], [])
+
+
+def test_load_requests_takes_the_files_order_and_refuses_bad_files(tmp_path):
+    def write(obj):
+        p = tmp_path / f"r{len(list(tmp_path.iterdir()))}.json"
+        p.write_text(json.dumps(obj), encoding="utf-8")
+        return str(p)
+
+    good = write({"version": 1, "train": ["Write a haiku about rain.", "What is a prime?", "Name three rivers."],
+                  "held": ["Explain tides simply.", "How do bees talk?"]})
+    assert anchors.load_requests(good, 2, 1) == (["Write a haiku about rain.", "What is a prime?"], ["Explain tides simply."])
+    assert anchors.load_requests(good, 0, 2) == ([], ["Explain tides simply.", "How do bees talk?"])
+    with pytest.raises(ValueError, match="asked for"):
+        anchors.load_requests(good, 4, 1)
+    with pytest.raises(ValueError, match="asked for"):
+        anchors.load_requests(good, 1, 3)
+    with pytest.raises(ValueError, match="both"):
+        anchors.load_requests(write({"train": ["What is a prime?"], "held": ["WHAT IS A PRIME?"]}), 1, 1)
+    with pytest.raises(ValueError, match="not non-empty"):
+        anchors.load_requests(write({"train": ["ok request", "  "], "held": []}), 1, 0)
+    with pytest.raises(ValueError, match="not non-empty"):
+        anchors.load_requests(write({"train": [{"prompt": "a dict"}], "held": []}), 1, 0)
+
+
+def test_run_takes_a_requests_file_and_keeps_its_own_requests_by_default():
+    import inspect
+    assert inspect.signature(anchors.run).parameters["requests"].default is None
+
+
 def test_an_answer_that_reaches_its_cap_never_ended():
     assert anchors.reached_cap(512, 512) and anchors.reached_cap(600, 512) and not anchors.reached_cap(511, 512)
 

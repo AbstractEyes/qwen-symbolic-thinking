@@ -11,7 +11,9 @@ answers on its own. This tool writes them on a GPU, with no adapter, greedy deco
                    for each picture), the pictures taken round-robin over their sources so no source crowds the rest;
     text rows      requests the base model writes itself: the chat template's opening of a user turn is given to the model,
                    which continues it as a user would (Xu et al., "Magpie: Alignment Data Synthesis from Scratch by Prompting
-                   Aligned LLMs with Nothing", arXiv 2406.08464), then each request is answered;
+                   Aligned LLMs with Nothing", arXiv 2406.08464), then each request is answered; or (requests=, from 0.1.70)
+                   the requests of a requests file, for a model that seldom ends a user turn it writes (Gemma 4 goes on to
+                   answer its own request inside the turn), still answered by the base model itself;
     held rows      the same, for pictures and requests kept out of training, to read a trained adapter on (tools.keep_read);
                    each held picture also gets one request for a detailed description, the reference for the read of how much
                    detail the row form keeps.
@@ -193,6 +195,37 @@ def keep_requests(candidates: list, seen: set, chars: tuple = REQUEST_CHARS) -> 
     return kept, drops
 
 
+def split_requests(requests: list, n_text: int, n_held_text: int) -> tuple:
+    """(training requests, held requests) from the requests the model wrote. With enough of them the first n_text train and the
+    next n_held_text are held, as before 0.1.70, so an earlier run repeats its split exactly; with fewer, the held part is
+    filled first, so the reads after training keep their held text requests, and training takes what is left (Gemma 4 E4B kept
+    591 of the 2,200 it was asked for, and its held part came out empty: 2026-11-22)."""
+    if len(requests) >= n_text + n_held_text:
+        return requests[:n_text], requests[n_text:n_text + n_held_text]
+    return requests[n_held_text:n_held_text + n_text], requests[:n_held_text]
+
+
+def load_requests(requests: str, n_text: int, n_held_text: int) -> tuple:
+    """(training requests, held requests) from a requests file, in place of requests the model writes itself: a JSON object
+    whose "train" and "held" lists hold the request strings, read through screen.load_inputs (a local path or hub:<path>). The
+    first n_text of "train" and the first n_held_text of "held" are taken, in the file's order. Refused: a request that is not a
+    non-empty string, a request in both lists (compared case-folded, so no held request is ever trained on), a list shorter
+    than asked. For a model that seldom closes a user turn it writes: Gemma 4 writes a request and goes on to answer it inside
+    the same turn, so few of its own requests end, and most of those that do are not requests (2026-11-22)."""
+    data = load_inputs(requests)
+    train, held = list(data.get("train") or []), list(data.get("held") or [])
+    bad = sum(1 for r in train + held if not isinstance(r, str) or not r.strip())
+    if bad:
+        raise ValueError(f"{requests}: {bad} requests are not non-empty strings")
+    both = {r.casefold() for r in train} & {r.casefold() for r in held}
+    if both:
+        raise ValueError(f"{requests}: {len(both)} requests are in both the train and the held list")
+    if len(train) < n_text or len(held) < n_held_text:
+        raise ValueError(f"{requests}: {n_text} training and {n_held_text} held requests asked for, the file holds "
+                         f"{len(train)} and {len(held)}")
+    return train[:n_text], held[:n_held_text]
+
+
 def reached_cap(n_new: int, cap: int) -> bool:
     """An answer with as many new tokens as its cap never ended (an answer that ends counts its end token, and still stops
     short of the cap unless it ended on its last token, a case dropped with the rest)."""
@@ -289,18 +322,22 @@ def sample_requests(processor, model, need: int, batch: int, seed: int) -> tuple
 def run(model_id: str = "Qwen/Qwen3.5-4B", rows: str | None = None, n_picture: int = 1600, n_text: int = 800,
         n_held_picture: int = 200, n_held_text: int = 200, held_pictures: str = DEFAULT_HELD, batch: int = 32,
         max_new_tokens: int = 512, max_new_tokens_text: int = 768, seed: int = 20261110, tag: str = "", repo: str = REPO,
-        out_dir: str = "/content/anchors", do_ship: bool = True, bank=None, detail: str | None = DETAIL) -> dict:
+        out_dir: str = "/content/anchors", do_ship: bool = True, bank=None, detail: str | None = DETAIL,
+        requests: str | None = None) -> dict:
     """Write the general rows with the base model (no adapter) and ship anchors/<tag>/{anchors,held,summary}.json to the
     project repo. rows: an input file of training items (built by rows.build_api_rows), whose pictures the training picture rows
     use; held_pictures: an input file, or a list of them, whose picture items are held out of training (the screen set; the
     pictures rows.build_api_rows draws out with hold_out), whose pictures the held rows use. The detail rows and the text rows
-    answer under max_new_tokens_text (a detailed description or a free request runs longer than a one-line answer)."""
+    answer under max_new_tokens_text (a detailed description or a free request runs longer than a one-line answer).
+    requests: a requests file (load_requests) whose requests the text rows answer, in place of requests the model writes itself
+    (sample_requests); the base model still writes every answer. None (the default) keeps the model's own requests."""
     if not rows:
         raise ValueError("rows: the input file of training items whose pictures the general rows use (rows.build_api_rows)")
     label = tag or datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
     out = os.path.join(out_dir, label)
     os.makedirs(out, exist_ok=True)
     env = preflight()
+    given = load_requests(requests, n_text, n_held_text) if requests else None    # a bad file stops the run before the model loads
     held_items = load_held(held_pictures)
     held_seeds = {it["seed_id"] for it in held_items if it.get("seed_id")}
     train_pics = pick_pictures(load_inputs(rows)["items"], n_picture, seed, exclude=held_seeds)
@@ -319,9 +356,13 @@ def run(model_id: str = "Qwen/Qwen3.5-4B", rows: str | None = None, n_picture: i
     processor, model = load_model(model_id, False)
     mark = family.marker(model)
     drops = {c: Counter() for c in CATEGORIES}
-    requests, request_drops = sample_requests(processor, model, n_text + n_held_text, batch, seed)
-    text_train, text_held = requests[:n_text], requests[n_text:n_text + n_held_text]
-    print(f"  {len(requests)} requests written ({request_drops})", flush=True)
+    if given:
+        (text_train, text_held), request_drops = given, {}
+        print(f"  {len(text_train)} training and {len(text_held)} held requests from {requests}", flush=True)
+    else:
+        written, request_drops = sample_requests(processor, model, n_text + n_held_text, batch, seed)
+        text_train, text_held = split_requests(written, n_text, n_held_text)
+        print(f"  {len(written)} requests written ({request_drops})", flush=True)
 
     jobs = []     # (category, prompt, source item or None, picture key or None, token cap)
     for i, (p, ask) in enumerate(zip(train_pics, draw_requests(len(train_pics), seed, bank))):
@@ -378,6 +419,7 @@ def run(model_id: str = "Qwen/Qwen3.5-4B", rows: str | None = None, n_picture: i
                "counts": dict(Counter(it["category"] for v in items.values() for it in v)),
                "by_source": dict(Counter(it["source"] for v in items.values() for it in v if it["source"])),
                "dropped": {c: dict(d) for c, d in drops.items() if d}, "requests_dropped": request_drops,
+               "requests": requests or "written by the model",
                "max_new_tokens": max_new_tokens, "max_new_tokens_text": max_new_tokens_text, "batch": batch,
                "s_per_row": round(t_gen / max(len(ready), 1), 3), "tok_per_s": round(n_tok / max(t_gen, 1e-9), 1),
                "answered": len(ready), "kept": n_rows, "env": env}
