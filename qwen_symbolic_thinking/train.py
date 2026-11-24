@@ -19,7 +19,7 @@ import random
 import time
 from datetime import datetime, timezone
 
-from . import REPO, __version__, chain, family, keep, prompts
+from . import REPO, __version__, anima_eyes, chain, family, keep, prompts
 from . import resume as saved_state
 from .hub import fetch_folder, model_short, resolve_model, ship
 from .resume import Counts
@@ -218,7 +218,7 @@ def restore(state: dict, collate, anchor_collate, data_collator, keep_empty=None
     collate.counts.restore(state["collate"])
     if anchor_collate is not None and state.get("anchor_collate") is not None:
         anchor_collate.counts.restore(state["anchor_collate"])
-    if isinstance(data_collator, keep.PairedCollator):
+    if hasattr(data_collator, "advance"):     # the general rows' draws (keep.PairedCollator) and the slot prompts' (anima_eyes)
         data_collator.advance(state["micro_batches"])
     if keep_empty is not None:
         keep_empty.clear()
@@ -316,11 +316,12 @@ class RunState:
                 "saves": self.saves(state.global_step, now), "saved_at": now}
 
 
-def progress(total: int, first_line: str, log: list, keep_stats: dict, at_log=None, spent_before: float = 0.0):
+def progress(total: int, first_line: str, log: list, keep_stats: dict, at_log=None, spent_before: float = 0.0, extra=None):
     """The callback that prints the training's progress and keeps its log: at every log step a record {step, spent_s, left_s,
     s_per_step, loss, learning_rate, and the keeping terms' means since the last log line (keep.keep_trainer's running sums)}
     goes into log; at_log(step), when given, runs after it (the step ships). A resumed run passes the seconds its earlier
-    machines trained (spent_before), and its pace is read from the steps this machine trained."""
+    machines trained (spent_before), and its pace is read from the steps this machine trained. extra(), when given, returns
+    reads taken at the log step itself (the slot term's held agreement: anima_eyes.SlotHeld), merged into the record."""
     from transformers import TrainerCallback
 
     class Progress(TrainerCallback):
@@ -351,6 +352,8 @@ def progress(total: int, first_line: str, log: list, keep_stats: dict, at_log=No
             n = keep_stats.pop("n", 0)
             terms = {k: round(keep_stats.pop(k) / n, 5) for k in list(keep_stats)} if n else {}
             keep_stats.clear()
+            if extra is not None:
+                terms.update(extra())
             rec.update(terms)
             log.append(rec)
             print(f"  step {rec['step']}/{total}: loss {rec.get('loss', float('nan')):.4f}"
@@ -372,7 +375,8 @@ def run(model_id: str = "Qwen/Qwen3.5-9B", inputs="hub:sft/sft_v1.json", out_dir
         target_kl: float = 0.0, rehearsal: float = 0.0, writers: list | None = None, seed_adapter: bool = False,
         resume: bool = False, resume_every_h: float = 2.0, resume_before_h: float | None = saved_state.LATE_SAVE_H,
         lazy_pictures: bool = False, picture_workers: int = 16, grad_checkpointing: bool = True,
-        progress_every_min: float | None = None) -> dict:
+        progress_every_min: float | None = None, slot: float = 0.0, slot_batch: int = 4, slot_from=None,
+        slot_max_len: int | None = None) -> dict:
     """Train the adapter; return {adapter_dir, path_in_repo, steps, s_per_step, train_loss, ...}. With init_adapter (see
     adapter_source) training continues from that trained adapter instead of a fresh LoRA; its rank and alpha must be the ones passed.
     With system (see prompts.system) every example carries that system turn before its user turn. Rank 0 is a full fine-tune of
@@ -406,13 +410,26 @@ def run(model_id: str = "Qwen/Qwen3.5-9B", inputs="hub:sft/sft_v1.json", out_dir
     progress_every_min (tools.progress): the training writes runs/progress/<tag>.json to the repo at its first log step, then
     every so many minutes, and once at its end (the step, the loss, the pace, the peak, the last saved and shipped steps), best
     effort, on a thread of its own, never holding the training; None (the default) writes nothing. Not a setting a resume
-    checks."""
+    checks.
+
+    A full fine-tune (rank 0) with general_kl or target_kl reads the base side on a frozen bf16 copy of the starting model (the
+    reference) instead of an adapter's off switch.
+
+    Anima's eyes (anima_eyes.py; a model whose config carries the "anima_eyes" record, InternVL3.5-1B with Anima's top layers):
+    Anima's slot (its language layers 24-27 and final norm) carries no LoRA modules and stays frozen in a full fine-tune, and its
+    fingerprint is checked at the load and after the training. slot weighs the slot term: slot_batch Anima-style prompts (each
+    training item's wordings named in slot_from, by default its generation prompt, tags and caption) ride beside every
+    micro-batch, and the model's final states on them are held to Anima's encoder's (Qwen3-0.6B-Base, frozen):
+    L_slot = mean over the real prompt tokens of ||h - h_anima||^2 / ||h_anima||^2. Every log line also reads the agreement on
+    the 24 held prompts (slot_held: the centered cosine of the final states, the Base's mean state removed; the hybrid starts
+    at 0.805).
+    slot_max_len caps a slot prompt's tokens (anima_eyes.SLOT_MAX_LEN by default). The slot settings join the settings a
+    resume checks only when slot is on (a run without them compares as before)."""
     if keys not in chain.KEYS:
         raise ValueError(f"unknown keys {keys!r}: one of {chain.KEYS}")
     full = rank == 0
-    keep_on = general_kl > 0 or target_kl > 0 or rehearsal > 0
-    if keep_on and full:
-        raise ValueError("general_kl, target_kl and rehearsal read the base model through the adapter's off switch: a LoRA only")
+    keep_on = general_kl > 0 or target_kl > 0 or rehearsal > 0 or slot > 0
+    needs_reference = full and (general_kl > 0 or target_kl > 0)   # a full fine-tune has no off switch: a frozen copy reads the base
     if (general_kl > 0 or rehearsal > 0) and not anchors:
         raise ValueError("general_kl and rehearsal are read on general rows: pass anchors")
     if resume and full:
@@ -425,7 +442,8 @@ def run(model_id: str = "Qwen/Qwen3.5-9B", inputs="hub:sft/sft_v1.json", out_dir
         "init_adapter": init_adapter, "system": system, "trust_remote_code": trust_remote_code, "revision": revision,
         "targets": targets, "image_settings": image_settings, "keys": keys, "max_steps": max_steps, "anchors": anchors,
         "anchor_batch": anchor_batch, "general_kl": general_kl, "target_kl": target_kl, "rehearsal": rehearsal,
-        "writers": writers, "seed_adapter": seed_adapter})
+        "writers": writers, "seed_adapter": seed_adapter,
+        **({"slot": slot, "slot_batch": slot_batch, "slot_from": slot_from, "slot_max_len": slot_max_len} if slot > 0 else {})})
     store = saved_state.HubStore(repo) if resume else None
     found = saved_state.load(store, tag, os.path.join(out_dir, "resume", tag)) if resume else None
     if found is not None:
@@ -518,7 +536,10 @@ def run(model_id: str = "Qwen/Qwen3.5-9B", inputs="hub:sft/sft_v1.json", out_dir
         print(f"  {note}", flush=True)
     family.apply_image_settings(processor, image_settings)
     mark = family.marker(model)
-    targets = targets or TARGETS
+    targets = targets or family.lora_targets(model) or TARGETS
+    eyes = family.anima_eyes(model)                  # InternVL3.5-1B with Anima's top layers: its slot stays the Base's
+    if slot > 0 and eyes is None:
+        raise ValueError("the slot term holds the final states to Anima's encoder: a model with the anima_eyes record only")
     if trust_remote_code or mark or image_settings:
         print(f"  {family.model_type(model)}" + (f": picture marker {mark}" if mark else "")
               + (f"; repository code at {revision}" if trust_remote_code else "")
@@ -526,12 +547,16 @@ def run(model_id: str = "Qwen/Qwen3.5-9B", inputs="hub:sft/sft_v1.json", out_dir
     model.config.use_cache = False
     input_grads = prepare_checkpointing(model, grad_checkpointing)
     if full:
-        n_train = 0
+        n_train = n_kept = 0
         for name, p in model.named_parameters():
-            p.requires_grad = trains_in_full(name)
+            kept = family.frozen(model, name)          # a family's own frozen part (the hybrid: Anima's slot)
+            p.requires_grad = trains_in_full(name) and not kept
             n_train += p.numel() if p.requires_grad else 0
-        report = {"full": n_train}
-        print(f"full fine-tune: {n_train / 1e9:.2f}B parameters train (the language model), the vision tower frozen", flush=True)
+            n_kept += p.numel() if kept else 0
+        report = {"full": n_train, "frozen_family": n_kept}
+        print(f"full fine-tune: {n_train / 1e9:.2f}B parameters train (the language model), the vision tower frozen"
+              + (f"; {n_kept / 1e6:.1f}M of the family's own frozen (Anima's slot: language layers "
+                 f"{eyes['first_base_layer']}-27 and the final norm)" if n_kept else ""), flush=True)
     elif init_adapter:
         from peft import PeftModel
         from .hub import token
@@ -554,6 +579,32 @@ def run(model_id: str = "Qwen/Qwen3.5-9B", inputs="hub:sft/sft_v1.json", out_dir
         print("LoRA modules by name:", report, flush=True)
         assert report, "no module matched the LoRA targets; read the model's module names"
         model.print_trainable_parameters()
+    slot_print = None
+    if eyes is not None:                              # no LoRA module and no trainable parameter on Anima's slot
+        slot_print = anima_eyes.check_slot(model, eyes["first_base_layer"], eyes.get("slot_fingerprint"))
+        on_slot = [n for n, p in model.named_parameters() if p.requires_grad and anima_eyes.is_slot(n, eyes["first_base_layer"])]
+        assert not on_slot, f"trainable parameters on Anima's slot: {on_slot[:3]}"
+        print(f"  Anima's slot (language layers {eyes['first_base_layer']}-27, the final norm): the Base's own, frozen, no LoRA "
+              f"module (fingerprint {slot_print[:16]}...)", flush=True)
+    reference = None
+    if needs_reference:                               # the base side of general_kl / target_kl for a full fine-tune
+        reference = load_vlm(src, trust_remote_code=trust_remote_code, dtype=torch.bfloat16, device_map="cuda")
+        family.prepare_model(reference)
+        reference.eval()
+        for p in reference.parameters():
+            p.requires_grad = False
+        print("  the keeping terms read the base on a frozen bf16 copy of the starting model (a full fine-tune has no off switch)",
+              flush=True)
+    slot_term = slot_held = slot_pool = None
+    if slot > 0:
+        slot_pool = anima_eyes.slot_prompts(items, tuple(slot_from or anima_eyes.SLOT_FROM))
+        teacher = anima_eyes.load_teacher("cuda")
+        slot_term = anima_eyes.SlotTerm(teacher)
+        slot_held = anima_eyes.SlotHeld(teacher, processor.tokenizer)
+        start = slot_held(model)
+        print(f"  the slot term at weight {slot}: {slot_batch} Anima-style prompts beside every micro-batch, from "
+              f"{len(slot_pool):,} ({', '.join(slot_from or anima_eyes.SLOT_FROM)} of the training items); the final states held "
+              f"to {anima_eyes.BASE['repo']}'s; at the start on the {len(anima_eyes.HELD_PROMPTS)} held prompts: {start}", flush=True)
 
     steps_per_epoch = math.ceil(len(pairs) / (batch * grad_accum))
     total = max_steps or math.ceil(steps_per_epoch * epochs)
@@ -577,7 +628,8 @@ def run(model_id: str = "Qwen/Qwen3.5-9B", inputs="hub:sft/sft_v1.json", out_dir
 
     first_line = (f"{total} steps of {batch} x {grad_accum} sequences; "
                   + (f"max_steps {max_steps} ({total / steps_per_epoch:.2f} of an epoch)" if max_steps else f"{epochs} epoch(s)"))
-    progress_cb = progress(total, first_line, log, keep_stats, at_log, spent_before)
+    progress_cb = progress(total, first_line, log, keep_stats, at_log, spent_before,
+                           extra=(lambda: slot_held(model)) if slot_held is not None else None)
 
     collate = Collator(processor, pictures, max_len, system_text, mark, family.model_type(model), keys)
     pic = next((p for p in pairs if p[1] in PICTURE_FORMS and pictures.get(p[0]["id"]) is not None), None)
@@ -590,7 +642,11 @@ def run(model_id: str = "Qwen/Qwen3.5-9B", inputs="hub:sft/sft_v1.json", out_dir
     if anchor_items:
         anchor_collate = Collator(processor, pictures, max_len, system_text, mark, family.model_type(model), keys)
         data_collator = keep.PairedCollator(collate, anchor_items, anchor_batch, seed, anchor_collate)
-    trainer_class = keep.keep_trainer(general_kl, target_kl, rehearsal, keep_stats) if keep_on else Trainer
+    if slot_term is not None:                         # the Anima-style prompts ride beside every micro-batch
+        data_collator = anima_eyes.SlotCollator(data_collator, slot_pool, slot_batch, seed, processor.tokenizer,
+                                                slot_max_len or anima_eyes.SLOT_MAX_LEN)
+    trainer_class = (keep.keep_trainer(general_kl, target_kl, rehearsal, keep_stats, slot=slot, slot_term=slot_term,
+                                       reference=reference) if keep_on else Trainer)
     callbacks, rs = [progress_cb], None
     if resume:
         rs = RunState(found, tag=tag, stamp=stamp, path_in_repo=path_in_repo, settings=settings, pairs=pairs,
@@ -622,6 +678,13 @@ def run(model_id: str = "Qwen/Qwen3.5-9B", inputs="hub:sft/sft_v1.json", out_dir
     else:
         train_loss = result.training_loss
     minutes_before = rs.minutes_before if rs is not None else 0.0
+    eyes_end = None
+    if eyes is not None:                              # the slot after the training: still the Base's (no trained part touched it)
+        after = anima_eyes.check_slot(model, eyes["first_base_layer"], slot_print)
+        eyes_end = {"record": eyes, "slot_fingerprint": after, "slot_unchanged": after == slot_print,
+                    "slot_held_end": slot_held(model) if slot_held is not None else None}
+        print(f"  Anima's slot after the training: unchanged (fingerprint {after[:16]}...)"
+              + (f"; held agreement {eyes_end['slot_held_end']}" if slot_held is not None else ""), flush=True)
     if full:   # the whole model in bf16, with its processor, so the folder loads on its own
         from transformers import GenerationConfig
         stops = stop_ids(processor, model)      # the saved model stops on the turn end under a plain generate(), not only under ours
@@ -653,7 +716,13 @@ def run(model_id: str = "Qwen/Qwen3.5-9B", inputs="hub:sft/sft_v1.json", out_dir
                "keep": {"general_kl": general_kl, "target_kl": target_kl, "rehearsal": rehearsal, "anchors": anchors,
                         "anchor_items": len(anchor_items), "anchor_batch": anchor_batch if anchor_items else 0,
                         "anchor_examples_cut_at_max_len": anchor_collate.cut if anchor_collate else 0,
-                        "empty_batches": dict(getattr(trainer_class, "keep_empty", {}))},
+                        "empty_batches": dict(getattr(trainer_class, "keep_empty", {})),
+                        "reference": "a frozen bf16 copy of the starting model" if reference is not None else None,
+                        "slot": ({"weight": slot, "batch": slot_batch, "from": list(slot_from or anima_eyes.SLOT_FROM),
+                                  "max_len": slot_max_len or anima_eyes.SLOT_MAX_LEN, "pool": len(slot_pool),
+                                  "teacher": {k: anima_eyes.BASE[k] for k in ("repo", "revision", "sha256")}}
+                                 if slot_term is not None else None)},
+               "anima_eyes": eyes_end,
                "writers": writers, "items_by_writer": writers_seen, "seed_adapter": seed_adapter,
                "collated_examples": collate.collated, "examples_cut_at_max_len": collate.cut, "longest_example_tokens": collate.longest,
                "resume": ({"every_h": resume_every_h, "before_h": resume_before_h, "examples_fingerprint": examples_print,

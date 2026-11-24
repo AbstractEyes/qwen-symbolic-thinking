@@ -11,6 +11,7 @@ huggingface.co/datasets/AbstractPhil/thought-symbolic-image-captions do.
                                                            # every person box of a photo (predict_many) and same-person (apart)
     from qwen_symbolic_thinking import absences            # a caption without its "no eyewear" / "no print or text" statements
     from qwen_symbolic_thinking import registry            # every model of the v1 list: its settings, pins, paces, repos, versions
+    from qwen_symbolic_thinking import anima_eyes          # InternVL3.5-1B with Anima's own top layers: its build and slot term
     python -m qwen_symbolic_thinking.lines <model> <apache|nc|both> --project-repo <repo>    # a model's v1.2 lane: queue + notebook
     python -m qwen_symbolic_thinking.tools.progress <repo> [<run> ...]                      # where each training stands
     python -m qwen_symbolic_thinking.reads <model> <apache|nc> <bars|text> --project-repo <repo> --out <folder>   # a line's reads
@@ -19,7 +20,7 @@ huggingface.co/datasets/AbstractPhil/thought-symbolic-image-captions do.
 Weights and results: huggingface.co/AbstractPhil/qwen-symbolic-thinking-image-training."""
 import os
 
-__version__ = "0.1.70"
+__version__ = "0.1.71"
 
 # The CUDA caching allocator grows by expandable segments, so a long batch late in a run does not fail on memory the process
 # already holds in fragments (a 4B full fine-tune died at step 1,220 of 2,724 asking for 5 GB with 15 GB reserved but unusable).

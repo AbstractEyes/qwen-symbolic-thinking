@@ -41,6 +41,8 @@ from __future__ import annotations
 import copy
 import json
 
+from . import anima_eyes
+
 OWNER = "AbstractPhil"
 # The public record repo: every version-1 adapter lives here (lora/<model>/r32/<stamp>_<run>/final), with its run's marker.
 RECORD = "AbstractPhil/qwen-symbolic-thinking-image-training"
@@ -534,22 +536,113 @@ FIELDS = ("key", "name", "line_name", "family", "model_type", "base", "base_revi
           "keep_batch", "general_answers", "template", "pace", "peak", "repos", "tags", "licenses", "versions", "comparisons",
           "space", "todo", "blockers")
 
+# Models added to the catalogue after the version-1 list: no version 1 and no Space looker yet. Beside FIELDS an entry here may
+# carry what its lane needs beyond the common recipe (lines.py reads them):
+# | prepare          | a tool run that comes first in the lane and makes the base model (its outputs in "makes"); every other
+#                    | run of the lane waits for it ("waits_for_runs") and for those files ("waits_for") |
+# | general_requests | the text requests of its general rows from a requests file (tools.anchors requests=), with the counts |
+# | train_extra      | train keys its trainings carry beside the recipe (the slot term of Anima's eyes) |
+# | full             | a full fine-tune beside the LoRA, on the same rows: its run key, settings, pace and peak |
+_AE = anima_eyes
+LATER = {
+    # ------------------------------------------------------------------------------- Anima's eyes (InternVL3.5-1B, last 4)
+    "ae1b": {
+        "key": "ae1b", "name": "Anima Eyes 1B", "line_name": None, "family": "InternVL3.5 + Anima's Qwen3-0.6B",
+        "model_type": "internvl",
+        "base": _AE.MODEL_ID, "base_revision": None,         # built by the lane's first run from two pinned sources (prepare)
+        "trust_remote_code": False, "transformers": None, "install": {"transformers": "transformers>=5.0", "fast_path": False},
+        "lines": ("apache",), "scheduled": True,              # Apache only, as the catalogue's other newer members
+        "lane": "anima_eyes_v12",
+        # the v1.2 recipe, as Lucia 0.8B's (the nearest size); the slot term rides beside it (train_extra)
+        "lora": {"rank": 32, "alpha": 64}, "lr": 2e-4, "batch": 8, "grad_accum": 2, "max_len": 2048,
+        "image_settings": None,                               # the processor's default: one 448-pixel tile, 256 picture tokens
+        "read_batch": 64, "keep_batch": KEEP_BATCH,
+        "general_answers": {"anchors": "anchors/v11a_ae1b", "anchors_by": "anchors/v11a_ae1b_by", "text": "anchors/v11txt_ae1b"},
+        "template": ("InternVL3.5 (transformers' own InternVL class, no repository code): no thinking switch; the assistant turn "
+                     "ends <|im_end|>; one 448-pixel tile a picture (256 tokens). Anima's eyes: InternVL3.5-1B with Anima's own "
+                     "language layers 24-27 and final norm (Qwen3-0.6B-Base); that slot carries no LoRA module and stays frozen "
+                     "in the full fine-tune; the slot term holds its final states to Anima's encoder's (anima_eyes.py)"),
+        "pace": {"apache": _pace(2.1, False, "estimate: Lucia 0.8B v1.2's measured 2.09 s a step on the same Apache rows "
+                                             "(V12_A1_gkl1_1ep_08b_by, 10,137 steps in 353.0 min), the nearest size (a 0.6B "
+                                             "language model of the same width; 256 picture tokens a row); its smoke measures it")},
+        "peak": {"apache": {"gb": None, "source": "not measured: its smoke measures it (Lucia 0.8B's v1.2 training: 40.51 GB)"}},
+        "repos": {"apache": None, "nc": None, "full": None},
+        "tags": {}, "licenses": {"apache": "Apache-2.0"},     # InternVL3.5-1B and Qwen3-0.6B-Base are both Apache-2.0
+        "versions": [],
+        "comparisons": [{"of": "base", "reads": ["closer", "deep", "lettering", "control_lettering", "control"]}],
+        "space": None,
+        "todo": ["peak apache: measured by its smoke",
+                 "repos apache: the release repos (the LoRA's and the full fine-tune's), named at the release",
+                 "full peak: measured by its smoke",
+                 "an A/B in ComfyUI (Anima with each trained model in its text-encoder slot against its own encoder) before "
+                 "either is called done"],
+        "blockers": [],
+        "prepare": {"name": "base_ae1b", "module": "anima_eyes_base", "args": {"head": _AE.HEAD},
+                    "makes": [f"{_AE.FOLDER}/model.safetensors", f"{_AE.FOLDER}/config.json", f"{_AE.FOLDER}/anima_eyes.json"]},
+        # the cleaned requests file (a look at 30 requests of the uncleaned file found 23 incomplete: cut mid-sentence, or a task
+        # set up without its text or question); it keeps 530 training and 41 held requests: 500 and 40 are asked, so a further
+        # cut after a second look still fits
+        "general_requests": {"requests": "hub:text/requests_qwen_v1_clean.json", "n_text": 500, "n_held_text": 40},
+        "train_extra": {"slot": 1.0, "slot_batch": 4},
+        # the full fine-tune: the 0.8B's full rate (2e-5: 'a smaller model takes the higher end'), its 8 x 2; Anima's slot
+        # frozen; the general rows' KL on a frozen reference copy; the slot term as the LoRA's; one pass, no resume (a full
+        # fine-tune's state is the whole model), one ship at the end
+        "about": ("Anima's eyes: [OpenGVLab/InternVL3_5-1B-HF](https://huggingface.co/OpenGVLab/InternVL3_5-1B-HF) (its vision "
+                  "tower, projector, word table and language layers 0-23) with the language layers 24-27 and final norm of "
+                  "[Qwen/Qwen3-0.6B-Base](https://huggingface.co/Qwen/Qwen3-0.6B-Base), Anima's own text encoder (the "
+                  "\"last-4 hybrid\", built by the lane's first run from both at pinned commits)"
+                  + (", and the Base's own word table as its output head" if _AE.HEAD == "base" else
+                     ", and InternVL's own output head")),
+        "about_training": ("Anima reads this model's final states (after the last norm) in its text-encoder slot. So Anima's slot "
+                           "(the Base's layers 24-27 and final norm) carries no LoRA module and stays frozen in the full fine-tune, "
+                           "and beside every micro-batch four Anima-style prompts (the training rows' own generation prompts, tags "
+                           "and captions) hold the model's final states to the Base's (the slot term at weight 1: the relative "
+                           "squared error per token). Every log line reads the agreement on 24 held Anima-style prompts "
+                           "(slot_held, the centered cosine; the hybrid starts at 0.805)."),
+        "full": {"key": "ae1bf", "lr": 2e-5, "batch": 8, "grad_accum": 2, "max_len": 2048, "general_kl": 1.0,
+                 "pace": _pace(1.8, False, "estimate: 2.09 s (Lucia 0.8B v1.2's LoRA) x 1.17 / 1.36 (the 0.8B's v1 full "
+                                           "fine-tune F_med4_2ep_08b against its LoRA G_med4_2ep_08b); its smoke measures it"),
+                 "peak": {"gb": None, "source": "not measured: its smoke measures it"}},
+    },
+}
+
 
 def keys() -> list:
     return list(ENTRIES)
 
 
+def all_keys() -> list:
+    """Every model's key: the version-1 list, then the later additions (LATER)."""
+    return list(ENTRIES) + list(LATER)
+
+
 def get(name: str) -> dict:
     """An entry (a deep copy) by its run key, its base model id, one of its release repos or one of its Space looker keys
-    (case does not matter)."""
+    (case does not matter); the version-1 list first, then the later additions (LATER)."""
     want = str(name).strip().lower()
-    for key, e in ENTRIES.items():
+    for key, e in list(ENTRIES.items()) + list(LATER.items()):
         names = {key, e["base"].lower(), e["base"].split("/")[-1].lower(), e["name"].lower()}
         names |= {r.lower() for r in e["repos"].values() if r} | {r.split("/")[-1].lower() for r in e["repos"].values() if r}
         names |= {str(k).lower() for k in (e.get("space") or {}).get("lookers", {}).values()}
         if want in names:
             return copy.deepcopy(e)
-    raise KeyError(f"no model {name!r} in the registry; its keys: {', '.join(ENTRIES)}")
+    raise KeyError(f"no model {name!r} in the registry; its keys: {', '.join(all_keys())}")
+
+
+def full_entry(entry: dict) -> dict | None:
+    """The entry of a model's full fine-tune (an entry's "full"), shaped as an entry the lane generator takes: its own run key,
+    rank 0, its rate, batch, pace and peak; None when the model has none."""
+    f = entry.get("full")
+    if not f:
+        return None
+    e = copy.deepcopy(entry)
+    e.update(key=f["key"], lr=f["lr"], batch=f["batch"], grad_accum=f["grad_accum"], max_len=f["max_len"],
+             lora={"rank": 0, "alpha": 0})
+    e["pace"] = {ln: copy.deepcopy(f["pace"]) for ln in entry["lines"]}
+    e["peak"] = {ln: copy.deepcopy(f["peak"]) for ln in entry["lines"]}
+    e["full"] = None
+    e["is_full"] = True
+    return e
 
 
 def recipe(entry: dict) -> dict:
@@ -614,6 +707,20 @@ def describe(entry: dict) -> str:
         p, pk = e["pace"][line], e["peak"][line]
         out.append(f"  {line}: {p['s']} s a step ({p['source']}); about {hours(e, line)} h of training; peak "
                    f"{pk['gb'] if pk['gb'] is not None else '-'} GB ({pk['source']}); smoke stops at {smoke_stop(e, line)}")
+    f = full_entry(e)
+    if f is not None:
+        for line in e["lines"]:
+            out.append(f"  {line} full fine-tune ({f['key']}): lr {f['lr']}; batch {f['batch']} x {f['grad_accum']}; "
+                       f"{f['pace'][line]['s']} s a step ({f['pace'][line]['source']}); about {hours(f, line)} h of training; "
+                       f"smoke stops at {smoke_stop(f, line)}")
+    if e.get("prepare"):
+        out.append(f"  the base is made by the lane's first run {e['prepare']['name']} (tools.{e['prepare']['module']}): "
+                   f"{', '.join(e['prepare']['makes'])}")
+    if e.get("general_requests"):
+        g = e["general_requests"]
+        out.append(f"  general text requests from {g['requests']} ({g['n_text']} training, {g['n_held_text']} held)")
+    if e.get("train_extra"):
+        out.append(f"  train keys beside the recipe: {json.dumps(e['train_extra'])}")
     out.append(f"  repos {json.dumps(e['repos'])}")
     for v in e["versions"]:
         where = "the project repo" if v["adapter"] == PROJECT else v["adapter"]
@@ -631,7 +738,7 @@ def main(argv=None) -> None:
     ap = argparse.ArgumentParser(description="Print the registry's entries and their open values.")
     ap.add_argument("keys", nargs="*", help="model keys (default: every entry)")
     args = ap.parse_args(argv)
-    for k in args.keys or keys():
+    for k in args.keys or all_keys():
         print(describe(get(k)) + "\n")
 
 

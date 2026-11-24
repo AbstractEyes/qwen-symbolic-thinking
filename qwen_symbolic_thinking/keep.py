@@ -172,17 +172,24 @@ class PairedCollator:
 
 # ------------------------------------------------------------------------------------------------------ the trainer
 def keep_trainer(general_kl: float = 0.0, target_kl: float = 0.0, rehearsal: float = 0.0, stats: dict | None = None,
-                 chunk: int = 1024):
+                 chunk: int = 1024, slot: float = 0.0, slot_term=None, reference=None):
     """A Trainer class whose loss adds the terms above to the stock cross-entropy on the training rows. The training rows'
     loss is the stock one (computed by super().compute_loss, so its normalization is the plain Trainer's); the added terms
     are micro-batch means, divided by the accumulation count exactly when the stock loss comes back already scaled for it.
     stats, when given, collects the running sums of each term for the progress log. KeepTrainer.keep_empty counts, per term,
     the micro-batches where it had no answer position to act on (its value is 0 there by construction, so a term that never
-    fires would look like a term that fires and reads 0); train.run reports the counts."""
+    fires would look like a term that fires and reads 0); train.run reports the counts.
+
+    reference: a frozen copy of the starting model that reads the base side of general_kl and target_kl in place of the
+    adapter's off switch (a full fine-tune has none). slot, slot_term (anima_eyes.SlotTerm): the slot term at weight slot on
+    the Anima-style prompts a micro-batch carries (batch["slot"], anima_eyes.SlotCollator); it needs no base side."""
     from transformers import Trainer
 
-    weights = {"general_kl": float(general_kl), "target_kl": float(target_kl), "rehearsal": float(rehearsal)}
+    weights = {"general_kl": float(general_kl), "target_kl": float(target_kl), "rehearsal": float(rehearsal),
+               "slot": float(slot)}
     empty = Counter()
+    if weights["slot"] > 0 and slot_term is None:
+        raise ValueError("the slot term needs its teacher (slot_term)")
 
     class KeepTrainer(Trainer):
         keep_weights = weights
@@ -191,15 +198,25 @@ def keep_trainer(general_kl: float = 0.0, target_kl: float = 0.0, rehearsal: flo
         def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=None):
             import torch
             anchor = inputs.pop("anchor", None)
+            slot_batch = inputs.pop("slot", None)
             peft_model = self.accelerator.unwrap_model(model)
-            if not hasattr(peft_model, "disable_adapter"):
-                raise ValueError("these terms read the base model through the adapter's off switch: a LoRA only")
+            needs_base = weights["target_kl"] > 0 or weights["general_kl"] > 0
+            if needs_base and reference is None and not hasattr(peft_model, "disable_adapter"):
+                raise ValueError("these terms read the base model through the adapter's off switch (a LoRA) or a frozen "
+                                 "reference copy (a full fine-tune): neither is here")
+
+            def base_logits(**kw):
+                with torch.no_grad():
+                    if reference is not None:
+                        return reference(**kw).logits
+                    with peft_model.disable_adapter():
+                        return model(**kw).logits
+
             base_side = None
             if weights["target_kl"] > 0:
                 plain = {k: v for k, v in inputs.items() if k not in ("labels", "num_items_in_batch")}
                 mask, targets = answer_positions(inputs["labels"])
-                with torch.no_grad(), peft_model.disable_adapter():
-                    zb = model(**plain).logits[:, :-1][mask]
+                zb = base_logits(**plain)[:, :-1][mask]
                 base_side = (mask, targets, zb)
             task_loss, outputs = super().compute_loss(model, inputs, return_outputs=True, num_items_in_batch=num_items_in_batch)
             extra = task_loss.new_zeros(())
@@ -222,8 +239,7 @@ def keep_trainer(general_kl: float = 0.0, target_kl: float = 0.0, rehearsal: flo
                         if weights[k] > 0:
                             empty[k] += 1
                 if weights["general_kl"] > 0:
-                    with torch.no_grad(), peft_model.disable_adapter():
-                        zb = model(**a_plain).logits[:, :-1][a_mask]
+                    zb = base_logits(**a_plain)[:, :-1][a_mask]
                     kg = kl_full(zb, zt, chunk)
                     extra = extra + weights["general_kl"] * kg
                     parts["general_kl"] = float(kg.detach())
@@ -232,6 +248,13 @@ def keep_trainer(general_kl: float = 0.0, target_kl: float = 0.0, rehearsal: flo
                     cr = ce_mean(zt, a_targets, chunk)
                     extra = extra + weights["rehearsal"] * cr
                     parts["rehearsal_ce"] = float(cr.detach())
+            if weights["slot"] > 0:
+                if slot_batch is None:
+                    empty["slot"] += 1
+                else:
+                    ls, slot_parts = slot_term.loss(model, slot_batch)
+                    extra = extra + weights["slot"] * ls
+                    parts.update(slot_parts)
             scaled = (self.loss_is_scaled_for_ga if getattr(self, "loss_is_scaled_for_ga", None) is not None else
                       (self.model_accepts_loss_kwargs and num_items_in_batch is not None) or self.compute_loss_func is not None)
             if scaled:

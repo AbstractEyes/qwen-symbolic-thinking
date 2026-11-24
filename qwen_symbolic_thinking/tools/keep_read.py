@@ -18,7 +18,9 @@ the base itself. The base side runs once and is reused at every scale.
     read 3, detail      the full row form asked of each held picture the base also described in detail: the share of the base's
                         content words the row still holds (recall), and the row's length.
 
-With no adapter the tuned side is the base against itself (every drift 0) and the generations run once."""
+With no adapter the tuned side is the base against itself (every drift 0) and the generations run once. A full fine-tune
+(no adapter, no off switch) is read against the model it started from with base_model_id: that model is loaded beside it and
+is the base side of every read, at the trained model's one strength."""
 from __future__ import annotations
 
 import contextlib
@@ -217,15 +219,17 @@ def _generate_rows(processor, model, rows: list, pictures: dict, mark, cap: int,
 
 
 def drift_pass(processor, model, peft: bool, layers, scales: tuple, rows: list, pictures: dict, mark, kind: str, micro: int,
-               max_len: int) -> dict:
+               max_len: int, reference=None) -> dict:
     """{scale: {row id: drift record}} by teacher forcing on each row's own answer. The base logits at the answer positions are
-    computed once per micro-batch (adapter off) and read against the tuned logits at every scale. Without an adapter the tuned
-    side is the base: every KL is 0."""
+    computed once per micro-batch (adapter off) and read against the tuned logits at every scale. With a reference (a full
+    fine-tune's starting model, loaded beside it) the base logits are the reference's and the tuned logits the model's, at its
+    one strength. Without an adapter or a reference the tuned side is the base: every KL is 0."""
     import torch
     from ..train import Collator
     processor.tokenizer.padding_side = "right"          # the collator's prompt lengths count from the left edge
     collate = Collator(processor, pictures, max_len, None, mark, kind)
     out = {s: {} for s in scales}
+    paired = peft or reference is not None               # a tuned side apart from the base side
     t0 = time.time()
     for start in range(0, len(rows), micro):
         group = rows[start:start + micro]
@@ -236,7 +240,7 @@ def drift_pass(processor, model, peft: bool, layers, scales: tuple, rows: list, 
         mask = shifted != -100
         with torch.no_grad():
             with (model.disable_adapter() if peft else contextlib.nullcontext()):
-                z = model(**batch).logits[:, :-1]
+                z = (reference if reference is not None else model)(**batch).logits[:, :-1]
                 base = [z[i][mask[i]] for i in range(len(group))]
                 del z
             ys = [shifted[i][mask[i]] for i in range(len(group))]
@@ -244,13 +248,14 @@ def drift_pass(processor, model, peft: bool, layers, scales: tuple, rows: list, 
             for s in scales:
                 if peft:
                     set_scale(layers, s)
+                if paired:
                     z = model(**batch).logits[:, :-1]
                     tuned = [z[i][mask[i]] for i in range(len(group))]
                     del z
                 else:
                     tuned = base
                 for i, it in enumerate(group):
-                    if peft:
+                    if paired:
                         kl = float(keep.kl_full(base[i], tuned[i]))
                         first = [float(v) for v in kl_per_position(base[i][:FIRST_POSITIONS], tuned[i][:FIRST_POSITIONS])]
                         nll_t = float(keep.ce_mean(tuned[i], ys[i]))
@@ -272,12 +277,16 @@ def drift_pass(processor, model, peft: bool, layers, scales: tuple, rows: list, 
 def run(model_id: str = "Qwen/Qwen3.5-4B", adapter: str | None = None, adapter_subfolder: str | None = None,
         held: str | None = None, scales: tuple = (1.0,), batch: int = 16, max_new_tokens: int = 512, tag: str = "",
         repo: str = REPO, out_dir: str = "/content/keep", do_ship: bool = True, max_new_tokens_row: int = 800,
-        max_len: int = 2048) -> dict:
+        max_len: int = 2048, base_model_id: str | None = None) -> dict:
     """Read an adapter against its base on the held general rows, at each scale; ship keep/<stamp>_<tag>/ (rows.jsonl: every
     row at every scale with every number and text; summary.json) to the project repo and return the summary. held defaults to
     the held rows of the general-row set of the same tag (hub:anchors/<tag>/held.json). The drift pass runs a quarter of
     `batch` rows at a time (it holds the logits of the whole vocabulary at every answer position); max_new_tokens caps the
-    answers to the plain requests and max_new_tokens_row the row-form answers of read 3 (a whole row is longer)."""
+    answers to the plain requests and max_new_tokens_row the row-form answers of read 3 (a whole row is longer).
+
+    base_model_id (a full fine-tune, model_id its shipped folder, no adapter): the model it started from, loaded beside it as
+    the base side of every read (a full fine-tune has no off switch); the read runs once, at the trained model's own strength
+    (scale 1.0)."""
     import torch
     held = held or f"hub:anchors/{tag}/held.json"
     stamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S") + (f"_{tag}" if tag else "")
@@ -285,7 +294,10 @@ def run(model_id: str = "Qwen/Qwen3.5-4B", adapter: str | None = None, adapter_s
     os.makedirs(out, exist_ok=True)
     env = preflight()
     peft = adapter is not None
-    scales = tuple(float(s) for s in scales) if peft else (0.0,)      # no adapter: the base read against itself, once
+    if peft and base_model_id is not None:
+        raise ValueError("an adapter's base side is its own off switch: base_model_id is for a full fine-tune (no adapter)")
+    against = base_model_id is not None                 # a full fine-tune read against the model it started from
+    scales = tuple(float(s) for s in scales) if peft else ((1.0,) if against else (0.0,))   # no adapter, no base: itself, once
     items = load_inputs(held)["items"]
     pictures = fetch_images([it for it in items if it.get("image_urls") or it.get("image")], os.path.join(out_dir, "images"))
     rows = [it for it in items if not (it.get("image_urls") or it.get("image")) or it["id"] in pictures]
@@ -293,29 +305,38 @@ def run(model_id: str = "Qwen/Qwen3.5-4B", adapter: str | None = None, adapter_s
     detail_rows = [it for it in rows if it["category"] == DETAIL_CATEGORY]
     plain_rows = [it for it in rows if it["category"] != DETAIL_CATEGORY]
     print(f"keep read {stamp}: {len(rows)} held rows ({len(detail_rows)} detail, {dropped} dropped for a missing picture); "
-          f"{model_id}" + (f" + {adapter}/{adapter_subfolder or ''}" if peft else " (no adapter)") + f"; scales {list(scales)}", flush=True)
+          f"{model_id}" + (f" + {adapter}/{adapter_subfolder or ''}" if peft else
+                           f" against its starting model {base_model_id}" if against else " (no adapter)")
+          + f"; scales {list(scales)}", flush=True)
     t0 = time.time()
     processor, model = load_model(model_id, False)
     mark, kind = family.marker(model), family.model_type(model)
-    layers = None
+    layers = reference = None
     if peft:
         from peft import PeftModel
         model = PeftModel.from_pretrained(model, adapter, token=token(), **({"subfolder": adapter_subfolder} if adapter_subfolder else {}))
         model.eval()
         layers = lora_layers(model)
         print(f"  adapter loaded beside the base, not merged ({len(layers)} LoRA layers)", flush=True)
+    elif against:
+        reference = load_model(base_model_id, False)[1]
+        reference.eval()
+        print(f"  the starting model {base_model_id} loaded beside it as the base side", flush=True)
 
-    drift = drift_pass(processor, model, peft, layers, scales, rows, pictures, mark, kind, max(1, batch // 4), max_len)
+    drift = drift_pass(processor, model, peft, layers, scales, rows, pictures, mark, kind, max(1, batch // 4), max_len,
+                       reference=reference)
 
     # read 2: the base's answers once, then the tuned model's at each scale
     with (model.disable_adapter() if peft else contextlib.nullcontext()):
-        base_text, base_len = _generate_rows(processor, model, plain_rows, pictures, mark, max_new_tokens, batch, "base answers")
+        base_text, base_len = _generate_rows(processor, reference if against else model, plain_rows, pictures, mark,
+                                             max_new_tokens, batch, "base answers")
     full_user = prompts.full("medium")                 # the user turn train.conversation builds for the form "full"
     records = []
     per_scale = {}
     for s in scales:
         if peft:
             set_scale(layers, s)
+        if peft or against:
             texts, lens = _generate_rows(processor, model, plain_rows, pictures, mark, max_new_tokens, batch, f"scale {s} answers")
         else:
             texts, lens = base_text, base_len
@@ -350,7 +371,8 @@ def run(model_id: str = "Qwen/Qwen3.5-4B", adapter: str | None = None, adapter_s
     base_take = [{"category": it["category"], "takes_row_form": takes_row_form(t or ""), "ended": n < max_new_tokens,
                   "length_ratio": 1.0, "chars": len(t or ""), "base_chars": len(t or ""), "f1": 1.0}
                  for it, t, n in zip(plain_rows, base_text, base_len)]
-    summary = {"package": __version__, "model": model_id, "adapter": adapter, "adapter_subfolder": adapter_subfolder, "held": held,
+    summary = {"package": __version__, "model": model_id, "adapter": adapter, "adapter_subfolder": adapter_subfolder,
+               "base_model": base_model_id, "held": held,
                "tag": tag, "scales": list(scales), "rows": len(rows), "detail_rows": len(detail_rows), "dropped_no_picture": dropped,
                "batch": batch, "max_new_tokens": max_new_tokens, "max_new_tokens_row": max_new_tokens_row,
                "base": {"takeover": takeover_summary(base_take)}, "by_scale": per_scale,
@@ -360,7 +382,7 @@ def run(model_id: str = "Qwen/Qwen3.5-4B", adapter: str | None = None, adapter_s
             fh.write(json.dumps(r, ensure_ascii=False) + "\n")
     with open(os.path.join(out, "summary.json"), "w", encoding="utf-8") as fh:
         json.dump(summary, fh, indent=1)
-    del model, processor
+    del model, processor, reference
     gc.collect()
     torch.cuda.empty_cache()
     if do_ship:

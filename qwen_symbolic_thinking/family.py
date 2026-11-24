@@ -18,6 +18,14 @@ processor's picture handling) is shared.
   default (the model crops each picture back by image_sizes). Its vision tower packs every picture of a batch into one sequence
   under a dense block mask; in a 64-picture batch on the card (bf16, about 250,000 patches) the pictures after the first few came
   out wrong, while one at a time they read right, so the vision tower takes a batch's pictures one at a time (prepare_model).
+- internvl (InternVL3.5 through transformers' own InternVL class, no repository code): one 448-pixel tile a picture (256
+  picture tokens, the processor's default); the chat template has no thinking switch and closes a turn with <|im_end|>; the
+  processor pads on its own default side (left) whatever the tokenizer says, so it is made to follow the tokenizer
+  (follow_padding_side). With the anima_eyes record (InternVL3.5-1B with Anima's own top layers put back: anima_eyes.py), the
+  config carries the record "anima_eyes": Anima's slot
+  (the language layers from first_base_layer up, and the final norm) is the Base's (Qwen3-0.6B-Base, Anima's text encoder):
+  every load checks its fingerprint (prepare_model), the LoRA targets the layers below it only (lora_targets), and a full
+  fine-tune keeps it frozen (frozen). InternVL as it is (no record) takes the common path.
 
 The repository code of these families runs only when a spec asks for it (trust_remote_code), loaded from a local snapshot at a
 pinned revision (the Phi-4 loader reads its own vision weights only from a local folder), on the transformers release it was
@@ -28,6 +36,7 @@ import re
 PHI4 = "phi4-siglip"
 MOLMO2 = "molmo2"
 MISTRAL3 = "mistral3"
+INTERNVL = "internvl"
 _MODE_TAG = re.compile(r"^\s*<nothink>\s*")
 
 
@@ -61,13 +70,52 @@ def input_grads(model_or_config) -> bool:
 def prepare_model(model) -> str | None:
     """Patch a loaded model where its family's own code fails our batches; returns a one-line note of what changed (None when the
     family needs nothing or the model is patched already). Molmo2: its image batching per picture row (mixed_batches). Ministral 3:
-    its vision tower one picture at a time (pictures_one_at_a_time)."""
+    its vision tower one picture at a time (pictures_one_at_a_time). Anima's eyes: nothing patched; its slot's fingerprint is
+    checked against its record (a model whose slot changed stops here), and its output head must not be tied to its word table
+    (it was built untied: a transformers that tied them at load would have replaced the head)."""
     kind = model_type(model)
     if kind == MOLMO2:
         return mixed_batches(model)
     if kind == MISTRAL3:
         return pictures_one_at_a_time(model)
+    rec = anima_eyes(model)
+    if rec is not None:
+        from .anima_eyes import check_slot
+        fp = check_slot(model, int(rec["first_base_layer"]), rec.get("slot_fingerprint"))
+        head, table = model.get_output_embeddings(), model.get_input_embeddings()
+        if head is not None and table is not None and head.weight.data_ptr() == table.weight.data_ptr():
+            raise ValueError(f"Anima's eyes ({rec.get('name')}): the output head (head {rec.get('head')!r}, built untied) is "
+                             "tied to the word table after the load: this transformers ignored tie_word_embeddings false")
+        return (f"Anima's eyes ({rec.get('name')}, head {rec.get('head')}): Anima's slot (language layers "
+                f"{rec['first_base_layer']}-27, the final norm) is the Base's (fingerprint {fp[:16]}...)")
     return None
+
+
+def anima_eyes(model_or_config) -> dict | None:
+    """The record of InternVL3.5-1B with Anima's top layers put back (anima_eyes.py), from the config's "anima_eyes" key; None for
+    every other model (InternVL as it is included)."""
+    cfg = getattr(model_or_config, "config", model_or_config)
+    rec = getattr(cfg, "anima_eyes", None)
+    return dict(rec) if isinstance(rec, dict) else None
+
+
+def lora_targets(model_or_config) -> str | None:
+    """The LoRA targets a family needs in place of the common pattern (train.TARGETS), or None. Anima's eyes: the language layers
+    below Anima's slot only."""
+    rec = anima_eyes(model_or_config)
+    if rec is None:
+        return None
+    from .anima_eyes import lora_targets as targets
+    return targets(int(rec["first_base_layer"]))
+
+
+def frozen(model_or_config, name: str) -> bool:
+    """Whether a parameter a full fine-tune would train stays frozen in its family: Anima's slot in Anima's eyes."""
+    rec = anima_eyes(model_or_config)
+    if rec is None:
+        return False
+    from .anima_eyes import is_slot
+    return is_slot(name, int(rec["first_base_layer"]))
 
 
 def mixed_batches(model) -> str | None:
@@ -155,13 +203,36 @@ def fix_padding(model_or_config, batch, pad_id) -> None:
 
 def prepare_processor(processor, model_or_config) -> None:
     """A processor that renders the family's chat template and batches its pictures: Phi-4's processor has no chat template
-    of its own (its tokenizer's renders); Ministral 3's image processor is told to pad (its config leaves do_pad null)."""
+    of its own (its tokenizer's renders); Ministral 3's image processor is told to pad (its config leaves do_pad null);
+    InternVL's processor pads on its tokenizer's side (follow_padding_side)."""
     kind = model_type(model_or_config)
     if kind == PHI4:
         processor.apply_chat_template = processor.tokenizer.apply_chat_template
     images = getattr(processor, "image_processor", None)
     if kind == MISTRAL3 and images is not None and getattr(images, "do_pad", True) is None:
         images.do_pad = True
+    if kind == INTERNVL:
+        follow_padding_side(processor)
+
+
+def follow_padding_side(processor) -> bool:
+    """InternVL's processor pads on the left by its own default, whatever its tokenizer's padding_side says (transformers 5.22:
+    setting tokenizer.padding_side = "right" still gave left-padded batches). The training collator masks each prompt counting
+    from the left edge, so a left-padded short row would be taught its own prompt. The processor is made to pad, at each call,
+    on the side its tokenizer names then (train.run sets right, the generation loaders left, the keep read switches between).
+    Returns whether it was changed (False: already following)."""
+    cls = type(processor)
+    if getattr(cls, "_follows_padding_side", False):
+        return False
+    original = cls.__call__
+
+    def __call__(self, *args, **kwargs):
+        if kwargs.get("padding") and "padding_side" not in kwargs:
+            kwargs["padding_side"] = self.tokenizer.padding_side
+        return original(self, *args, **kwargs)
+
+    processor.__class__ = type(cls.__name__, (cls,), {"__call__": __call__, "_follows_padding_side": True})
+    return True
 
 
 def apply_image_settings(processor, settings: dict | None) -> dict:

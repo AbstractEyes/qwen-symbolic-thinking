@@ -107,6 +107,29 @@ A training with resume on saves its whole state every 2 hours and once more when
 23.0): a Colab runtime ends at about 24, so the half hour later halves the steps the next runtime trains again. It is a setting:
 `"resume_before_h"` among a training's keys sets another hour, `null` none (`resume.LATE_SAVE_H` is the default).
 
+## Models added after the version-1 list (from 0.1.71)
+
+`registry.LATER` holds models added to the catalogue after the version-1 list (no version 1, no Space looker yet); `registry.get`
+finds them as it finds the others, and `registry.ENTRIES` stays the version-1 list. Such an entry may carry what its lane needs
+beyond the common recipe, and the generator reads it:
+
+| key | what the generator does with it |
+|---|---|
+| `prepare` | a tool run that comes first in the lane and makes the base model (`"makes"`: its files); every other run waits for that run (`waits_for_runs`) and for its first file (`waits_for`), so a failed build holds the lane back; a base already in the project repo is not made again |
+| `general_requests` | the general rows' text requests come from a requests file (`tools.anchors requests=`), with its counts; the run waits for the file |
+| `train_extra` | train keys every training of the model carries beside the recipe |
+| `full` | a full fine-tune beside the LoRA, on the same rows (its own run key, rate, batch, pace): its smoke and training join the lane, the two smokes first, then the full fine-tune (it cannot resume, so it takes the runtime's first hours), then the LoRA; the full fine-tune's reads load its shipped folder, and its two keep reads load the model it started from beside it as their base side (`tools.keep_read` `base_model_id`: a full fine-tune has no adapter off switch) |
+
+The first such model is Anima's eyes (`ae1b`, `anima_eyes.py`): InternVL3.5-1B with the top four language layers and the final
+norm of Qwen3-0.6B-Base (the text encoder of the Anima image model) put back, and the Base's word table as its output head
+(`anima_eyes.HEAD`, chosen by a caption check; `"internvl"` keeps InternVL's own head). Its lane builds the model from the two pinned
+sources in its first run (`tools.anima_eyes_base`, shipped to `base/InternVL3_5-1B-anima-last4/` of the project repo, loaded as
+`hub:base/InternVL3_5-1B-anima-last4`), keeps those top layers frozen and free of LoRA modules, and adds the slot term: the
+model's final states on short image prompts held to the text encoder's (`train.run(slot=1.0)`), read every log line on 24 held
+prompts (`slot_held`).
+
+    python -m qwen_symbolic_thinking.lines ae1b apache --project-repo <your-name>/<your-project>
+
 ## The reads of a line, one command (from 0.1.69)
 
 When a line's training and its reads are done, its checks are read from the project repo's records; nothing runs a model and

@@ -84,13 +84,14 @@ def test_run_takes_the_keeping_options_off_by_default():
         assert params[name].default == default, name
 
 
-def test_run_refuses_the_terms_on_a_full_finetune_and_the_general_terms_without_rows():
-    with pytest.raises(ValueError, match="LoRA only"):
-        train.run(rank=0, target_kl=1.0)
+def test_run_refuses_the_general_terms_without_rows():
+    # (until 0.1.70 a full fine-tune refused every keeping term; from 0.1.71 it reads the base side on a frozen reference copy)
     with pytest.raises(ValueError, match="pass anchors"):
         train.run(general_kl=1.0)
     with pytest.raises(ValueError, match="pass anchors"):
         train.run(rehearsal=0.5)
+    with pytest.raises(ValueError, match="pass anchors"):
+        train.run(rank=0, general_kl=1.0)
 
 
 # ----------------------------------------------------------------------------------------------------- the terms

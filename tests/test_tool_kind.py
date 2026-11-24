@@ -59,7 +59,9 @@ def test_rolled_moves_flattened_patches_by_whole_pictures_and_refuses_unequal_on
     pix = torch.arange(8, dtype=torch.float32).reshape(8, 1)
     out = picture_probe.rolled({"input_ids": torch.zeros(2, 3, dtype=torch.long), "pixel_values": pix, "image_grid_thw": grid})
     assert out["pixel_values"].flatten().tolist() == [4, 5, 6, 7, 0, 1, 2, 3]
-    assert picture_probe.rolled({"pixel_values": pix, "image_grid_thw": torch.tensor([[1, 2, 2], [1, 1, 4]])}) is None
+    # unequal token counts are refused (2 and 6 patches); the grids before (1x2x2 and 1x1x4) had equal counts, which rolled() is
+    # documented to accept, so this case failed whenever torch was present (the package venv skips it): fixed 2026-11-24 in 0.1.71
+    assert picture_probe.rolled({"pixel_values": pix, "image_grid_thw": torch.tensor([[1, 1, 2], [1, 2, 3]])}) is None
     assert picture_probe.rolled({"pixel_values": pix[:4].reshape(1, 4, 1)}) is None     # one picture: nothing to roll
 
 

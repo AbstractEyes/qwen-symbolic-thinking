@@ -124,3 +124,61 @@ def test_kl_per_position_agrees_with_keep_kl_full():
     per = kr.kl_per_position(zb, zt)
     assert per.shape == (5,) and float(per.mean()) == pytest.approx(float(keep.kl_full(zb, zt)), rel=1e-5)
     assert float(kr.kl_per_position(zb, zb).abs().max()) == pytest.approx(0.0, abs=1e-6)
+
+
+def test_a_full_finetune_reads_its_drift_against_the_model_it_started_from(monkeypatch):
+    """drift_pass with a reference (keep_read base_model_id): the base side is the reference's logits, the tuned side the
+    model's; the same weights read 0, changed weights read the KL of the two; without a reference the read is the model
+    against itself (0 by construction, as before)."""
+    torch = pytest.importorskip("torch")
+    from types import SimpleNamespace
+
+    from qwen_symbolic_thinking import keep, train
+
+    class Model(torch.nn.Module):                     # a stand-in causal model: an embedding and a head
+        def __init__(self, seed):
+            super().__init__()
+            g = torch.Generator().manual_seed(seed)
+            self.emb = torch.nn.Parameter(torch.randn(13, 6, generator=g))
+            self.head = torch.nn.Parameter(torch.randn(6, 13, generator=g))
+
+        @property
+        def device(self):
+            return self.emb.device
+
+        def forward(self, input_ids=None, attention_mask=None):
+            return SimpleNamespace(logits=self.emb[input_ids] @ self.head)
+
+    class Collate:                                    # the training collator's batch: the prompt masked, the answer kept
+        def __init__(self, *a, **kw):
+            pass
+
+        def __call__(self, pairs):
+            ids = torch.tensor([[1, 2, 3, 4, 5, 6], [2, 4, 6, 8, 10, 12]])
+            labels = ids.clone()
+            labels[:, :3] = -100
+            return {"input_ids": ids, "attention_mask": torch.ones_like(ids), "labels": labels}
+
+    monkeypatch.setattr(train, "Collator", Collate)
+    processor = SimpleNamespace(tokenizer=SimpleNamespace(padding_side="left"))
+    rows = [{"id": "a", "category": "text-held"}, {"id": "b", "category": "text-held"}]
+    model, same, other = Model(1), Model(1), Model(2)
+
+    def read(reference, scales=(1.0,)):
+        return kr.drift_pass(processor, model, False, None, scales, rows, {}, None, "qwen3_vl", 2, 2048, reference=reference)
+
+    alone = read(None, (0.0,))[0.0]
+    assert all(r["kl"] == 0.0 and r["nll_tuned"] == r["nll_base"] for r in alone.values())
+    assert all(r["kl"] == pytest.approx(0.0, abs=1e-6) for r in read(same)[1.0].values())
+    moved = read(other)[1.0]
+    batch = Collate()(None)
+    shifted = batch["labels"][:, 1:]
+    mask = shifted != -100
+    with torch.no_grad():
+        zb, zt = other(batch["input_ids"]).logits[:, :-1], model(batch["input_ids"]).logits[:, :-1]
+    for i, k in enumerate(("a", "b")):
+        want = float(keep.kl_full(zb[i][mask[i]], zt[i][mask[i]]))
+        assert want > 0.01 and moved[k]["kl"] == pytest.approx(want, rel=1e-5)
+        assert moved[k]["nll_base"] == pytest.approx(float(keep.ce_mean(zb[i][mask[i]], shifted[i][mask[i]])), rel=1e-5)
+        assert moved[k]["nll_tuned"] == pytest.approx(float(keep.ce_mean(zt[i][mask[i]], shifted[i][mask[i]])), rel=1e-5)
+    assert processor.tokenizer.padding_side == "left"

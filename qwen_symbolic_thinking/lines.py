@@ -55,7 +55,7 @@ PROJECT_FILES = {
     "text/notext_control_v1.jsonl": "200 photos without lettering (the two controls)",
 }
 PROJECT_FOLDERS = ("sft/", "anchors/", "text/", "licenses/", "screens/", "lora/", "full/", "keep/", "runs/", "resume/", "synth/",
-                   "extractions/", "manifests/")
+                   "extractions/", "manifests/", "base/")
 PICTURES = "AbstractPhil/qwen-thinking-images"      # the public picture lists the probe and museum reads draw from
 PROBE = {"manifest": f"hub:{PICTURES}/manifest_v1.4.jsonl", "split": "probe"}
 MUSEUM = {"manifest": f"hub:{PICTURES}/manifest_v1.2.jsonl", "split": "main", "sources": ["aic", "nga", "cleveland", "met"],
@@ -158,15 +158,22 @@ def general_answer_specs(entry: dict, lines: tuple, files: set, needs: str) -> t
         choices.append(f"general answers {a}/: in the project repo (not made again)")
     else:
         s = _top(entry, a.split("/")[-1], "tool", needs)
+        counts = {k: GENERAL[k] for k in ("n_picture", "n_text", "n_held_picture", "n_held_text")}
+        req = entry.get("general_requests")              # text requests from a requests file (tools.anchors requests=)
+        if req:
+            counts.update(n_text=req["n_text"], n_held_text=req["n_held_text"])
         s["tool"] = {"module": "anchors", "args": {"model_id": model, "rows": GENERAL["rows"],
-                                                    "held_pictures": list(GENERAL["held_pictures"]),
-                                                    **{k: GENERAL[k] for k in ("n_picture", "n_text", "n_held_picture", "n_held_text")},
+                                                    "held_pictures": list(GENERAL["held_pictures"]), **counts,
                                                     "batch": batch, **{k: GENERAL[k] for k in ("max_new_tokens",
-                                                                                               "max_new_tokens_text", "seed")}}}
+                                                                                               "max_new_tokens_text", "seed")},
+                                                    **({"requests": req["requests"]} if req else {})}}
+        if req and req["requests"].startswith("hub:"):
+            s["waits_for"] = [req["requests"][4:]]
         specs.append(s)
-        choices.append(f"general answers {a}/: missing -> {s['name']} (tools.anchors: {GENERAL['n_picture']} picture and "
-                       f"{GENERAL['n_text']} text requests, {GENERAL['n_held_picture']} + {GENERAL['n_held_text']} held, "
-                       f"batch {batch}, seed {GENERAL['seed']})")
+        choices.append(f"general answers {a}/: missing -> {s['name']} (tools.anchors: {counts['n_picture']} picture and "
+                       f"{counts['n_text']} text requests, {counts['n_held_picture']} + {counts['n_held_text']} held, "
+                       f"batch {batch}, seed {GENERAL['seed']}"
+                       + (f"; the text requests from {req['requests']}, the model writes every answer" if req else "") + ")")
     if "apache" in lines:
         if f"{a_by}/anchors.json" in files:
             choices.append(f"general answers {a_by}/ (the Apache-2.0 filter): in the project repo")
@@ -213,7 +220,10 @@ def line_specs(entry: dict, line: str, project: str, needs: str, progress_every_
     train.update(writers=registry.writers(entry), inputs=[f"hub:{s_set}"], anchors=f"hub:{anchors}",
                  anchor_batch=registry.V12_RECIPE["anchor_batch"], general_kl=registry.V12_RECIPE["general_kl"],
                  grad_checkpointing=registry.V12_RECIPE["grad_checkpointing"])
-    full = dict(train, resume=registry.V12_RECIPE["resume"], ship_every=registry.V12_RECIPE["ship_every"],
+    train.update(copy.deepcopy(entry.get("train_extra") or {}))       # a family's own train keys (Anima's eyes: the slot term)
+    is_full = bool(entry.get("is_full"))       # a full fine-tune (registry.full_entry): no resume, one ship at the end
+    full = dict(train, resume=False if is_full else registry.V12_RECIPE["resume"],
+                ship_every=0 if is_full else registry.V12_RECIPE["ship_every"],
                 lazy_pictures=registry.V12_RECIPE["lazy_pictures"], picture_workers=registry.V12_RECIPE["picture_workers"])
     if progress_every_min:
         full["progress_every_min"] = progress_every_min
@@ -223,13 +233,16 @@ def line_specs(entry: dict, line: str, project: str, needs: str, progress_every_
     stop = registry.smoke_stop(entry, line)
     smoke = _top(entry, n["smoke"], "train", needs)
     smoke.update(train=smoke_train, screen=False, waits_for=[s_set, anchors], stop_if=stop)
+    # the keep reads: a LoRA at its two strengths against its own off switch; a full fine-tune (no off switch) against the
+    # model it started from, loaded beside it (keep_read base_model_id), at its one strength
+    keep_args = ({"scales": [1.0], "base_model_id": entry["base"]} if is_full else {"scales": [1.0, 0.5]})
     reads = []
     for name, (kind, body) in zip(n["reads"], [
             ("extract", {**PROBE, **_common(entry, project)}),
             ("extract", {**MUSEUM, **_common(entry, project)}),
-            ("tool", {"module": "keep_read", "args": {"held": f"hub:{held}", "scales": [1.0, 0.5], "batch": entry["keep_batch"]}}),
+            ("tool", {"module": "keep_read", "args": {"held": f"hub:{held}", **keep_args, "batch": entry["keep_batch"]}}),
             ("extract", _text_read(entry, "closer", project, {"adapter_scale": 1.0, "wordings": OWN_WORDINGS})),
-            ("tool", {"module": "keep_read", "args": {"held": f"hub:{held_txt}", "scales": [1.0, 0.5], "batch": entry["keep_batch"]}}),
+            ("tool", {"module": "keep_read", "args": {"held": f"hub:{held_txt}", **keep_args, "batch": entry["keep_batch"]}}),
             ("extract", _text_read(entry, "deep", project, {"adapter_scale": 1.0, "wordings": OWN_WORDINGS})),
             ("extract", _text_read(entry, "lettering", project, {"adapter_scale": 1.0, "wordings": OWN_WORDINGS})),
             ("extract", _text_read(entry, "control_lettering", project, {"adapter_scale": 1.0, "wordings": OWN_WORDINGS})),
@@ -245,8 +258,12 @@ def line_specs(entry: dict, line: str, project: str, needs: str, progress_every_
                f"nothing shipped; stops at a steady pace above {stop['steady_s_per_step']} s a step after step "
                f"{stop['after_step']} ({registry.STOP_FACTOR if pace['measured'] else registry.STOP_FACTOR_ESTIMATE} x "
                f"{pace['s']} s, {pace['source']}) or a peak above {stop['peak_gb']} GB",
-               f"  training {n['train']}: LoRA r{full['rank']} alpha {full['alpha']}, lr {full['lr']}, {full['batch']} x "
+               f"  training {n['train']}: "
+               + ("a full fine-tune (rank 0; no resume, one ship at the end)" if is_full else
+                  f"LoRA r{full['rank']} alpha {full['alpha']}")
+               + f", lr {full['lr']}, {full['batch']} x "
                f"{full['grad_accum']}, max_len {full['max_len']}, one pass, general_kl {full['general_kl']}"
+               + "".join(f", {k} {v}" for k, v in (entry.get("train_extra") or {}).items())
                + (f", pictures {entry['image_settings']}" if entry["image_settings"] else "")
                + (f", repository code at {entry['base_revision']}" if entry["trust_remote_code"] else "")
                + f"; about {registry.hours(entry, line)} h at {pace['s']} s a step; waits for its smoke to pass"
@@ -332,14 +349,37 @@ def build_lane(entry: dict, which: str, project: str, files=None, lane: str | No
         choices.append(f"FORCED: {', '.join(off)} is not a line of {entry['name']} in the catalogue")
     if entry["blockers"]:
         choices += [f"FORCED past a blocker: {b}" for b in entry["blockers"]]
-    specs, general_choices = general_answer_specs(entry, lines, files_set if files_set is not None else set(), needs)
+    specs, prep_name, prep = [], None, entry.get("prepare")
+    if prep:                     # a run that makes the base model comes first; every other run waits for it
+        if files_set is not None and set(prep["makes"]) <= files_set:
+            choices.append(f"the base {entry['base']}: in the project repo (not made again)")
+        else:
+            s = _top(entry, prep["name"], "tool", needs)
+            s["tool"] = {"module": prep["module"], "args": copy.deepcopy(prep["args"])}
+            s["makes"] = list(prep["makes"])
+            specs.append(s)
+            prep_name = s["name"]
+            choices.append(f"the base {entry['base']}: made first by {prep_name} (tools.{prep['module']}, "
+                           f"{json.dumps(prep['args'])}; it makes {', '.join(prep['makes'])}); every later run waits for it "
+                           "(a failed build holds the whole lane back)")
+    general, general_choices = general_answer_specs(entry, lines, files_set if files_set is not None else set(), needs)
+    specs += general
     choices += general_choices
     if files_set is None:
         choices.append("the project repo's files are unknown: its general answers are made in this lane")
+    full_entry = registry.full_entry(entry)
     for i, line in enumerate(lines):
         made, line_choices = line_specs(entry, line, project, needs, progress_every_min)
-        specs += made
-        choices += line_choices
+        if full_entry is None:
+            specs += made
+            choices += line_choices
+        else:                   # the two smokes first, then the full fine-tune (it cannot resume: the runtime's first hours),
+            made_f, full_choices = line_specs(full_entry, line, project, needs, progress_every_min)   # then the LoRA
+            specs += [made[0], made_f[0], made_f[1], made[1]]
+            choices += line_choices + [c.replace(f"{line} line:", f"{line} line, the full fine-tune:", 1) for c in full_choices]
+            choices.append(f"  order: {made[0]['name']}, {made_f[0]['name']}, {made_f[1]['name']} (a full fine-tune cannot "
+                           f"resume, so it takes the runtime's first hours), {made[1]['name']} (resumes on another machine if "
+                           "the runtime ends)")
         if i == 0:
             if with_comparisons:
                 comp, comp_choices = comparison_specs(entry, project, files_set, needs)
@@ -348,6 +388,11 @@ def build_lane(entry: dict, which: str, project: str, files=None, lane: str | No
             else:
                 choices.append("comparisons: not in this lane (an -nc lane alone leaves them to the Apache-2.0 lane; "
                                "--comparisons adds them)")
+    if prep_name:
+        for s in specs:
+            if s["name"] != prep_name:
+                s["waits_for_runs"] = [prep_name] + [r for r in s.get("waits_for_runs") or [] if r != prep_name]
+                s["waits_for"] = list(dict.fromkeys([prep["makes"][0]] + list(s.get("waits_for") or [])))
     problems, missing = check(specs, files_set)
     return {"lane": lane, "lines": lines, "specs": specs, "choices": choices, "problems": problems, "missing": missing}
 
@@ -378,15 +423,20 @@ def check(specs: list, files: set | None) -> tuple:
     if files is None:
         return problems, []
     made, missing = set(), []
+
+    def have(p: str) -> bool:   # a file, or a folder (a hub: model id such as hub:base/<name>) with files in it
+        return p in files or p in made or any(f.startswith(p + "/") for f in list(files) + list(made))
+
     for s in specs:
         for unit in [s] + list(s.get("after") or []):
-            body = {k: v for k, v in unit.items() if k not in ("after", "waits_for", "waits_for_runs", "stop_if")}
+            body = {k: v for k, v in unit.items() if k not in ("after", "waits_for", "waits_for_runs", "stop_if", "makes")}
             for p in list(unit.get("waits_for") or []) + list(_paths(body)):
                 p = p.strip("/")
-                if p.startswith(PROJECT_FOLDERS) and p not in files and p not in made and f"{p} (read by {unit['name']})" not in missing:
+                if p.startswith(PROJECT_FOLDERS) and not have(p) and f"{p} (read by {unit['name']})" not in missing:
                     missing.append(f"{p} (read by {unit['name']})")
         if s["kind"] == "tool" and s["tool"]["module"] in ("anchors", "filter_anchors"):
             made.update(f"anchors/{s['name']}/{f}" for f in ("anchors.json", "held.json", "summary.json"))
+        made.update(s.get("makes") or [])        # what a run says it makes (the base an Anima's-eyes lane builds first)
     return problems, missing
 
 
@@ -473,18 +523,29 @@ def notebook(entry: dict, built: dict, project: str, version: str = __version__)
         order.append(what)
     hours = "; ".join(f"the {ln} line about {registry.hours(entry, ln)} h of training at {entry['pace'][ln]['s']} s a step"
                       + ("" if entry["pace"][ln]["measured"] else " (estimated)") for ln in lines)
+    fe = registry.full_entry(entry)
+    if fe is not None:
+        hours += "; " + "; ".join(f"its full fine-tune about {registry.hours(fe, ln)} h at {fe['pace'][ln]['s']} s a step"
+                                  + ("" if fe["pace"][ln]["measured"] else " (estimated)") for ln in lines)
+    about = entry.get("about") or f"[{entry['base']}](https://huggingface.co/{entry['base']})"
+    family_md = entry.get("about_training") or ""
     md = (f"# {entry['name']} v1.2: {title}\n\n"
           f"[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)]({BADGE.format(name=lane + '.ipynb')})\n\n"
-          f"The v1.2 fine-tune of [{entry['base']}](https://huggingface.co/{entry['base']}) on the rows of the public dataset "
+          f"The v1.2 fine-tune of {about} on the rows of the public dataset "
           f"[thought-symbolic-image-recaptioned](https://huggingface.co/datasets/{DATASET}) (release 5), held near the base model's "
           "behavior while it learns them (the general-row KL at weight 1, on general requests the base model answered itself), "
           "in one pass over the rows. The Apache-2.0 line trains on the dataset's Apache-2.0 part; the non-commercial line (-nc) "
           "on every row of the release; the held-out pictures are the same for both, so their reads compare.\n\n"
-          f"The queue runs, in order: {'; '.join(order)}. A smoke that runs slower or holds more memory than its limits fails, and "
+          + (family_md + "\n\n" if family_md else "")
+          + f"The queue runs, in order: {'; '.join(order)}. A smoke that runs slower or holds more memory than its limits fails, and "
           f"its training does not start. {hours[0].upper() + hours[1:]}.\n\n"
           "The training runs with resume on: its whole state saves to the project repo every 2 hours and once more after "
           f"{LATE_SAVE_H:g} hours of the runtime. If the runtime ends mid-run, open this notebook on a fresh runtime and run it "
-          "again: the lane continues the training from its saved state. Its progress file (runs/progress/<run>.json in the "
+          "again: the lane continues the training from its saved state. "
+          + ("The full fine-tune cannot resume (its state is the whole model and its optimizer), so it runs before the LoRA, in "
+             "the runtime's first hours; if the runtime ends during it, its marker stays at started and it runs again only when "
+             "its spec is queued again with \"retry\": true. " if fe is not None else "")
+          + "Its progress file (runs/progress/<run>.json in the "
           "project repo) says where it stands: `python -m qwen_symbolic_thinking.tools.progress <project repo>`.\n\n"
           f"Runtime: a GPU (the RTX PRO 6000, 95 GB) and the `HF_TOKEN` secret with write access to the project repo `{project}`, "
           "where every file of this lane lives (its training sets and inputs first: see the package's docs/registry_and_lanes.md). "
