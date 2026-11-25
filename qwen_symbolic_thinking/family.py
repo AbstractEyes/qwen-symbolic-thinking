@@ -19,9 +19,10 @@ processor's picture handling) is shared.
   under a dense block mask; in a 64-picture batch on the card (bf16, about 250,000 patches) the pictures after the first few came
   out wrong, while one at a time they read right, so the vision tower takes a batch's pictures one at a time (prepare_model).
 - internvl (InternVL3.5 through transformers' own InternVL class, no repository code): one 448-pixel tile a picture (256
-  picture tokens, the processor's default); the chat template has no thinking switch and closes a turn with <|im_end|>; the
-  processor pads on its own default side (left) whatever the tokenizer says, so it is made to follow the tokenizer
-  (follow_padding_side). With the anima_eyes record (InternVL3.5-1B with Anima's own top layers put back: anima_eyes.py), the
+  picture tokens, its image processor's config); the chat template has no thinking switch and closes a turn with <|im_end|>;
+  the processor pads on its own default side (left) whatever the tokenizer says and tiles every picture (13 tiles) whatever
+  its image processor says, so it is made to follow both (follow_padding_side; the tiling fixed in 0.1.72, after the lane's
+  smokes failed on rows cut inside a picture). With the anima_eyes record (InternVL3.5-1B with Anima's own top layers put back: anima_eyes.py), the
   config carries the record "anima_eyes": Anima's slot
   (the language layers from first_base_layer up, and the final norm) is the Base's (Qwen3-0.6B-Base, Anima's text encoder):
   every load checks its fingerprint (prepare_model), the LoRA targets the layers below it only (lora_targets), and a full
@@ -204,7 +205,7 @@ def fix_padding(model_or_config, batch, pad_id) -> None:
 def prepare_processor(processor, model_or_config) -> None:
     """A processor that renders the family's chat template and batches its pictures: Phi-4's processor has no chat template
     of its own (its tokenizer's renders); Ministral 3's image processor is told to pad (its config leaves do_pad null);
-    InternVL's processor pads on its tokenizer's side (follow_padding_side)."""
+    InternVL's processor pads on its tokenizer's side and tiles as its image processor says (follow_padding_side)."""
     kind = model_type(model_or_config)
     if kind == PHI4:
         processor.apply_chat_template = processor.tokenizer.apply_chat_template
@@ -216,10 +217,16 @@ def prepare_processor(processor, model_or_config) -> None:
 
 
 def follow_padding_side(processor) -> bool:
-    """InternVL's processor pads on the left by its own default, whatever its tokenizer's padding_side says (transformers 5.22:
-    setting tokenizer.padding_side = "right" still gave left-padded batches). The training collator masks each prompt counting
-    from the left edge, so a left-padded short row would be taught its own prompt. The processor is made to pad, at each call,
-    on the side its tokenizer names then (train.run sets right, the generation loaders left, the keep read switches between).
+    """InternVL's processor overrides two of its parts' own settings with defaults of its own (transformers 5.22), and is made
+    to follow its parts at each call instead:
+    - it pads on the left whatever its tokenizer's padding_side says (setting tokenizer.padding_side = "right" still gave
+      left-padded batches). The training collator masks each prompt counting from the left edge, so a left-padded short row
+      would be taught its own prompt. It pads on the side its tokenizer names then (train.run sets right, the generation
+      loaders left, the keep read switches between);
+    - it cuts every picture into tiles (up to max_patches 12 and a thumbnail: 13 x 256 = 3,328 picture tokens) whatever its
+      image processor's crop_to_patches says (false in InternVL3.5's config: one 448-pixel tile, 256 tokens). A row cut at
+      max_len then keeps part of its picture tokens while the vision tower still returns every tile ("Image features and image
+      tokens do not match"). It tiles as its image processor says then (apply_image_settings can change that per spec).
     Returns whether it was changed (False: already following)."""
     cls = type(processor)
     if getattr(cls, "_follows_padding_side", False):
@@ -229,6 +236,9 @@ def follow_padding_side(processor) -> bool:
     def __call__(self, *args, **kwargs):
         if kwargs.get("padding") and "padding_side" not in kwargs:
             kwargs["padding_side"] = self.tokenizer.padding_side
+        crop = getattr(getattr(self, "image_processor", None), "crop_to_patches", None)
+        if crop is not None and "crop_to_patches" not in kwargs:
+            kwargs["crop_to_patches"] = crop
         return original(self, *args, **kwargs)
 
     processor.__class__ = type(cls.__name__, (cls,), {"__call__": __call__, "_follows_padding_side": True})

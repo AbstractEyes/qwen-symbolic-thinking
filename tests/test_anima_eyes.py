@@ -398,6 +398,53 @@ def test_local_internvl_s_processor_pads_on_its_tokenizer_s_side():
 
 
 @local
+def test_local_internvl_s_processor_tiles_as_its_image_processor_says():
+    """As loaded, the processor cuts a picture into 13 tiles (3,328 tokens) although its image processor's config says one tile;
+    after follow_padding_side one tile and 256 tokens, and a caller's own choice still wins (the lane's smokes failed on rows
+    cut at max_len inside a 13-tile picture: 'tokens: 8176, features: 13312')."""
+    pytest.importorskip("transformers")
+    from PIL import Image
+    from transformers import AutoProcessor
+    proc = AutoProcessor.from_pretrained(HF)
+    img = Image.new("RGB", (640, 480), (200, 30, 30))
+    msgs = [{"role": "user", "content": [{"type": "image"}, {"type": "text", "text": "Describe the picture."}]}]
+    text = proc.apply_chat_template(msgs, add_generation_prompt=True, tokenize=False)
+    image_id = proc.tokenizer.convert_tokens_to_ids(proc.image_token)
+
+    def read(**kw):
+        b = proc(text=[text], images=[img], return_tensors="pt", **kw)
+        return int((b["input_ids"] == image_id).sum()), int(b["pixel_values"].shape[0])
+
+    assert proc.image_processor.crop_to_patches is False and read() == (3328, 13)        # its own default: tiles
+    family.follow_padding_side(proc)
+    assert read() == (256, 1) and read(crop_to_patches=True) == (3328, 13)
+
+
+def test_follow_padding_side_passes_the_image_processor_s_tiling():
+    """Without transformers: the patched call passes the image processor's crop_to_patches (and the tokenizer's side when
+    padding) unless the caller names them; a processor without the attribute gets neither."""
+    seen = []
+
+    class Proc:
+        def __init__(self, crop):
+            self.tokenizer = type("T", (), {"padding_side": "right"})()
+            self.image_processor = type("I", (), {"crop_to_patches": crop} if crop is not None else {})()
+
+        def __call__(self, *args, **kwargs):
+            seen.append(kwargs)
+
+    p = Proc(False)
+    assert family.follow_padding_side(p)
+    p(text=["a"], padding=True)
+    p(text=["a"], crop_to_patches=True)
+    q = Proc(None)
+    family.follow_padding_side(q)
+    q(text=["a"])
+    assert seen == [{"text": ["a"], "padding": True, "padding_side": "right", "crop_to_patches": False},
+                    {"text": ["a"], "crop_to_patches": True}, {"text": ["a"]}]
+
+
+@local
 def test_local_the_collator_masks_the_prompt_and_the_picture():
     torch = pytest.importorskip("torch")
     from PIL import Image
