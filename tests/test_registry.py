@@ -14,7 +14,9 @@ V1_LIST = {"9b": "Qwen/Qwen3.5-9B", "4b": "Qwen/Qwen3.5-4B", "2b": "Qwen/Qwen3.5
 def test_every_model_of_the_v1_list_has_every_field():
     assert {k: e["base"] for k, e in registry.ENTRIES.items()} == V1_LIST
     for key, e in registry.ENTRIES.items():
-        assert set(e) == set(registry.FIELDS), (key, set(e) ^ set(registry.FIELDS))
+        extra = set(e) - set(registry.FIELDS)
+        assert set(registry.FIELDS) <= set(e) and extra <= set(registry.EXTRA_FIELDS), (key, set(e) ^ set(registry.FIELDS))
+        assert extra == ({"general_requests"} if key in ("north", "glm46v") else set()), (key, extra)
         assert e["key"] == key and e["lane"] and e["general_answers"]["anchors"].startswith("anchors/")
         assert set(e["lines"]) <= set(registry.LINES) and set(e["pace"]) == set(e["lines"]) == set(e["peak"])
         assert set(e["licenses"]) == set(e["lines"])

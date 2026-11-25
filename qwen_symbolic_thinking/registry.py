@@ -388,6 +388,8 @@ ENTRIES = {
         "read_batch": 64, "keep_batch": KEEP_BATCH,                  # P_probe_north ran at 64
         "general_answers": {"anchors": "anchors/v11a_north", "anchors_by": "anchors/v11a_north_by",
                             "text": "anchors/v11txt_north"},
+        # its v1.2 lane's general text requests: the cleaned requests file, as Anima's eyes (ae1b) take them
+        "general_requests": {"requests": "hub:text/requests_qwen_v1_clean.json", "n_text": 500, "n_held_text": 40},
         "template": "no family-specific handling: the shared path (the chat template's own picture parts and turn end)",
         "pace": {"apache": _pace(3.6, False, _EST.format(v1=2.29, run="G_med4_2ep_north"))},
         "peak": {"apache": {"gb": None, "source": "not measured: its smoke measures it"}},
@@ -416,6 +418,8 @@ ENTRIES = {
         "read_batch": 64, "keep_batch": KEEP_BATCH,                  # P_probe_glm46v ran at 64
         "general_answers": {"anchors": "anchors/v11a_glm46v", "anchors_by": "anchors/v11a_glm46v_by",
                             "text": "anchors/v11txt_glm46v"},
+        # its v1.2 lane's general text requests: the cleaned requests file, as Anima's eyes (ae1b) take them
+        "general_requests": {"requests": "hub:text/requests_qwen_v1_clean.json", "n_text": 500, "n_held_text": 40},
         "template": "GLM-4V: the MLP fuses its gate and up projections (gate_up_proj), which the LoRA targets name",
         "pace": {"apache": _pace(14.4, False, _EST.format(v1=9.31, run="G_med4_2ep_glm46v"))},
         "peak": {"apache": {"gb": None, "source": "not measured: its smoke measures it"}},
@@ -535,6 +539,9 @@ FIELDS = ("key", "name", "line_name", "family", "model_type", "base", "base_revi
           "install", "lines", "scheduled", "lane", "lora", "lr", "batch", "grad_accum", "max_len", "image_settings", "read_batch",
           "keep_batch", "general_answers", "template", "pace", "peak", "repos", "tags", "licenses", "versions", "comparisons",
           "space", "todo", "blockers")
+# What an entry's lane may carry beyond the common recipe (lines.py reads them; the table below): a version-1 entry carries one
+# only when its v1.2 lane needs it (North-Micro-Vision and GLM-4.6V-Flash take their general text requests from a file).
+EXTRA_FIELDS = ("prepare", "general_requests", "train_extra", "full")
 
 # Models added to the catalogue after the version-1 list: no version 1 and no Space looker yet. Beside FIELDS an entry here may
 # carry what its lane needs beyond the common recipe (lines.py reads them):
