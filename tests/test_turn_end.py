@@ -159,3 +159,16 @@ def test_stop_ids_gemma_keeps_the_generation_config_list():
 
 def test_stop_ids_never_a_newline():
     assert stop_ids(NewlineEnd(), Model(gen_eos=248044)) == [248044, 248046]   # the model's and the tokenizer's, not "\n"
+
+
+def test_turn_end_id_is_the_template_s_own_token_and_one_generation_stops_on():
+    """The id a LoRA's "turn_end" token row names (train.run token_rows): the turn end's own token, without its newline."""
+    from qwen_symbolic_thinking.template import turn_end_id
+    assert turn_end_id(QwenProc()) == 248046 and turn_end_id(QwenProc(), Model(config_eos=248044)) == 248046
+    assert turn_end_id(GemmaProc(), Model(gen_eos=[1, 106, 50])) == 106
+    try:
+        turn_end_id(NewlineEnd())                    # a bare newline and no end token: nothing of the vocabulary to name
+    except ValueError as e:
+        assert "no turn end to name" in str(e)
+    else:
+        raise AssertionError("a turn end of no token must be refused")

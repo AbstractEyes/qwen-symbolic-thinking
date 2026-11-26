@@ -541,7 +541,7 @@ FIELDS = ("key", "name", "line_name", "family", "model_type", "base", "base_revi
           "space", "todo", "blockers")
 # What an entry's lane may carry beyond the common recipe (lines.py reads them; the table below): a version-1 entry carries one
 # only when its v1.2 lane needs it (North-Micro-Vision and GLM-4.6V-Flash take their general text requests from a file).
-EXTRA_FIELDS = ("prepare", "general_requests", "train_extra", "full")
+EXTRA_FIELDS = ("prepare", "general_requests", "train_extra", "full", "retrains")
 
 # Models added to the catalogue after the version-1 list: no version 1 and no Space looker yet. Beside FIELDS an entry here may
 # carry what its lane needs beyond the common recipe (lines.py reads them):
@@ -550,6 +550,10 @@ EXTRA_FIELDS = ("prepare", "general_requests", "train_extra", "full")
 # | general_requests | the text requests of its general rows from a requests file (tools.anchors requests=), with the counts |
 # | train_extra      | train keys its trainings carry beside the recipe (the slot term of Anima's eyes) |
 # | full             | a full fine-tune beside the LoRA, on the same rows: its run key, settings, pace and peak |
+# | retrains         | the LoRA trained again with some of its settings changed, each under its own run key: {key: the values
+#                    | it sets}; registry.get(key) gives the model's entry with those values (retrain_entry), and its lane is
+#                    | the one training with its reads. "no_smoke" (a reason) leaves its smoke out: the run it retrains measured
+#                    | its rows and settings. Its comparisons name the reads the model's own lane made ("earlier") |
 _AE = anima_eyes
 LATER = {
     # ------------------------------------------------------------------------------- Anima's eyes (InternVL3.5-1B, last 4)
@@ -610,6 +614,41 @@ LATER = {
                  "pace": _pace(1.8, False, "estimate: 2.09 s (Lucia 0.8B v1.2's LoRA) x 1.17 / 1.36 (the 0.8B's v1 full "
                                            "fine-tune F_med4_2ep_08b against its LoRA G_med4_2ep_08b); its smoke measures it"),
                  "peak": {"gb": None, "source": "not measured: its smoke measures it"}},
+        # The LoRA again, with its output head's turn-end row trained beside its pairs (ae1bt). The first LoRA
+        # (V12_A1_gkl1_1ep_ae1b_by) wrote each row right and then never ended it: junk tokens and newlines to the token cap,
+        # so every read rejected its rows (0 or 1 kept of every set; the full fine-tune kept 97-100% of the text reads). The
+        # model's output head is the Base's word table, whose <|im_end|> row (151645) was never trained (norm 0.350, one of
+        # 2,245 rows at that norm; trained rows have a median of 0.968); the reads stop on that token, and the LoRA of layers
+        # 0-23 did not raise it through the frozen top layers. The full fine-tune trains its head (that row moved the most of
+        # all rows, relative change 0.291) and ends its rows. The head is not part of Anima's slot: Anima reads the final states.
+        "retrains": {
+            "ae1bt": {
+                "lora": {"rank": 32, "alpha": 64, "token_rows": {"lm_head": ["turn_end"]}},
+                "no_smoke": ("the LoRA it retrains measured these rows and settings (V12_A1_gkl1_1ep_ae1b_by after its smoke "
+                             "S_v12_smoke_gc1_ae1b_t1: 10,137 steps in 338.9 min, peak 21.29 GB); the head's row adds 1,024 "
+                             "trained numbers to its 17,301,504"),
+                "pace": {"apache": _pace(2.0, False, "estimate: the LoRA it retrains, V12_A1_gkl1_1ep_ae1b_by, measured 2.0 s a "
+                                                     "step (10,137 steps in 338.9 min); the head's row adds one copy of the "
+                                                     "head a forward")},
+                "peak": {"apache": {"gb": 21.29, "source": "estimate: the LoRA it retrains peaked at 21.29 GB"}},
+                # the base comparisons ran in the model's own lane, under these names (not made again)
+                "comparisons": [{"of": "base", "reads": [],
+                                 "earlier": {"closer": "XT_base_ae1b_noadapter_t1", "deep": "XT_base_ae1b_deep",
+                                             "lettering": "XTA_base_ae1b", "control_lettering": "XCA2_base_ae1b",
+                                             "control": "XC2_base_ae1b"}}],
+                "todo": ["repos apache: a release repo, named at a release",
+                         "its reads: whether its rows end (the first LoRA's never did), before it is called done"],
+                "about_retrain": ("This lane trains the LoRA again (the first was V12_A1_gkl1_1ep_ae1b_by) on the same rows, "
+                                  "with the same recipe, slot term and general rows, and one change: the output head's "
+                                  "turn-end row (<|im_end|>, the token every read stops on) trains beside the LoRA pairs "
+                                  "(1,024 numbers, PEFT's trainable token rows; the rest of the head stays frozen). The first "
+                                  "LoRA wrote its rows and never ended them: its head is the Base's word table, whose "
+                                  "turn-end row was never trained, and a LoRA of the lower layers did not raise that token. "
+                                  "Anima reads the final states, not the head, so the row does not touch Anima's slot. The "
+                                  "base comparisons and the general answers were made by the first lane and are not made "
+                                  "again; its pace and memory were measured there, so it runs without a smoke."),
+            },
+        },
     },
 }
 
@@ -623,9 +662,15 @@ def all_keys() -> list:
     return list(ENTRIES) + list(LATER)
 
 
+def retrain_keys() -> list:
+    """The run keys of every retrain (an entry's "retrains"), in registry order."""
+    return [k for e in list(ENTRIES.values()) + list(LATER.values()) for k in (e.get("retrains") or {})]
+
+
 def get(name: str) -> dict:
     """An entry (a deep copy) by its run key, its base model id, one of its release repos or one of its Space looker keys
-    (case does not matter); the version-1 list first, then the later additions (LATER)."""
+    (case does not matter); the version-1 list first, then the later additions (LATER). A retrain's run key gives the retrain's
+    entry (retrain_entry)."""
     want = str(name).strip().lower()
     for key, e in list(ENTRIES.items()) + list(LATER.items()):
         names = {key, e["base"].lower(), e["base"].split("/")[-1].lower(), e["name"].lower()}
@@ -633,7 +678,11 @@ def get(name: str) -> dict:
         names |= {str(k).lower() for k in (e.get("space") or {}).get("lookers", {}).values()}
         if want in names:
             return copy.deepcopy(e)
-    raise KeyError(f"no model {name!r} in the registry; its keys: {', '.join(all_keys())}")
+    for e in list(ENTRIES.values()) + list(LATER.values()):
+        for key in e.get("retrains") or {}:
+            if want == key.lower():
+                return retrain_entry(e, key)
+    raise KeyError(f"no model {name!r} in the registry; its keys: {', '.join(all_keys() + retrain_keys())}")
 
 
 def full_entry(entry: dict) -> dict | None:
@@ -652,17 +701,33 @@ def full_entry(entry: dict) -> dict | None:
     return e
 
 
+def retrain_entry(entry: dict, key: str) -> dict:
+    """The entry of a retrain of a model's LoRA (an entry's "retrains"), shaped as an entry the lane generator takes: the model's
+    own entry with the retrain's run key and every value the retrain sets (its LoRA settings, pace, peak, comparisons, ...);
+    "retrain_of" names the model's key. A retrain carries no full fine-tune and no retrains of its own."""
+    r = (entry.get("retrains") or {}).get(key)
+    if r is None:
+        raise KeyError(f"{entry['key']} has no retrain {key!r}")
+    e = copy.deepcopy(entry)
+    e.update(copy.deepcopy(r))
+    e.update(key=key, full=None, retrains=None, retrain_of=entry["key"])
+    return e
+
+
 def recipe(entry: dict) -> dict:
     """The train keys of the model's v1.2 training, in the order the v1.2 specs carry them (without its inputs, general rows
-    and writers, which the lane fills): its own settings and V12_RECIPE."""
+    and writers, which the lane fills): its own settings and V12_RECIPE. A LoRA whose settings name token rows (lora
+    "token_rows": rows of a module trained beside the pairs, train.run token_rows) carries them after its alpha."""
     out = {"model_id": entry["base"]}
     if entry["trust_remote_code"]:
         out.update(trust_remote_code=True, revision=entry["base_revision"])
     if entry["image_settings"]:
         out["image_settings"] = copy.deepcopy(entry["image_settings"])
-    out.update(rank=entry["lora"]["rank"], alpha=entry["lora"]["alpha"], batch=entry["batch"], grad_accum=entry["grad_accum"],
-               max_len=entry["max_len"], epochs=V12_RECIPE["epochs"], lr=entry["lr"], seed=V12_RECIPE["seed"],
-               seed_adapter=V12_RECIPE["seed_adapter"])
+    out.update(rank=entry["lora"]["rank"], alpha=entry["lora"]["alpha"])
+    if entry["lora"].get("token_rows"):
+        out["token_rows"] = copy.deepcopy(entry["lora"]["token_rows"])
+    out.update(batch=entry["batch"], grad_accum=entry["grad_accum"], max_len=entry["max_len"], epochs=V12_RECIPE["epochs"],
+               lr=entry["lr"], seed=V12_RECIPE["seed"], seed_adapter=V12_RECIPE["seed_adapter"])
     return out
 
 
@@ -705,7 +770,9 @@ def describe(entry: dict) -> str:
            + (f" at {e['base_revision']}" if e["base_revision"] else ""),
            f"  lines {', '.join(e['lines'])}; " + ("trained" if e["scheduled"] else "training instructions only")
            + f"; lane {e['lane']}",
-           f"  LoRA r{e['lora']['rank']} alpha {e['lora']['alpha']}; lr {e['lr']}; batch {e['batch']} x {e['grad_accum']}; "
+           f"  LoRA r{e['lora']['rank']} alpha {e['lora']['alpha']}"
+           + (f" (token rows {json.dumps(e['lora']['token_rows'])})" if e["lora"].get("token_rows") else "")
+           + f"; lr {e['lr']}; batch {e['batch']} x {e['grad_accum']}; "
            f"max_len {e['max_len']}; pictures {e['image_settings'] or 'the processor default'}; reads at batch {e['read_batch']}",
            f"  transformers {e['transformers'] or '>=5 (the queue default)'}; repository code "
            f"{'yes' if e['trust_remote_code'] else 'no'}; install {e['install']['transformers']}"
@@ -713,13 +780,20 @@ def describe(entry: dict) -> str:
     for line in e["lines"]:
         p, pk = e["pace"][line], e["peak"][line]
         out.append(f"  {line}: {p['s']} s a step ({p['source']}); about {hours(e, line)} h of training; peak "
-                   f"{pk['gb'] if pk['gb'] is not None else '-'} GB ({pk['source']}); smoke stops at {smoke_stop(e, line)}")
+                   f"{pk['gb'] if pk['gb'] is not None else '-'} GB ({pk['source']}); "
+                   + ("no smoke" if e.get("no_smoke") else f"smoke stops at {smoke_stop(e, line)}"))
+    if e.get("retrain_of"):
+        out.insert(1, f"  a retrain of {e['retrain_of']}'s LoRA under its own run key"
+                   + (f"; no smoke: {e['no_smoke']}" if e.get("no_smoke") else ""))
     f = full_entry(e)
     if f is not None:
         for line in e["lines"]:
             out.append(f"  {line} full fine-tune ({f['key']}): lr {f['lr']}; batch {f['batch']} x {f['grad_accum']}; "
                        f"{f['pace'][line]['s']} s a step ({f['pace'][line]['source']}); about {hours(f, line)} h of training; "
                        f"smoke stops at {smoke_stop(f, line)}")
+    for key, r in (e.get("retrains") or {}).items():
+        out.append(f"  retrain {key}: " + "; ".join(f"{k} {json.dumps(v)}" for k, v in r.items()
+                                                     if k in ("lora", "lr", "batch", "grad_accum", "max_len")))
     if e.get("prepare"):
         out.append(f"  the base is made by the lane's first run {e['prepare']['name']} (tools.{e['prepare']['module']}): "
                    f"{', '.join(e['prepare']['makes'])}")
@@ -743,9 +817,9 @@ def describe(entry: dict) -> str:
 def main(argv=None) -> None:
     import argparse
     ap = argparse.ArgumentParser(description="Print the registry's entries and their open values.")
-    ap.add_argument("keys", nargs="*", help="model keys (default: every entry)")
+    ap.add_argument("keys", nargs="*", help="model keys (default: every entry, then every retrain)")
     args = ap.parse_args(argv)
-    for k in args.keys or all_keys():
+    for k in args.keys or all_keys() + retrain_keys():
         print(describe(get(k)) + "\n")
 
 

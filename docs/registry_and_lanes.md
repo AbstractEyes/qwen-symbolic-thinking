@@ -130,6 +130,41 @@ prompts (`slot_held`).
 
     python -m qwen_symbolic_thinking.lines ae1b apache --project-repo <your-name>/<your-project>
 
+## Token rows beside a LoRA, and retrains (from 0.1.74)
+
+An entry's LoRA settings may name rows of a module's weight that train beside the LoRA pairs, `"lora": {"rank": 32, "alpha": 64,
+"token_rows": {"lm_head": ["turn_end"]}}`. The recipe carries them after the alpha, and `train.run(token_rows=...)` passes them
+to PEFT as trainable token rows (`LoraConfig(trainable_token_indices=...)`): each named row is replaced by a trained copy that
+starts as the original, and the rest of the module stays frozen. `"turn_end"` names the token the chat template closes an answer
+with (`template.turn_end_id`: it must be one token, and one that generation stops on); plain token ids work too. The run's log
+prints the module, the ids, the tokens and the numbers they add beside "LoRA modules by name", and its summary keeps them
+(`"token_rows"`).
+
+Where the rows go:
+
+| path | what happens to the rows |
+|---|---|
+| the step ships and the final adapter | saved in the adapter file (`...lm_head.token_adapter.trainable_tokens_delta`), their ids in `adapter_config.json` (`trainable_token_indices`) |
+| the resume state | their values with the adapter, their Adam moments with the optimizer's; a resumed run takes both back |
+| the keeping terms and the keep reads' base side | the adapter's off switch reads the module's original rows: the base model |
+| a read at a scale (`tools.keep_read` scales, `adapter_scale`) | original + s (trained - original), the delta form the pairs take; 1 gives the trained rows exactly, 0 the base's |
+| a merge (`merge_and_unload`, the extraction reads) | exactly those rows of the module change |
+| Anima's slot | untouched: the output head is not part of it (Anima reads the final states) |
+
+A PEFT that cannot train them stops the run before any picture is fetched (`checks.peft_token_rows`); a lane notebook of such a
+LoRA installs PEFT 0.21.2 or later.
+
+An entry's `"retrains"` names its LoRA trained again with some settings changed: `{<run key>: <the values it sets>}`.
+`registry.get(<run key>)` gives the model's entry with those values (`registry.retrain_entry`; `"retrain_of"` names the model),
+and the generator builds its lane like any other: the base and the general answers already in the project repo are not made
+again, the training is followed by its nine reads under the retrain's own run names, `"no_smoke"` (with its reason) leaves the
+smoke out when the run it retrains measured the same rows and settings, and its comparisons name the reads the model's own lane
+made (`"earlier"`), so none is made again. The first one is `ae1bt`: Anima's eyes' LoRA with its output head's turn-end row
+trained. Their first LoRA wrote each row and never ended it: that head is Qwen3-0.6B-Base's word table, whose `<|im_end|>`
+row was never trained, and a LoRA of the lower layers did not raise that token.
+
+    python -m qwen_symbolic_thinking.lines ae1bt apache --project-repo <your-name>/<your-project>
+
 ## The reads of a line, one command (from 0.1.69)
 
 When a line's training and its reads are done, its checks are read from the project repo's records; nothing runs a model and

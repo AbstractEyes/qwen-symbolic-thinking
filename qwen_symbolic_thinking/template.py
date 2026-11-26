@@ -1,6 +1,7 @@
 """What a model's own chat template says about the end of an answer: the text the template writes after an assistant turn
-(the training examples end with it) and the token ids generation must stop on (the model's own, the tokenizer's, and the
-template's turn end)."""
+(the training examples end with it), the token ids generation must stop on (the model's own, the tokenizer's, and the
+template's turn end), and the id of the turn end's own token (a LoRA may train that row of its output head: train.run
+token_rows)."""
 from __future__ import annotations
 
 
@@ -29,6 +30,24 @@ def turn_end(processor) -> str:
         assert eos, f"the chat template writes nothing after an assistant turn and the tokenizer names no end token: {text[-80:]!r}"
         return eos
     return end
+
+
+def turn_end_id(processor, model=None) -> int:
+    """The id of the token that opens the chat template's turn end (<|im_end|> for Qwen3.5 and InternVL3.5, <turn|> for Gemma 4):
+    the turn end (turn_end) without its trailing whitespace, which must be one token of the vocabulary; with the model, it must
+    also be one of the ids generation stops on (stop_ids), so it is the token every read stops on. Raises ValueError otherwise
+    (a turn end of several tokens, or none at all: a template that closes an answer with a bare newline and a tokenizer that
+    names no end token)."""
+    try:
+        end = turn_end(processor).strip()
+    except AssertionError as e:
+        raise ValueError(f"the chat template has no turn end to name: {e}") from None
+    ids = processor.tokenizer(end, add_special_tokens=False)["input_ids"] if end else []
+    if len(ids) != 1:
+        raise ValueError(f"the chat template's turn end {end!r} is {len(ids)} tokens of the vocabulary, not one: {ids}")
+    if model is not None and int(ids[0]) not in stop_ids(processor, model):
+        raise ValueError(f"the turn end {end!r} (id {ids[0]}) is not among the ids generation stops on {stop_ids(processor, model)}")
+    return int(ids[0])
 
 
 def _ids(x) -> list:

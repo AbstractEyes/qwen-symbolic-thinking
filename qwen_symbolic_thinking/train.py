@@ -25,7 +25,7 @@ from .hub import fetch_folder, model_short, resolve_model, ship
 from .resume import Counts
 from .extract import fetch_images                # by url list or by locator (a pretrain shard row, a Hub file, a zip member)
 from .screen import encode, load_inputs, load_vlm, preflight
-from .template import stop_ids, turn_end                 # the template's turn end (training examples end with it) and the stop ids
+from .template import stop_ids, turn_end, turn_end_id    # the template's turn end (training examples end with it), the stop ids
 
 # The language model's projections, by name (the vision side, under `visual` in Qwen3.5 or `embed_vision` in Gemma 4, is left
 # alone): the attention layers' q/k/v/o, every layer's MLP, and Qwen3.5's linear-attention token/value projections (in_proj_qkv,
@@ -171,6 +171,140 @@ def lora_report(model) -> dict:
         if hasattr(module, "lora_A"):
             hits[name.rsplit(".", 1)[-1]] += 1
     return dict(hits)
+
+
+# ---------------------------------------------------------------------------------------- token rows beside a LoRA
+TURN_END = "turn_end"     # a token row named by what it is: the chat template's turn end (template.turn_end_id)
+
+
+def check_token_rows_spec(token_rows) -> dict | None:
+    """A LoRA's token rows as a run takes them, {module name: [token id or "turn_end", ...]} (e.g. the output head's turn-end
+    row, {"lm_head": ["turn_end"]}), checked before anything loads; None or {} gives None. A module without rows, an id below
+    0 or a word other than "turn_end" is refused."""
+    if not token_rows:
+        return None
+    if not isinstance(token_rows, dict):
+        raise ValueError(f"token_rows is {{module name: [token ids]}}, not {type(token_rows).__name__}")
+    out = {}
+    for module, rows in token_rows.items():
+        if not isinstance(module, str) or not module:
+            raise ValueError(f"token_rows: a module name, not {module!r}")
+        if isinstance(rows, (str, int)) or not rows:
+            raise ValueError(f"token_rows[{module!r}]: a list of token ids or {TURN_END!r}, not {rows!r}")
+        for r in rows:
+            if not (r == TURN_END or (isinstance(r, int) and not isinstance(r, bool) and r >= 0)):
+                raise ValueError(f"token_rows[{module!r}]: {r!r} is neither a token id nor {TURN_END!r}")
+        out[module] = list(rows)
+    return out
+
+
+def resolve_token_rows(token_rows, processor, model=None) -> dict | None:
+    """{module name: [token ids]} of the rows a LoRA trains beside its pairs: "turn_end" becomes the id of the chat template's
+    turn end (template.turn_end_id: one token; with the model, one of the ids generation stops on); ids keep their order, a
+    repeat is dropped, and an id past the tokenizer's vocabulary is refused. None for no rows."""
+    rows = check_token_rows_spec(token_rows)
+    if rows is None:
+        return None
+    tok = getattr(processor, "tokenizer", processor)
+    size = len(tok) if hasattr(tok, "__len__") else None
+    out = {}
+    for module, wanted in rows.items():
+        ids = []
+        for r in wanted:
+            i = turn_end_id(processor, model) if r == TURN_END else int(r)
+            if size is not None and i >= size:
+                raise ValueError(f"token_rows[{module!r}]: id {i} is past the tokenizer's {size:,} tokens")
+            if i not in ids:
+                ids.append(i)
+        out[module] = ids
+    return out
+
+
+def lora_config(rank: int, alpha: int, dropout: float, targets, token_rows: dict | None = None):
+    """The LoRA's PEFT config: rank, alpha, dropout, no bias, the target modules. With token_rows ({module name: [token ids]},
+    resolve_token_rows) those rows of those modules train beside the pairs (PEFT's trainable token rows,
+    trainable_token_indices: each named row of the module's weight is replaced by a trained copy that starts as the original;
+    every other row stays the base's)."""
+    from peft import LoraConfig, TaskType
+    extra = {"trainable_token_indices": {k: [int(i) for i in v] for k, v in token_rows.items()}} if token_rows else {}
+    return LoraConfig(r=rank, lora_alpha=alpha, lora_dropout=dropout, bias="none", target_modules=targets,
+                      task_type=TaskType.CAUSAL_LM, **extra)
+
+
+def build_lora(model, rank: int, alpha: int, dropout: float, targets, token_rows: dict | None = None, seed: int | None = None):
+    """A fresh LoRA on the model (PEFT's get_peft_model with lora_config's settings). With seed the global generator is seeded
+    first, so the starting A matrices follow it (seed_adapter); the token rows start as the module's own rows, so they draw
+    nothing from it. With token_rows the wrapped rows are checked against the asked ones (check_token_rows)."""
+    from peft import get_peft_model
+    config = lora_config(rank, alpha, dropout, targets, token_rows)
+    if seed is not None:        # the starting A matrices follow the seed (otherwise every process draws its own)
+        from transformers import set_seed
+        set_seed(seed)
+    wrapped = get_peft_model(model, config)
+    if token_rows:
+        check_token_rows(wrapped, token_rows)
+    return wrapped
+
+
+def _token_layers(model) -> list:
+    """(the module's name, its layer) for each layer of token rows a PEFT model trains (keep.is_token_layer), the name without
+    PEFT's own prefix and the layer's attribute name ("lm_head" for base_model.model.lm_head.token_adapter)."""
+    out = []
+    for name, module in model.named_modules():
+        if keep.is_token_layer(module):
+            short = name[len("base_model.model."):] if name.startswith("base_model.model.") else name
+            out.append((short[:-len(".token_adapter")] if short.endswith(".token_adapter") else short, module))
+    return out
+
+
+def token_rows_report(model, tokenizer=None) -> dict:
+    """{module name: {"ids", "tokens", "numbers", "dtype"}} for the token rows a PEFT model trains beside its pairs: the
+    module, the row ids and (with a tokenizer) their text, the numbers they add and their dtype; {} for none."""
+    out = {}
+    for module, layer in _token_layers(model):
+        ids, numbers, dtype = [], 0, None
+        for adapter, p in layer.trainable_tokens_delta.items():
+            ids += [int(i) for i in layer.token_indices[adapter]]
+            numbers += int(p.numel())
+            dtype = str(p.dtype).replace("torch.", "")
+        rec = {"ids": ids, "numbers": numbers, "dtype": dtype}
+        if tokenizer is not None:
+            rec["tokens"] = list(tokenizer.convert_ids_to_tokens(ids))
+        out[module] = rec
+    return out
+
+
+def check_token_rows(model, token_rows: dict) -> dict:
+    """The token rows a wrapped model trains must be the ones asked ({module name: [token ids]}): one layer for each module
+    (PEFT matches a module by the end of its name), the same ids in the same order, each row as wide as the module's weight, and
+    no other layer of rows. A PEFT that wrapped nothing, or something else, stops the run here. Returns token_rows_report."""
+    layers = _token_layers(model)
+    report = token_rows_report(model)
+    matched = set()
+    for module, want in token_rows.items():
+        hit = [(name, layer) for name, layer in layers if name == module or name.endswith("." + module)]
+        if len(hit) != 1:
+            raise ValueError(f"token rows of {module!r}: {len(hit)} layers hold them ({[n for n, _ in hit]}); this PEFT did "
+                             "not wrap the module as asked")
+        name, layer = hit[0]
+        width = int(layer.get_base_layer().weight.shape[1])
+        got = report[name]
+        if got["ids"] != [int(i) for i in want] or got["numbers"] != len(want) * width:
+            raise ValueError(f"token rows of {module!r}: {got['ids']} ({got['numbers']:,} numbers) trained, {list(want)} asked "
+                             f"({len(want) * width:,} numbers, rows {width} wide)")
+        matched.add(name)
+    extra = [n for n, _ in layers if n not in matched]
+    if extra:
+        raise ValueError(f"token rows nobody asked for: {extra}")
+    return report
+
+
+def _rows_of_config(cfg) -> dict:
+    """The token rows a loaded adapter's config trains ({module name: [ids]}; {} for none)."""
+    rows = getattr(cfg, "trainable_token_indices", None) or {}
+    if not isinstance(rows, dict):          # a plain list names rows of the input embedding
+        rows = {"embed_tokens": list(rows)}
+    return {k: [int(i) for i in v] for k, v in rows.items()}
 
 
 def load_items(inputs) -> list:
@@ -376,7 +510,7 @@ def run(model_id: str = "Qwen/Qwen3.5-9B", inputs="hub:sft/sft_v1.json", out_dir
         resume: bool = False, resume_every_h: float = 2.0, resume_before_h: float | None = saved_state.LATE_SAVE_H,
         lazy_pictures: bool = False, picture_workers: int = 16, grad_checkpointing: bool = True,
         progress_every_min: float | None = None, slot: float = 0.0, slot_batch: int = 4, slot_from=None,
-        slot_max_len: int | None = None) -> dict:
+        slot_max_len: int | None = None, token_rows: dict | None = None) -> dict:
     """Train the adapter; return {adapter_dir, path_in_repo, steps, s_per_step, train_loss, ...}. With init_adapter (see
     adapter_source) training continues from that trained adapter instead of a fresh LoRA; its rank and alpha must be the ones passed.
     With system (see prompts.system) every example carries that system turn before its user turn. Rank 0 is a full fine-tune of
@@ -424,10 +558,21 @@ def run(model_id: str = "Qwen/Qwen3.5-9B", inputs="hub:sft/sft_v1.json", out_dir
     the 24 held prompts (slot_held: the centered cosine of the final states, the Base's mean state removed; the hybrid starts
     at 0.805).
     slot_max_len caps a slot prompt's tokens (anima_eyes.SLOT_MAX_LEN by default). The slot settings join the settings a
-    resume checks only when slot is on (a run without them compares as before)."""
+    resume checks only when slot is on (a run without them compares as before).
+
+    token_rows (a LoRA only): rows of a module's weight that train beside the LoRA pairs, {module name: [token id or
+    "turn_end", ...]}, through PEFT's trainable token rows (lora_config): e.g. {"lm_head": ["turn_end"]} trains the output
+    head's row of the chat template's turn end (template.turn_end_id, resolved when the processor loads), for a model whose head
+    never learned to write that token (Anima's eyes: the Base's word table, whose <|im_end|> row was never trained). Each row
+    starts as the module's own; the rest of the module stays frozen. The rows save, ship, resume and merge with the adapter,
+    the adapter's off switch reads the module's original rows (the keeping terms' base side), and a scale interpolates them
+    with the pairs (keep.scale_adapter, tools.keep_read). They join the settings a resume checks only when given."""
     if keys not in chain.KEYS:
         raise ValueError(f"unknown keys {keys!r}: one of {chain.KEYS}")
     full = rank == 0
+    token_rows = check_token_rows_spec(token_rows)     # checked before anything loads; "turn_end" is resolved at the load
+    if token_rows and full:
+        raise ValueError("token_rows train rows of a module beside a LoRA's pairs; a full fine-tune trains the whole module")
     keep_on = general_kl > 0 or target_kl > 0 or rehearsal > 0 or slot > 0
     needs_reference = full and (general_kl > 0 or target_kl > 0)   # a full fine-tune has no off switch: a frozen copy reads the base
     if (general_kl > 0 or rehearsal > 0) and not anchors:
@@ -443,7 +588,8 @@ def run(model_id: str = "Qwen/Qwen3.5-9B", inputs="hub:sft/sft_v1.json", out_dir
         "targets": targets, "image_settings": image_settings, "keys": keys, "max_steps": max_steps, "anchors": anchors,
         "anchor_batch": anchor_batch, "general_kl": general_kl, "target_kl": target_kl, "rehearsal": rehearsal,
         "writers": writers, "seed_adapter": seed_adapter,
-        **({"slot": slot, "slot_batch": slot_batch, "slot_from": slot_from, "slot_max_len": slot_max_len} if slot > 0 else {})})
+        **({"slot": slot, "slot_batch": slot_batch, "slot_from": slot_from, "slot_max_len": slot_max_len} if slot > 0 else {}),
+        **({"token_rows": token_rows} if token_rows else {})})
     store = saved_state.HubStore(repo) if resume else None
     found = saved_state.load(store, tag, os.path.join(out_dir, "resume", tag)) if resume else None
     if found is not None:
@@ -462,7 +608,12 @@ def run(model_id: str = "Qwen/Qwen3.5-9B", inputs="hub:sft/sft_v1.json", out_dir
         from .checks import peft_beside_torchao
         peft_check = peft_beside_torchao()
         assert peft_check["peft_lora_ok"], f"PEFT cannot build a LoRA here: {peft_check.get('error')}; {peft_check.get('advice', '')}"
-        from peft import LoraConfig, TaskType, get_peft_model
+        if token_rows:         # before any picture is fetched: a PEFT that cannot train the rows stops the run in seconds
+            from .checks import peft_token_rows
+            rows_check = peft_token_rows()
+            assert rows_check["peft_token_rows_ok"], (f"PEFT {rows_check.get('peft')} cannot train token rows beside a LoRA: "
+                                                      f"{rows_check.get('error')}")
+            print(f"token rows {token_rows} train beside the LoRA pairs (PEFT {rows_check.get('peft')})", flush=True)
     if ship_every is None:
         ship_every = 0 if full else 100
     if found is not None:        # the first run's stamp: the step ships and the final adapter land in its folder
@@ -546,6 +697,7 @@ def run(model_id: str = "Qwen/Qwen3.5-9B", inputs="hub:sft/sft_v1.json", out_dir
               + (f"; image processor {image_settings}" if image_settings else ""), flush=True)
     model.config.use_cache = False
     input_grads = prepare_checkpointing(model, grad_checkpointing)
+    rows = resolve_token_rows(token_rows, processor, model) if token_rows else None   # "turn_end" -> the template's own id
     if full:
         n_train = n_kept = 0
         for name, p in model.named_parameters():
@@ -565,19 +717,27 @@ def run(model_id: str = "Qwen/Qwen3.5-9B", inputs="hub:sft/sft_v1.json", out_dir
         model = PeftModel.from_pretrained(model, src, is_trainable=True, token=token(), **({"subfolder": sub} if sub else {}))
         cfg = model.peft_config["default"]
         assert (cfg.r, cfg.lora_alpha) == (rank, alpha), f"the adapter is r{cfg.r} alpha {cfg.lora_alpha}; pass its own rank and alpha"
+        if _rows_of_config(cfg) != (rows or {}):
+            raise ValueError(f"the adapter trains the token rows {_rows_of_config(cfg)}, this run asks {rows or {}}: pass its own")
     else:
-        config = LoraConfig(r=rank, lora_alpha=alpha, lora_dropout=dropout, bias="none", target_modules=targets,
-                            task_type=TaskType.CAUSAL_LM)
-        if seed_adapter:     # the starting A matrices follow the seed (otherwise every process draws its own)
-            from transformers import set_seed
-            set_seed(seed)
-        model = get_peft_model(model, config)
+        model = build_lora(model, rank, alpha, dropout, targets, rows, seed=seed if seed_adapter else None)
     if not full and not input_grads and family.drop_input_grads(model):   # PEFT re-installs the hook on a checkpointing model
         print("  the input-embedding grad hook PEFT installed is removed (this family adds its pictures to that output in place)", flush=True)
+    rows_report = None
     if not full:
         report = lora_report(model)
         print("LoRA modules by name:", report, flush=True)
         assert report, "no module matched the LoRA targets; read the model's module names"
+        n_pairs = sum(p.numel() for n, p in model.named_parameters() if p.requires_grad and "lora_" in n)
+        if rows:
+            check_token_rows(model, rows)
+            rows_report = token_rows_report(model, processor.tokenizer)
+            for module, r in rows_report.items():
+                print(f"token rows trained beside the pairs: {module} ids {r['ids']} {r['tokens']} ({r['numbers']:,} numbers, "
+                      f"{r['dtype']}); asked {token_rows}", flush=True)
+        n_rows = sum(r["numbers"] for r in (rows_report or {}).values())
+        print(f"  trainable: the LoRA pairs {n_pairs:,}" + (f" + the token rows {n_rows:,} = {n_pairs + n_rows:,}" if rows else ""),
+              flush=True)
         model.print_trainable_parameters()
     slot_print = None
     if eyes is not None:                              # no LoRA module and no trainable parameter on Anima's slot
@@ -709,6 +869,7 @@ def run(model_id: str = "Qwen/Qwen3.5-9B", inputs="hub:sft/sft_v1.json", out_dir
                "peak_gpu_gb": peak_gpu_gb(torch), "lazy_pictures": lazy_pictures, "picture_workers": picture_workers,
                "grad_checkpointing": grad_checkpointing,
                "lora_modules": report, "targets": targets, "inputs": inputs,
+               "token_rows": {"asked": token_rows, "trained": rows_report} if rows_report else None,
                "model_type": family.model_type(model), "trust_remote_code": trust_remote_code, "revision": revision,
                "image_settings": image_settings,
                "init_adapter": init_adapter, "system": system, "system_tokens": system_tokens, "path_in_repo": path_in_repo,

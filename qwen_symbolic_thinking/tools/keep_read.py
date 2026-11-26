@@ -7,7 +7,8 @@
 The held rows are the base model's own answers to requests that do not ask for the row form (tools.anchors). The adapter is
 loaded beside the base model without merging, and the base side of every read is the same model inside the adapter's off
 switch, so one copy of the weights serves both. A scale s multiplies every LoRA layer's scaling by s (the trained value stays
-the reference and is restored before each scale), so the read can be repeated at each strength the adapter may ship at; scale 0 is
+the reference and is restored before each scale), and token rows trained beside the pairs (train.run token_rows) take the same
+strength, original + s (trained - original), so the read can be repeated at each strength the adapter may ship at; scale 0 is
 the base itself. The base side runs once and is reused at every scale.
 
     read 1, drift       teacher-forced on each held row's own answer: the KL(p_base || p_tuned) at the answer positions (the row's
@@ -115,16 +116,27 @@ def recall(reference: str, generated: str):
 
 
 def lora_layers(model) -> list:
-    """[(layer, its trained scaling)] for every LoRA layer: the reference set_scale multiplies."""
-    layers = [(m, dict(m.scaling)) for m in model.modules() if isinstance(getattr(m, "scaling", None), dict) and m.scaling]
+    """[(layer, its trained values)] for every layer a scale reaches: each LoRA layer with its trained scaling (the reference
+    set_scale multiplies), and each layer of token rows trained beside the pairs (keep.is_token_layer) with a copy of its trained
+    rows (the reference set_scale interpolates from)."""
+    layers = []
+    for m in model.modules():
+        if keep.is_token_layer(m):
+            layers.append((m, {k: v.detach().clone() for k, v in m.trainable_tokens_delta.items()}))
+        elif isinstance(getattr(m, "scaling", None), dict) and m.scaling:
+            layers.append((m, dict(m.scaling)))
     if not layers:
         raise ValueError("no LoRA layer to scale")
     return layers
 
 
 def set_scale(layers: list, factor: float) -> None:
-    """Every LoRA layer's scaling = its trained value x factor (the trained value is kept, so the call can be repeated)."""
+    """Every LoRA layer's scaling = its trained value x factor, and every layer of trained token rows at the same strength
+    (keep.set_token_rows: original + factor x (trained - original)); the trained values are kept, so the call can be repeated."""
     for module, trained in layers:
+        if keep.is_token_layer(module):
+            keep.set_token_rows(module, trained, factor)
+            continue
         for name, value in trained.items():
             module.scaling[name] = value * factor
 
@@ -317,7 +329,9 @@ def run(model_id: str = "Qwen/Qwen3.5-4B", adapter: str | None = None, adapter_s
         model = PeftModel.from_pretrained(model, adapter, token=token(), **({"subfolder": adapter_subfolder} if adapter_subfolder else {}))
         model.eval()
         layers = lora_layers(model)
-        print(f"  adapter loaded beside the base, not merged ({len(layers)} LoRA layers)", flush=True)
+        rows = sum(1 for m, _ in layers if keep.is_token_layer(m))
+        print(f"  adapter loaded beside the base, not merged ({len(layers) - rows} LoRA layers"
+              + (f"; {rows} of token rows trained beside them, scaled with them" if rows else "") + ")", flush=True)
     elif against:
         reference = load_model(base_model_id, False)[1]
         reference.eval()

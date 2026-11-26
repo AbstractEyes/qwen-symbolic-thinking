@@ -54,8 +54,8 @@ time; nothing is redistributed here. The specification rows are the dataset's ow
 ## Install
 
 ```
-pip install git+https://github.com/AbstractEyes/qwen-symbolic-thinking@v0.1.40
-pip install "qwen-symbolic-thinking[screen] @ git+https://github.com/AbstractEyes/qwen-symbolic-thinking@v0.1.40"   # with torch, transformers 5, accelerate, peft
+pip install git+https://github.com/AbstractEyes/qwen-symbolic-thinking@v0.1.74
+pip install "qwen-symbolic-thinking[screen] @ git+https://github.com/AbstractEyes/qwen-symbolic-thinking@v0.1.74"   # with torch, transformers 5, accelerate, peft
 ```
 
 Qwen3.5 needs transformers 5 (the model code lives under `transformers.models.qwen3_5`); the preflight says so if it is missing.
@@ -146,6 +146,21 @@ lane generator's run names: the bars (the pass marks beside a yardstick arm) or 
 also a tool of its own (`tools.bars`, `tools.text_names`, `tools.keep_text_names`, `tools.lettering_ask`,
 `tools.quote_precision`). `python -m qwen_symbolic_thinking.training_md <model> --out TRAINING.md` writes the page a model repo
 carries on how to train its v1.2 from a fresh account, from the registry; a file with no public source yet is a marked placeholder.
+
+**Token rows beside a LoRA, and retrains** (from 0.1.74; the same page). `token_rows={"lm_head": ["turn_end"]}` among a LoRA's
+train keys trains rows of a module's weight beside the LoRA pairs, through PEFT's trainable token rows: here the output head's
+row of the chat template's turn end (`"turn_end"` becomes that token's id when the processor loads, and must be one token that
+generation stops on; plain ids work too). Each row starts as the module's own; the rest of the module stays frozen. It is for a
+model whose head never learned to write the token its answers end on: Anima's eyes take Qwen3-0.6B-Base's word table as their
+output head, whose `<|im_end|>` row was never trained, and their first LoRA wrote its rows and never ended them. The rows save,
+ship, resume (their values and their Adam moments, with the rest of the training state) and merge with the adapter; the
+adapter's off switch reads the module's original rows, so the keeping terms read the base model; a read at a scale s takes the
+rows at original + s (trained - original), the delta form the pairs take (`tools.keep_read`, `screen.load_model`'s
+`adapter_scale`). A PEFT that cannot train them stops the run before any picture is fetched (`checks.peft_token_rows`), and the
+lane notebook of such a LoRA installs PEFT 0.21.2 or later, the release they were tested on. An entry's `"retrains"` in the
+registry name its LoRA trained again with some settings changed, each under its own run key:
+`python -m qwen_symbolic_thinking.lines ae1bt apache --project-repo <repo>` writes Anima's eyes' LoRA with that row trained, one
+training and its nine reads.
 
 ## Training rules
 

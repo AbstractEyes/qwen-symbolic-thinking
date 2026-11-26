@@ -1,4 +1,5 @@
-"""Checks before a run: are the linear-attention kernels present, and does PEFT build a LoRA beside the installed torchao?
+"""Checks before a run: are the linear-attention kernels present, does PEFT build a LoRA beside the installed torchao, and does
+it train rows of an untied output head beside a LoRA (a run with token_rows)?
 
     from qwen_symbolic_thinking.checks import run
     run()"""
@@ -63,8 +64,41 @@ def peft_beside_torchao() -> dict:
     return out
 
 
+def peft_token_rows() -> dict:
+    """Does this PEFT train rows of an untied output head beside a LoRA (LoraConfig trainable_token_indices on a Linear head,
+    the way train.run takes token_rows)? A tiny model gets one adapted layer and one trained head row; one backward pass. The
+    row must be the only trained part of the head, one row wide, and get a gradient."""
+    out = {"peft": _version("peft")}
+    try:
+        import torch
+        from peft import LoraConfig, get_peft_model
+
+        class Tiny(torch.nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.embed_tokens = torch.nn.Embedding(12, 8)
+                self.q_proj = torch.nn.Linear(8, 8)
+                self.lm_head = torch.nn.Linear(8, 12, bias=False)
+
+            def forward(self, ids):
+                return self.lm_head(torch.tanh(self.q_proj(self.embed_tokens(ids))))
+
+        model = get_peft_model(Tiny(), LoraConfig(r=2, lora_alpha=4, target_modules=["q_proj"],
+                                                  trainable_token_indices={"lm_head": [5]}))
+        model(torch.tensor([[1, 2, 3]])).sum().backward()
+        rows = [p for n, p in model.named_parameters() if p.requires_grad and "trainable_tokens" in n]
+        head = [n for n, p in model.named_parameters() if p.requires_grad and "lm_head" in n and "trainable_tokens" not in n]
+        ok = (len(rows) == 1 and tuple(rows[0].shape) == (1, 8) and not head and rows[0].grad is not None
+              and float(rows[0].grad.abs().sum()) > 0)
+        out.update(peft_token_rows_ok=ok, **({} if ok else {"error": f"the head's row did not train as one row: rows "
+                                                                    f"{[tuple(p.shape) for p in rows]}, other head parts {head}"}))
+    except Exception as e:
+        out.update(peft_token_rows_ok=False, error=f"{type(e).__name__}: {str(e)[:300]}")
+    return out
+
+
 def run() -> dict:
-    result = {"fast_path": fast_path(), "peft": peft_beside_torchao()}
+    result = {"fast_path": fast_path(), "peft": peft_beside_torchao(), "peft_token_rows": peft_token_rows()}
     for key, val in result.items():
         print(f"== {key}")
         for k, v in val.items():

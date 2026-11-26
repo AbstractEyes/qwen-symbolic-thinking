@@ -222,10 +222,11 @@ class TinyCollator:
         return {"input_ids": ids, "attention_mask": mask, "labels": labels}
 
 
-def _machine(tmp_path, name, store, tag, at_steps=(), stop_at=None, logging_steps=1):
+def _machine(tmp_path, name, store, tag, at_steps=(), stop_at=None, logging_steps=1, rows=None):
     """One machine's run of the same training, as train.run wires it: a fresh model (the same starting adapter), the paired
     collators, the keeping trainer, the progress log, and with a store the saved state (found and taken back, saved at
-    at_steps). stop_at: the machine ends after that step (training stops there; nothing after it is saved)."""
+    at_steps). stop_at: the machine ends after that step (training stops there; nothing after it is saved). rows: token rows
+    of an untied output head trained beside the pairs (train.build_lora, as train.run builds them)."""
     torch = pytest.importorskip("torch")
     transformers = pytest.importorskip("transformers")
     peft = pytest.importorskip("peft")
@@ -235,10 +236,14 @@ def _machine(tmp_path, name, store, tag, at_steps=(), stop_at=None, logging_step
         resume.check_examples(found, resume.fingerprint(pairs), resume.fingerprint([(a, "anchor") for a in anchors]), len(pairs))
     torch.manual_seed(0)
     cfg = transformers.LlamaConfig(vocab_size=VOCAB, hidden_size=32, intermediate_size=64, num_hidden_layers=2,
-                                   num_attention_heads=4, num_key_value_heads=4, max_position_embeddings=64)
-    model = peft.get_peft_model(transformers.LlamaForCausalLM(cfg),
-                                peft.LoraConfig(r=4, lora_alpha=8, lora_dropout=0.1, target_modules=["q_proj", "v_proj"],
-                                                task_type=peft.TaskType.CAUSAL_LM))
+                                   num_attention_heads=4, num_key_value_heads=4, max_position_embeddings=64,
+                                   **({"tie_word_embeddings": False} if rows else {}))
+    if rows:
+        model = train.build_lora(transformers.LlamaForCausalLM(cfg), 4, 8, 0.1, ["q_proj", "v_proj"], rows)
+    else:
+        model = peft.get_peft_model(transformers.LlamaForCausalLM(cfg),
+                                    peft.LoraConfig(r=4, lora_alpha=8, lora_dropout=0.1, target_modules=["q_proj", "v_proj"],
+                                                    task_type=peft.TaskType.CAUSAL_LM))
     optimizer = torch.optim.Adam([p for p in model.parameters() if p.requires_grad], lr=1e-2, betas=(0.9, 0.999))
     args = transformers.TrainingArguments(output_dir=str(tmp_path / name / "run"), per_device_train_batch_size=BATCH,
                                           gradient_accumulation_steps=ACCUM, num_train_epochs=EPOCHS, learning_rate=1e-2,
@@ -273,7 +278,7 @@ def _machine(tmp_path, name, store, tag, at_steps=(), stop_at=None, logging_step
         rs.trainer = trainer
     result = trainer.train(resume_from_checkpoint=found["dir"] if found else None)
     loss = rs.loss_sum() / max(result.global_step, 1) if found is not None else result.training_loss
-    adapter = {n: p.detach().clone() for n, p in model.named_parameters() if "lora_" in n}
+    adapter = {n: p.detach().clone() for n, p in model.named_parameters() if "lora_" in n or "trainable_tokens" in n}
     return {"log": log, "adapter": adapter, "collate": collate, "anchor_collate": anchor_collate, "found": found,
             "steps": result.global_step, "loss": loss, "rs": rs, "keep_empty": dict(cls.keep_empty)}
 
@@ -330,3 +335,66 @@ def test_a_save_between_log_lines_keeps_the_log_the_same(tmp_path):
     last = _machine(tmp_path, "last", store, "L", logging_steps=2)
     _same_log(last["log"], whole["log"])
     assert last["loss"] == pytest.approx(whole["loss"], rel=1e-6)
+
+
+ROWS = {"lm_head": [5, 9]}          # two rows of an untied output head trained beside the pairs
+
+
+@pytest.mark.parametrize("plan", [[(3, 5)], [(2, 4), (9, 11)]], ids=["first-epoch", "twice"])
+def test_a_resumed_run_with_token_rows_follows_the_uninterrupted_run(tmp_path, plan):
+    """The training state saved to the store holds the rows' values (the adapter file) and their Adam moments (the optimizer's
+    state), and the resumed run takes both back: its log, its loss and its final adapter, rows included, are the uninterrupted
+    run's (fresh moments after a resume would move the rows otherwise)."""
+    torch = pytest.importorskip("torch")
+    whole = _machine(tmp_path, "whole", None, "T", rows=ROWS)
+    row_names = [n for n in whole["adapter"] if "trainable_tokens" in n]
+    assert row_names == ["base_model.model.lm_head.token_adapter.trainable_tokens_delta.default"]
+    assert tuple(whole["adapter"][row_names[0]].shape) == (2, 32)
+    store = resume.FolderStore(str(tmp_path / "store"))
+    for k, (save_at, end_at) in enumerate(plan):
+        cut = _machine(tmp_path, f"cut{k}", store, "T", at_steps=[save_at], stop_at=end_at, rows=ROWS)
+        assert [s["step"] for s in cut["rs"].saver.saves] == [save_at]
+        saved = os.path.join(store.root, "T")
+        from safetensors import safe_open
+        with safe_open(os.path.join(saved, "adapter_model.safetensors"), "pt") as f:
+            assert "base_model.model.lm_head.token_adapter.trainable_tokens_delta" in list(f.keys())
+        state = torch.load(os.path.join(saved, "optimizer.pt"), weights_only=True)["state"]
+        moments = [s for s in state.values() if tuple(s["exp_avg"].shape) == (2, 32)]
+        assert len(moments) == 1 and float(moments[0]["exp_avg_sq"].sum()) > 0          # the rows' Adam moments, saved
+    last = _machine(tmp_path, "last", store, "T", rows=ROWS)
+    assert last["found"]["step"] == plan[-1][0] and last["steps"] == TOTAL
+    _same_log(last["log"], whole["log"])
+    assert last["loss"] == pytest.approx(whole["loss"], rel=1e-6)
+    assert set(last["adapter"]) == set(whole["adapter"])
+    for name, w in whole["adapter"].items():
+        assert torch.allclose(last["adapter"][name], w, rtol=1e-5, atol=1e-6), name
+    transformers = pytest.importorskip("transformers")
+    torch.manual_seed(0)                                       # the head the rows start from, as _machine builds it
+    cfg = transformers.LlamaConfig(vocab_size=VOCAB, hidden_size=32, intermediate_size=64, num_hidden_layers=2,
+                                   num_attention_heads=4, num_key_value_heads=4, max_position_embeddings=64,
+                                   tie_word_embeddings=False)
+    head = transformers.LlamaForCausalLM(cfg).lm_head.weight.detach()[ROWS["lm_head"]]
+    assert not torch.allclose(whole["adapter"][row_names[0]], head, atol=1e-4)          # the rows trained
+
+
+def test_token_rows_join_the_settings_a_resume_checks_only_when_given(tmp_path, monkeypatch):
+    store = resume.FolderStore(str(tmp_path / "store"))
+    monkeypatch.setattr(train.saved_state, "HubStore", lambda repo: store)
+    monkeypatch.setattr(train, "fetch_folder", lambda path, repo: f"/fetched/{path}")
+    params = inspect.signature(train.run).parameters
+    assert params["token_rows"].default is None
+    base = {k: p.default for k, p in params.items() if k in (
+        "model_id", "inputs", "rank", "alpha", "dropout", "lr", "epochs", "batch", "grad_accum", "max_len", "warmup", "n_items",
+        "seed", "init_adapter", "system", "trust_remote_code", "revision", "targets", "image_settings", "keys", "max_steps",
+        "anchors", "anchor_batch", "general_kl", "target_kl", "rehearsal", "writers", "seed_adapter")}
+    rows = {"lm_head": ["turn_end"]}
+    store.finish("TR", {"finished": True, "stamp": "s", "path_in_repo": "lora/m/r32/s", "summary": {"steps": 7},
+                        "settings": resume.normalized({**base, "token_rows": rows})})
+    assert train.run(tag="TR", resume=True, token_rows=rows, out_dir=str(tmp_path / "o"))["steps"] == 7
+    with pytest.raises(ValueError, match="token_rows"):
+        train.run(tag="TR", resume=True, out_dir=str(tmp_path / "o"))
+    store.finish("TP", {"finished": True, "stamp": "s", "path_in_repo": "lora/m/r32/s", "summary": {"steps": 8},
+                        "settings": resume.normalized(base)})
+    assert train.run(tag="TP", resume=True, out_dir=str(tmp_path / "o"))["steps"] == 8      # a run without rows: as before
+    with pytest.raises(ValueError, match="token_rows"):
+        train.run(tag="TP", resume=True, token_rows={"lm_head": [5]}, out_dir=str(tmp_path / "o"))

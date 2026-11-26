@@ -184,7 +184,8 @@ def load_model(model_id: str, thinking: bool, adapter: str | None = None, adapte
                adapter_scale: float = 1.0):
     """The processor and the model on the card; with an adapter (a local folder or a Hub repo, with a subfolder), the LoRA
     weights are merged into the model, scaled by adapter_scale (keep.scale_adapter: 1 = the adapter as trained, 0 = the base,
-    between = the weights interpolated). A 'hub:<path>' model id is a full fine-tune shipped under the project repo. With
+    between = the weights interpolated; token rows trained beside the pairs are merged and scaled with them). A 'hub:<path>'
+    model id is a full fine-tune shipped under the project repo. With
     trust_remote_code the repository's own code loads (from a snapshot at the pinned revision); image_settings go to the
     image processor (family.apply_image_settings)."""
     import torch

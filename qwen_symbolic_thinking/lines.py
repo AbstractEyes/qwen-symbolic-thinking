@@ -23,6 +23,11 @@ The queue, in order:
 3. after the first line (or not at all: --no-comparisons; an -nc lane alone leaves them to the Apache-2.0 lane unless
    --comparisons): the comparison reads its cards need, of the base model and of the older versions the registry names.
 
+A retrain (a key of an entry's "retrains": the LoRA trained again with some settings changed, such as token rows of its output
+head) builds the same way from its entry (registry.retrain_entry): the base and the general answers are already in the project
+repo, so its lane is its training and the nine reads after it, without a smoke when the entry says "no_smoke", and its
+comparisons name the reads the model's own lane made.
+
 The project repo is a parameter. Everything the lane reads is a path in it (PROJECT_FILES; the run names its general answers,
 adapters and reads under it) or in a public repo (the picture lists of the probe and museum reads, the version-1 adapters in
 the public record repo); nothing here names a repo that is not public, so anyone can run a lane on a repo of their own once
@@ -211,7 +216,8 @@ def _text_read(entry: dict, kind: str, project: str, extra: dict) -> dict:
 
 
 def line_specs(entry: dict, line: str, project: str, needs: str, progress_every_min: float | None) -> tuple:
-    """A line's smoke and training (its nine reads after it), and the choices."""
+    """A line's smoke and training (its nine reads after it), and the choices. An entry that says "no_smoke" (a retrain whose
+    rows and settings the run it retrains measured: registry.retrain_entry) gets the training alone, waiting for no run."""
     ga, n = entry["general_answers"], names(entry, line)
     s_set = V12_SETS[line]["path"]
     anchors = f"{ga['anchors_by'] if line == 'apache' else ga['anchors']}/anchors.json"
@@ -248,28 +254,32 @@ def line_specs(entry: dict, line: str, project: str, needs: str, progress_every_
             ("extract", _text_read(entry, "control_lettering", project, {"adapter_scale": 1.0, "wordings": OWN_WORDINGS})),
             ("extract", _text_read(entry, "control", project, {"adapter_scale": 1.0, "wordings": OWN_WORDINGS}))]):
         reads.append({"name": name, "kind": kind, kind: body})
+    no_smoke = entry.get("no_smoke")
     training = _top(entry, n["train"], "train", needs)
     training.update(train=full, screen=copy.deepcopy(SCREEN), waits_for=[s_set, anchors, held, held_txt],
-                    waits_for_runs=[n["smoke"]], after=reads)
+                    **({} if no_smoke else {"waits_for_runs": [n["smoke"]]}), after=reads)
     pace = entry["pace"][line]
     choices = [f"{line} line: the set {s_set} ({V12_SETS[line]['items']:,} items, {V12_SETS[line]['examples']:,} examples, "
                f"{V12_SETS[line]['steps']:,} steps); the general rows {anchors}",
-               f"  smoke {n['smoke']}: {registry.SMOKE['max_steps']} steps on the set's first {registry.SMOKE['n_items']:,} items, "
-               f"nothing shipped; stops at a steady pace above {stop['steady_s_per_step']} s a step after step "
-               f"{stop['after_step']} ({registry.STOP_FACTOR if pace['measured'] else registry.STOP_FACTOR_ESTIMATE} x "
-               f"{pace['s']} s, {pace['source']}) or a peak above {stop['peak_gb']} GB",
+               (f"  no smoke: {no_smoke}" if no_smoke else
+                f"  smoke {n['smoke']}: {registry.SMOKE['max_steps']} steps on the set's first {registry.SMOKE['n_items']:,} items, "
+                f"nothing shipped; stops at a steady pace above {stop['steady_s_per_step']} s a step after step "
+                f"{stop['after_step']} ({registry.STOP_FACTOR if pace['measured'] else registry.STOP_FACTOR_ESTIMATE} x "
+                f"{pace['s']} s, {pace['source']}) or a peak above {stop['peak_gb']} GB"),
                f"  training {n['train']}: "
                + ("a full fine-tune (rank 0; no resume, one ship at the end)" if is_full else
                   f"LoRA r{full['rank']} alpha {full['alpha']}")
+               + (f", token rows {json.dumps(full['token_rows'])}" if full.get("token_rows") else "")
                + f", lr {full['lr']}, {full['batch']} x "
                f"{full['grad_accum']}, max_len {full['max_len']}, one pass, general_kl {full['general_kl']}"
                + "".join(f", {k} {v}" for k, v in (entry.get("train_extra") or {}).items())
                + (f", pictures {entry['image_settings']}" if entry["image_settings"] else "")
                + (f", repository code at {entry['base_revision']}" if entry["trust_remote_code"] else "")
-               + f"; about {registry.hours(entry, line)} h at {pace['s']} s a step; waits for its smoke to pass"
+               + f"; about {registry.hours(entry, line)} h at {pace['s']} s a step; "
+               + ("starts without a smoke" if no_smoke else "waits for its smoke to pass")
                + (f"; progress file every {progress_every_min} min" if progress_every_min else "; no progress file"),
                f"  its reads after it: {', '.join(n['reads'])}"]
-    return [smoke, training], choices
+    return ([training] if no_smoke else [smoke, training]), choices
 
 
 def comparison_specs(entry: dict, project: str, files: set | None, needs: str) -> tuple:
@@ -288,7 +298,12 @@ def comparison_specs(entry: dict, project: str, files: set | None, needs: str) -
                 s = _top(entry, comparison_name(entry, kind), "extract", needs)
                 s["extract"] = _text_read(entry, kind, project, {"adapter": None, "model_id": model, **_remote(entry)})
                 specs.append(s)
-            choices.append(f"comparisons of the base {model}: {', '.join(c['reads'])}")
+            if c["reads"]:
+                choices.append(f"comparisons of the base {model}: {', '.join(c['reads'])}")
+            else:
+                choices.append(f"comparisons of the base {model}: none made in this lane"
+                               + (f" (earlier runs made them: {', '.join(f'{k} {v}' for k, v in c['earlier'].items())})"
+                                  if c.get("earlier") else ""))
             continue
         v = registry.version(entry, c["of"], c.get("line", "apache"))
         repo = project if v["adapter"] == PROJECT else v["adapter"]
@@ -349,6 +364,11 @@ def build_lane(entry: dict, which: str, project: str, files=None, lane: str | No
         choices.append(f"FORCED: {', '.join(off)} is not a line of {entry['name']} in the catalogue")
     if entry["blockers"]:
         choices += [f"FORCED past a blocker: {b}" for b in entry["blockers"]]
+    if entry.get("retrain_of"):
+        choices.append(f"a retrain of {entry['retrain_of']}'s LoRA (registry retrains): the same rows, recipe and general rows, "
+                       f"the LoRA settings {json.dumps(entry['lora'])}, under the run key {entry['key']}")
+    if entry.get("no_smoke") and registry.full_entry(entry) is not None:
+        raise LaneError(f"{entry['key']}: a lane without smokes carries no full fine-tune (it would run unmeasured)")
     specs, prep_name, prep = [], None, entry.get("prepare")
     if prep:                     # a run that makes the base model comes first; every other run waits for it
         if files_set is not None and set(prep["makes"]) <= files_set:
@@ -441,13 +461,18 @@ def check(specs: list, files: set | None) -> tuple:
 
 
 # ------------------------------------------------------------------------------------------------------------ the notebook
+PEFT = "peft>=0.18"
+# A LoRA with token rows (train.run token_rows: rows of an untied output head trained beside the pairs through
+# trainable_token_indices) installs the PEFT release they were tested on, or a later one: pip keeps an older PEFT the runtime
+# already has when it meets the common floor.
+PEFT_TOKEN_ROWS = "peft>=0.21.2"
 _INSTALL = '''# C1: install, then Runtime > Restart session
 import importlib.util, subprocess, sys
 
 def pip(*args):
     subprocess.check_call([sys.executable, "-m", "pip", "install", "-q", *args])
 {pin_note}
-pip("git+https://github.com/AbstractEyes/qwen-symbolic-thinking@v{version}", "{transformers}", "accelerate>=1.0", "peft>=0.18")
+pip("git+https://github.com/AbstractEyes/qwen-symbolic-thinking@v{version}", "{transformers}", "accelerate>=1.0", "{peft}")
 {fast_path}
 try:                # Colab's torchao 0.10 breaks PEFT when it builds a LoRA (PEFT wants 0.16 or newer, or none at all)
     import torchao
@@ -497,8 +522,9 @@ DATASET = "AbstractPhil/thought-symbolic-image-recaptioned"
 def install_cell(entry: dict, version: str = __version__) -> str:
     pinned = entry["install"]["transformers"].startswith("transformers==")
     note = ("\n# The transformers release this family's repository code was built on (its specs ask for it too)." if pinned else "")
+    rows = bool((entry.get("lora") or {}).get("token_rows"))
     return _INSTALL.format(version=version, transformers=entry["install"]["transformers"], pin_note=note,
-                           fast_path=_FAST_PATH if entry["install"]["fast_path"] else "")
+                           peft=PEFT_TOKEN_ROWS if rows else PEFT, fast_path=_FAST_PATH if entry["install"]["fast_path"] else "")
 
 
 def queue_cell(lane: str, project: str) -> str:
@@ -529,6 +555,8 @@ def notebook(entry: dict, built: dict, project: str, version: str = __version__)
                                   + ("" if fe["pace"][ln]["measured"] else " (estimated)") for ln in lines)
     about = entry.get("about") or f"[{entry['base']}](https://huggingface.co/{entry['base']})"
     family_md = entry.get("about_training") or ""
+    retrain_md = entry.get("about_retrain") or ""      # a retrain (registry.retrain_entry): what it changes and why
+    smokes = any(s["name"].startswith("S_v12_smoke") for s in built["specs"])
     md = (f"# {entry['name']} v1.2: {title}\n\n"
           f"[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)]({BADGE.format(name=lane + '.ipynb')})\n\n"
           f"The v1.2 fine-tune of {about} on the rows of the public dataset "
@@ -537,8 +565,11 @@ def notebook(entry: dict, built: dict, project: str, version: str = __version__)
           "in one pass over the rows. The Apache-2.0 line trains on the dataset's Apache-2.0 part; the non-commercial line (-nc) "
           "on every row of the release; the held-out pictures are the same for both, so their reads compare.\n\n"
           + (family_md + "\n\n" if family_md else "")
-          + f"The queue runs, in order: {'; '.join(order)}. A smoke that runs slower or holds more memory than its limits fails, and "
-          f"its training does not start. {hours[0].upper() + hours[1:]}.\n\n"
+          + (retrain_md + "\n\n" if retrain_md else "")
+          + f"The queue runs, in order: {'; '.join(order)}. "
+          + ("A smoke that runs slower or holds more memory than its limits fails, and its training does not start. " if smokes
+             else "")
+          + f"{hours[0].upper() + hours[1:]}.\n\n"
           "The training runs with resume on: its whole state saves to the project repo every 2 hours and once more after "
           f"{LATE_SAVE_H:g} hours of the runtime. If the runtime ends mid-run, open this notebook on a fresh runtime and run it "
           "again: the lane continues the training from its saved state. "

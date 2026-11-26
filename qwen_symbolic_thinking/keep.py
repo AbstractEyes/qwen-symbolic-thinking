@@ -96,12 +96,43 @@ def ce_mean(z, targets, chunk: int = 1024):
     return total / n
 
 
+def is_token_layer(module) -> bool:
+    """Whether a module holds trained token rows of its own: PEFT's trainable token layer (LoraConfig trainable_token_indices,
+    train.run token_rows), which keeps the trained rows (trainable_tokens_delta: the rows' new values, not a difference) beside
+    the module's original rows (trainable_tokens_original). A layer tied to another one holds none (its rows are the other's)."""
+    return (hasattr(module, "trainable_tokens_delta") and hasattr(module, "trainable_tokens_original")
+            and hasattr(module, "token_indices") and not getattr(module, "tied_adapter", None))
+
+
+def set_token_rows(layer, trained: dict, factor: float) -> None:
+    """A layer's trained token rows at a strength, in place: original + factor * (trained - original) for each adapter's rows
+    (trained: {adapter name: its trained rows}), the same delta form the LoRA pairs take (scale_adapter). Factor 1 gives the
+    trained rows exactly and 0 the module's original rows; between, the rows are interpolated in fp32."""
+    import torch
+    with torch.no_grad():
+        for name, value in trained.items():
+            param, original = layer.trainable_tokens_delta[name], layer.trainable_tokens_original[name]
+            if factor == 1.0:
+                new = value
+            elif factor == 0.0:
+                new = original
+            else:
+                o = original.float()
+                new = o + float(factor) * (value.float().to(o.device) - o)
+            param.copy_(new.to(device=param.device, dtype=param.dtype))
+
+
 def scale_adapter(model, factor: float) -> int:
     """Multiply every LoRA layer's scaling by factor, before a merge: the merged weights become W + factor * (alpha / r) B A,
     an interpolation between the base model (0) and the adapter as trained (1) (the delta form of weight interpolation:
-    Wortsman et al., "Robust fine-tuning of zero-shot models", arXiv 2109.01903). Returns the number of layers scaled."""
+    Wortsman et al., "Robust fine-tuning of zero-shot models", arXiv 2109.01903). Token rows trained beside the pairs take the
+    same strength (set_token_rows: original + factor * (trained - original)). Returns the number of layers scaled."""
     n = 0
     for module in model.modules():
+        if is_token_layer(module):
+            set_token_rows(module, {k: v.detach().clone() for k, v in module.trainable_tokens_delta.items()}, factor)
+            n += 1
+            continue
         scaling = getattr(module, "scaling", None)
         if isinstance(scaling, dict) and scaling:
             for name in list(scaling):
