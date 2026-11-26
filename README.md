@@ -54,8 +54,8 @@ time; nothing is redistributed here. The specification rows are the dataset's ow
 ## Install
 
 ```
-pip install git+https://github.com/AbstractEyes/qwen-symbolic-thinking@v0.1.74
-pip install "qwen-symbolic-thinking[screen] @ git+https://github.com/AbstractEyes/qwen-symbolic-thinking@v0.1.74"   # with torch, transformers 5, accelerate, peft
+pip install git+https://github.com/AbstractEyes/qwen-symbolic-thinking@v0.1.75
+pip install "qwen-symbolic-thinking[screen] @ git+https://github.com/AbstractEyes/qwen-symbolic-thinking@v0.1.75"   # with torch, transformers 5, accelerate, peft
 ```
 
 Qwen3.5 needs transformers 5 (the model code lives under `transformers.models.qwen3_5`); the preflight says so if it is missing.
@@ -160,7 +160,8 @@ rows at original + s (trained - original), the delta form the pairs take (`tools
 lane notebook of such a LoRA installs PEFT 0.21.2 or later, the release they were tested on. An entry's `"retrains"` in the
 registry name its LoRA trained again with some settings changed, each under its own run key:
 `python -m qwen_symbolic_thinking.lines ae1bt apache --project-repo <repo>` writes Anima's eyes' LoRA with that row trained, one
-training and its nine reads.
+training and its nine reads. In 0.1.74 the read of how far an adapter moved the model (`tools.keep_read`) stopped before its
+first pass for every adapter ("object of type 'int' has no len()": a count took the name of its held rows); 0.1.75 fixes it.
 
 ## Training rules
 

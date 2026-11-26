@@ -329,9 +329,9 @@ def run(model_id: str = "Qwen/Qwen3.5-4B", adapter: str | None = None, adapter_s
         model = PeftModel.from_pretrained(model, adapter, token=token(), **({"subfolder": adapter_subfolder} if adapter_subfolder else {}))
         model.eval()
         layers = lora_layers(model)
-        rows = sum(1 for m, _ in layers if keep.is_token_layer(m))
-        print(f"  adapter loaded beside the base, not merged ({len(layers) - rows} LoRA layers"
-              + (f"; {rows} of token rows trained beside them, scaled with them" if rows else "") + ")", flush=True)
+        n_token = sum(1 for m, _ in layers if keep.is_token_layer(m))     # never `rows`: that name holds the held rows
+        print(f"  adapter loaded beside the base, not merged ({len(layers) - n_token} LoRA layers"
+              + (f"; {n_token} of token rows trained beside them, scaled with them" if n_token else "") + ")", flush=True)
     elif against:
         reference = load_model(base_model_id, False)[1]
         reference.eval()

@@ -7,6 +7,16 @@ import pytest
 from qwen_symbolic_thinking.tools import keep_read as kr
 
 
+def test_run_binds_its_held_rows_once():
+    """0.1.74 bound the name `rows` (the held rows) a second time inside run(), to the count of token-row layers, so every
+    adapter's keep read stopped with "object of type 'int' has no len()" before its first pass; run() binds it once."""
+    import ast
+    import inspect
+    tree = ast.parse(inspect.getsource(kr.run))
+    bound = [n.lineno for n in ast.walk(tree) if isinstance(n, ast.Name) and n.id == "rows" and isinstance(n.ctx, ast.Store)]
+    assert len(bound) == 1, bound
+
+
 def test_percentile_interpolates_between_ranks():
     xs = [4.0, 1.0, 3.0, 2.0]
     assert kr.percentile(xs, 0) == 1.0 and kr.percentile(xs, 100) == 4.0
