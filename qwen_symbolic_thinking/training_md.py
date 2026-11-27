@@ -11,8 +11,14 @@ answers, the smoke and its stop rule, the training, the reads), and the bars wit
 have them. For a model trained only by those who choose to (the registry's "scheduled": False) it says so, with what stops its
 lane today.
 
-Nothing on the page points to a repo that is not public. A file with no public source yet is printed as a marked placeholder
-("[PLACEHOLDER: ...]") and listed at the end of the command's output, with what would fill it. Nothing is uploaded."""
+Nothing on the page points to a repo that is not public. A file with no public source is printed as "**not published**" with
+what it is and how it was made, and listed at the end of the command's output. Nothing is uploaded.
+
+2026-11-27: the v1.2 Apache lanes' inputs are public in the record repo (seven as our runs read them; the two v1.1 row files in
+picture form; the cleaned text requests less one request the public rows release's word rule holds back), so SOURCES names
+them; the files table lists only the files the model's own lines read, the requests file included where its general answers
+take their text requests from it, and the general answers' counts are the model's own (500 + 40 from the requests file, where
+it has one)."""
 from __future__ import annotations
 
 import os
@@ -22,7 +28,7 @@ from . import __version__, lines, registry
 from .registry import V12_SETS
 from .resume import LATE_SAVE_H
 
-PLACEHOLDER = "[PLACEHOLDER: {what}]"
+NOT_PUBLISHED = "**not published**: {what}"
 GITHUB = "https://github.com/AbstractEyes/qwen-symbolic-thinking"
 PICTURES = lines.PICTURES
 RECORD = registry.RECORD
@@ -33,44 +39,44 @@ KIND_WORDS = {"closer": "closer look", "deep": "long look", "lettering": "closer
               "keep_text": "text preservation read"}
 UNITS_AN_HOUR = 10          # Colab compute units an hour of a G4 when the v1.2 lanes ran (November 2026)
 
-# Where each file a project repo must hold comes from publicly: a public source, or None and what would make one.
+# Where each file a project repo must hold comes from publicly: a public source, or None and what it is.
+_AS_READ = f"the same path in the public record repo {RECORD}, as our runs read it"
+REQUESTS = "text/requests_qwen_v1_clean.json"
 SOURCES = {
-    "sft/v12_rows_a_by.json": (None, "the Apache-2.0 training set is made from release 5 of the public dataset by its license "
-                                     "filter; publishing the set file beside the release (or the filter as a package tool) fills it"),
-    "sft/v12_rows_nc.json": (None, "the -nc training set is every row of release 5 as a training file; publishing the set file "
-                                   "beside the release (or its builder as a package tool) fills it"),
-    "sft/v11_rows_a.json": (None, "the rows whose pictures the general answers ask about; publishing the file fills it"),
-    "sft/v11_rows_a_held.json": (None, "the pictures held out of training for the held general answers; publishing the file "
-                                       "fills it"),
-    "screens/inputs/screen_v1.json": (f"the same path in the public record repo {RECORD}", None),
-    "licenses/coco_photo_licenses.json": (None, "each COCO photo's own license, read from COCO's annotation files; publishing "
-                                                "the map (or a package tool that builds it from them) fills it"),
-    "text/anchor_pool_v1.json": (None, "pictures with lettering from COCO-Text V2.0 (CC BY 4.0) for the text answers; "
-                                       "publishing the file fills it"),
-    "text/anchor_held_v1.json": (None, "the held pictures with lettering for the text preservation read; publishing the file "
-                                       "fills it"),
-    "text/text_held_v1.jsonl": (None, "the 300 held pictures with lettering (COCO-Text V2.0, CC BY 4.0); publishing the file "
-                                      "fills it"),
-    "text/text_held_v1_deep.jsonl": (None, "the same 300 pictures asked for a long look; publishing the file fills it"),
-    "text/notext_control_v1.jsonl": (None, "200 COCO photos COCO-Text marks as holding no lettering; publishing the file fills it"),
+    "sft/v12_rows_a_by.json": (_AS_READ, None),
+    "sft/v12_rows_nc.json": (None, "the -nc training set, every row of release 5 of the public dataset as a training file (so "
+                                   "its rows are public there, in both parts of the release)"),
+    "sft/v11_rows_a.json": (f"the same path in the public record repo {RECORD}, in picture form: every item with its picture "
+                            "fields only, which is all the general answers read (the repo's README says why)", None),
+    "sft/v11_rows_a_held.json": (f"the same path in the public record repo {RECORD}, in picture form (as above)", None),
+    "screens/inputs/screen_v1.json": (_AS_READ, None),
+    "licenses/coco_photo_licenses.json": (_AS_READ, None),
+    REQUESTS: (f"the same path in the public record repo {RECORD}, less one request the public rows release's word rule holds "
+               "back (the repo's README says so; a lane built from it answers one different request among its 500)", None),
+    "text/anchor_pool_v1.json": (_AS_READ, None),
+    "text/anchor_held_v1.json": (_AS_READ, None),
+    "text/text_held_v1.jsonl": (_AS_READ, None),
+    "text/text_held_v1_deep.jsonl": (_AS_READ, None),
+    "text/notext_control_v1.jsonl": (_AS_READ, None),
 }
+REQUESTS_WHAT = "the text requests of the general answers: requests the Qwen3.5 base models wrote themselves, filtered by rule"
 # What the reads need beyond the lane's own files.
 READ_SOURCES = {
-    "text/text_held_v1_names.jsonl": (None, "the held manifest with each picture's name screen (flagged: its shown words may "
-                                            "hold a person's name, a credit or a web address); publishing it fills it. Without "
-                                            "it the text reads run with --manifest repo:text/text_held_v1.jsonl, the same "
-                                            "numbers without the name split"),
-    "the yardstick's records": (None, "the bars read the yardstick arm's markers, screen and reads by run name; publishing "
-                                      "them (or reading them from a public repo with --yardstick-repo) fills it. Our "
-                                      "yardstick's numbers are in the table below"),
+    "text/text_held_v1_names.jsonl": (None, "the held manifest with each picture's name screen (its flags mark shown words that "
+                                            "may hold a person's name, a credit or a web address); without it the text reads "
+                                            "run with --manifest repo:text/text_held_v1.jsonl, the same numbers without the "
+                                            "name split"),
+    "the yardstick's records": (None, "our yardstick arm's records (its markers, screen and reads); its numbers are in the "
+                                      "table below, so a line's bars can be set beside them, and --yardstick-repo reads a "
+                                      "yardstick from any repo that holds one"),
 }
 
 TEMPLATE = """# Training {name} v1.2
 
 {status}
 
-This page is written by the trainer package ({github}, version {version}) from its model registry; every number says whether
-it was measured or estimated, and where it comes from.
+This page is written from the trainer package's model registry ({github}); its steps install version {version}. Every
+number says whether it was measured or estimated, and where it comes from.
 
 ## What v1.2 is
 
@@ -109,6 +115,11 @@ hold these files at these paths:
 
 {files_table}
 
+A file in the public record repo is copied to the same path of your project repo, for example:
+
+    huggingface-cli download {record} <path> --local-dir inputs
+    huggingface-cli upload <you>/<project> inputs/<path> <path>
+
 The probe and museum reads draw their pictures from the public picture lists ([{pictures}](https://huggingface.co/datasets/{pictures})),
 and the version-1 adapter its comparison reads load lives in the public record repo
 ([{record}](https://huggingface.co/{record})). Earlier versions we trained in our own project repo are not public: the lane
@@ -141,7 +152,7 @@ generator leaves their comparison reads out of your lane and says so.
 ## What the lane does
 
 1. **The general answers**, only when the project repo lacks them: `{ga_anchors}` asks the base model {n_picture:,} requests
-   about pictures and {n_text:,} plain requests ({n_held_picture} + {n_held_text} more held out) and keeps its answers;
+   about pictures and {n_text:,} plain requests{text_source} ({n_held_picture} + {n_held_text} more held out) and keeps its answers;
    `{ga_by}` keeps those whose pictures the Apache-2.0 line may use; `{ga_text}` asks it about {n_text_pictures:,} pictures with
    lettering ({n_text_held} held). {general_time}
 2. **The smoke**, before each training: {smoke_steps} steps on the set's first {smoke_items:,} items, nothing shipped. It stops
@@ -183,7 +194,7 @@ class Page:
 
     def missing(self, where: str, what: str) -> str:
         self.placeholders.append((where, what))
-        return PLACEHOLDER.format(what=f"no public source yet for {where}: {what}")
+        return NOT_PUBLISHED.format(what=what)
 
 
 def _n(x) -> str:
@@ -266,9 +277,25 @@ def pace_table(entry: dict) -> str:
     return _table(["line", "seconds a step", "training hours", "peak GPU memory", "the smoke stops at"], rows)
 
 
+def project_files(entry: dict) -> dict:
+    """The files the model's own lines read: the training set of each of its lines, the general answers' inputs, the requests
+    file where its general answers take their text requests from one, and the text reads' inputs."""
+    sets = {V12_SETS[ln]["path"] for ln in ("apache", "nc")}
+    out = {}
+    for path, what in lines.PROJECT_FILES.items():
+        if path in sets and path not in {V12_SETS[ln]["path"] for ln in entry["lines"]}:
+            continue
+        out[path] = what
+        req = (entry.get("general_requests") or {}).get("requests", "")
+        if path == "sft/v11_rows_a_held.json" and req.startswith("hub:"):
+            assert req[4:] == REQUESTS, req
+            out[REQUESTS] = REQUESTS_WHAT
+    return out
+
+
 def files_table(entry: dict, page: Page) -> str:
     rows = []
-    for path, what in lines.PROJECT_FILES.items():
+    for path, what in project_files(entry).items():
         public, fill = SOURCES[path]
         rows.append([f"`{path}`", what, public or page.missing(path, fill)])
     return _table(["path", "what it holds", "where it comes from publicly"], rows)
@@ -357,6 +384,10 @@ def render(entry: dict, version: str = __version__) -> tuple:
     if entry["blockers"]:
         force_note = ("\n   For this model it refuses until the package can run its lane (see the top of this page); `--force` "
                       "writes it anyway.")
+    req = entry.get("general_requests")
+    n_text = req["n_text"] if req else lines.GENERAL["n_text"]
+    n_held_text = req["n_held_text"] if req else lines.GENERAL["n_held_text"]
+    text_source = f" from `{req['requests'].split(':', 1)[1]}`" if req else ""
     install_note = ""
     if entry["install"]["fast_path"]:
         install_note = " and builds the linear-attention kernels, about 5 minutes"
@@ -373,7 +404,7 @@ def render(entry: dict, version: str = __version__) -> tuple:
         units=UNITS_AN_HOUR, files_table=files, pictures=PICTURES, record=RECORD, key=entry["key"],
         which=which, lane=lane, force_note=force_note, install_note=install_note, ga_anchors=ga["anchors"].split("/")[-1],
         ga_by=ga["anchors_by"].split("/")[-1], ga_text=ga["text"].split("/")[-1], n_picture=lines.GENERAL["n_picture"],
-        n_text=lines.GENERAL["n_text"], n_held_picture=lines.GENERAL["n_held_picture"], n_held_text=lines.GENERAL["n_held_text"],
+        n_text=n_text, n_held_picture=lines.GENERAL["n_held_picture"], n_held_text=n_held_text, text_source=text_source,
         n_text_pictures=lines.GENERAL_TEXT["n_picture"], n_text_held=lines.GENERAL_TEXT["n_held_picture"],
         general_time=general_time(entry), smoke_steps=registry.SMOKE["max_steps"], smoke_items=registry.SMOKE["n_items"],
         stop_rule=stop_rule, late_save=LATE_SAVE_H, comparisons=comparisons(entry), yardstick_runs=yruns,
@@ -397,9 +428,9 @@ def main(argv=None) -> int:
         fh.write(text)
     print(f"wrote {a.out} ({entry['name']}; {len(text.splitlines())} lines; nothing uploaded)")
     if placeholders:
-        print(f"placeholders ({len(placeholders)}), each with what would fill it:")
+        print(f"not published ({len(placeholders)}), each with what it is:")
         for where, what in placeholders:
-            print(f"  PLACEHOLDER {where}: {what}")
+            print(f"  NOT PUBLISHED {where}: {what}")
     return 0
 
 
