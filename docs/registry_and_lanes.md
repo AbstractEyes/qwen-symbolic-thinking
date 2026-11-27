@@ -75,6 +75,14 @@ starts (the generator names each one that is missing):
 | text/anchor_pool_v1.json, text/anchor_held_v1.json | pictures with lettering, for the general answers' text bank |
 | text/text_held_v1.jsonl, text/text_held_v1_deep.jsonl | the 300 held pictures with lettering, at a closer and a long look |
 | text/notext_control_v1.jsonl | 200 photos without lettering, for the controls |
+| text/requests_qwen_v1_clean.json | only for a model whose registry entry names it (`general_requests`: North-Micro-Vision, GLM-4.6V-Flash, Anima Eyes 1B): the text requests of its general answers, written in a user's voice by Qwen3.5-9B and Qwen3.5-4B and filtered by rule (requests that stop mid-sentence, point at material they do not carry, only set a role or a scene, or run under 12 characters are dropped) |
+
+**Which of these are public.** Of the files above, only `screens/inputs/screen_v1.json` is public today, in the public record
+repo [AbstractPhil/qwen-symbolic-thinking-image-training](https://huggingface.co/AbstractPhil/qwen-symbolic-thinking-image-training).
+The others are not published yet, so a lane can be generated and checked from public files, but not run, until they are (or
+until you build your own: the rows themselves are public in release 5 of the dataset). The lane notebooks in `notebooks/` are
+our own runs as they ran: each reads its inputs from our project repo, which is private, so use the generator above for a lane
+of your own rather than running those notebooks as they stand.
 
 Earlier versions trained in a project repo other than yours are left out of the comparisons, and the generator says so.
 
