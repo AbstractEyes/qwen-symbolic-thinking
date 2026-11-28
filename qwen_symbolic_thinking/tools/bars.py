@@ -16,8 +16,13 @@ K_<tag>, and the probe's rows (P_probe_<tag>'s extraction) with the probe split'
 on (its marker names it; a local copy may be given instead). Prints a table and PASS / NOT READY; writes <stem>.txt (the table
 as printed) and <stem>.json (every value read, the bars, the verdict).
 
+The preservation read is K_<tag> unless another is named (--keep, --yardstick-keep): a line whose registered held set holds no
+text request was read on a second preservation read over held text requests asked apart (Ulisse E4B's Apache-2.0 line,
+K_v12_A1_ge4b_by_t; the registry's BARS says which). A preservation read without text asks stops with what to pass.
+
     python -m qwen_symbolic_thinking.tools.bars --project-repo <owner/name> --out <stem> <version run> <read tag>
-        <yardstick run> <yardstick tag> [--yardstick-repo <owner/name>] [--probe-manifest <path>]"""
+        <yardstick run> <yardstick tag> [--yardstick-repo <owner/name>] [--probe-manifest <path>] [--keep <run>]
+        [--yardstick-keep <run>]"""
 from __future__ import annotations
 
 import os
@@ -70,15 +75,19 @@ def probe(records: rec.Records, tag: str, kinds: dict) -> int:
     return sum(first.values())
 
 
-def values(records: rec.Records, run: str, tag: str, kinds: dict) -> dict:
-    """Every value the bars read for one run (the version, or the yardstick)."""
+def values(records: rec.Records, run: str, tag: str, kinds: dict, keep: str | None = None) -> dict:
+    """Every value the bars read for one run (the version, or the yardstick); keep: its preservation read (default K_<tag>)."""
     m = records.done(run)
     fulls = [v for key, v in m["screen"].items() if key.endswith(" | full")]     # the run's own base: "<model id> | full"
     if len(fulls) != 1:
         raise rec.RecordError(f"{run}: {len(fulls)} full-form screen entries ({list(m['screen'])}), one wanted")
     full = fulls[0]
-    k = records.done(f"K_{tag}")["tool"]
+    keep = keep or f"K_{tag}"
+    k = records.done(keep)["tool"]
     s1 = k["by_scale"]["1.0"]
+    if "text-held" not in s1["drift"]:
+        raise rec.RecordError(f"{keep}: its held set holds no text request, so K1's text bar has nothing to read; name a "
+                              "preservation read over held text requests (--keep <run>)")
     return {"t1": list(t1(records, run)), "said": full["hint_said"], "backed": full["hint_backed"], "probe": probe(records, tag, kinds),
             "kl_picture": s1["drift"]["picture-held"]["kl_mean"], "kl_text": s1["drift"]["text-held"]["kl_mean"],
             "kl_all": s1["drift"]["all"]["kl_mean"], "form": s1["takeover"]["all"]["takes_row_form"],
@@ -122,17 +131,21 @@ def table(run: str, a0_run: str, v: dict, a0: dict, rows: list, misses: list) ->
 
 
 def run(records: rec.Records, version_run: str, tag: str, a0_run: str, a0_tag: str, out_stem: str | None = None,
-        yardstick: rec.Records | None = None, probe_manifest_path: str | None = None) -> tuple:
+        yardstick: rec.Records | None = None, probe_manifest_path: str | None = None, keep: str | None = None,
+        a0_keep: str | None = None) -> tuple:
     """The bars of a version against its yardstick: (the JSON record, the table's lines); written to out_stem.{txt,json}.
     yardstick: the records the yardstick's runs are in (default: the version's). probe_manifest_path: a local copy of the
-    picture manifest the version's probe ran on (default: the manifest its marker names, fetched)."""
+    picture manifest the version's probe ran on (default: the manifest its marker names, fetched). keep, a0_keep: the
+    preservation reads to read (default K_<tag>, K_<yardstick tag>)."""
     yardstick = yardstick or records
     spec = probe_manifest_path or probe_manifest(records, tag)
     kinds = probe_kinds(rec.manifest_file(spec, records))
-    v, a0 = values(records, version_run, tag, kinds), values(yardstick, a0_run, a0_tag, kinds)
+    keep, a0_keep = keep or f"K_{tag}", a0_keep or f"K_{a0_tag}"
+    v, a0 = values(records, version_run, tag, kinds, keep), values(yardstick, a0_run, a0_tag, kinds, a0_keep)
     rows, misses = check(v, a0)
     lines = table(version_run, a0_run, v, a0, rows, misses)
-    data = {"version": {"run": version_run, "tag": tag, **v}, "yardstick": {"run": a0_run, "tag": a0_tag, **a0},
+    data = {"version": {"run": version_run, "tag": tag, "keep": keep, **v},
+            "yardstick": {"run": a0_run, "tag": a0_tag, "keep": a0_keep, **a0},
             "probe_manifest": spec, "bars": [dict(zip(("bar", "value", "rule", "read", "note"), r)) for r in rows],
             "pass": not misses, "misses": misses}
     if out_stem:
@@ -150,13 +163,16 @@ def main(argv=None) -> int:
     rec.add_source(ap)
     ap.add_argument("--yardstick-repo", help="the repo the yardstick's runs are in (default: the project repo)")
     ap.add_argument("--probe-manifest", help="a local copy of the picture manifest the probe ran on (default: fetched)")
+    ap.add_argument("--keep", help="the version's preservation read (default: K_<tag>)")
+    ap.add_argument("--yardstick-keep", help="the yardstick's preservation read (default: K_<yardstick tag>)")
     ap.add_argument("--out", required=True, help="the output stem: <stem>.txt and <stem>.json")
     a = ap.parse_args(argv)
     rec.utf8_stdout()
     with rec.open_records(a.project_repo, a.records) as records:
         other = rec.HubRecords(a.yardstick_repo) if a.yardstick_repo and a.yardstick_repo != a.project_repo else None
         try:
-            _, lines = run(records, a.version_run, a.tag, a.yardstick_run, a.yardstick_tag, a.out, other, a.probe_manifest)
+            _, lines = run(records, a.version_run, a.tag, a.yardstick_run, a.yardstick_tag, a.out, other, a.probe_manifest,
+                           a.keep, a.yardstick_keep)
         finally:
             if other is not None:
                 other.close()

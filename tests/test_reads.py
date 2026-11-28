@@ -253,6 +253,31 @@ def test_the_bars_marks_and_their_edges():
     assert misses == ["K1 drift text", "K3 ended"]
 
 
+def test_a_preservation_read_without_text_asks_says_what_to_pass_and_another_is_read_by_name(tmp_path, bars_repo, capsys):
+    # Ulisse E4B's Apache-2.0 line (2026-11-27): its registered held set holds no text request, so its K_ read has no text
+    # drift; the release read the bars on K_v12_A1_ge4b_by_t, its held text requests asked apart
+    root, local = bars_repo
+    records = rec.FolderRecords(root)
+    k = records.done("K_v12_A1_2b_by")
+    _put(root, "runs/done/K_v12_A1_2b_by_t.json", k)                             # the second read, with the text asks
+    del k["tool"]["by_scale"]["1.0"]["drift"]["text-held"]
+    _put(root, "runs/done/K_v12_A1_2b_by.json", k)                               # the registered read, without them
+    with pytest.raises(rec.RecordError, match="holds no text request.*--keep"):
+        bars.run(rec.FolderRecords(root), "V12_A1_gkl1_1ep_2b_by", "v12_A1_2b_by", "V11_A0_rep_2ep_4b", "v11_A0",
+                 probe_manifest_path=local)
+    data, _ = bars.run(rec.FolderRecords(root), "V12_A1_gkl1_1ep_2b_by", "v12_A1_2b_by", "V11_A0_rep_2ep_4b", "v11_A0",
+                       probe_manifest_path=local, keep="K_v12_A1_2b_by_t")
+    assert data["version"]["keep"] == "K_v12_A1_2b_by_t" and data["version"]["kl_text"] == 0.069
+    assert data["yardstick"]["keep"] == "K_v11_A0"
+    out = str(tmp_path / "out")
+    assert reads.main(["2b", "apache", "bars", "--records", root, "--out", out, "--probe-manifest", local]) == 2
+    assert "--keep" in capsys.readouterr().err
+    assert reads.main(["2b", "apache", "bars", "--records", root, "--out", out, "--probe-manifest", local,
+                       "--keep", "K_v12_A1_2b_by_t"]) == 0
+    assert "K_v12_A1_2b_by_t, its screen" in capsys.readouterr().out
+    assert registry.BARS[("ge4b", "apache")]["keep"] == "K_v12_A1_ge4b_by_t"
+
+
 def test_the_bars_take_the_probe_manifest_from_the_probe_or_a_local_copy(tmp_path, bars_repo):
     root, local = bars_repo
     records = rec.FolderRecords(root)

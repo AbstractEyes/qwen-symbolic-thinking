@@ -16,7 +16,7 @@ def test_every_model_of_the_v1_list_has_every_field():
     for key, e in registry.ENTRIES.items():
         extra = set(e) - set(registry.FIELDS)
         assert set(registry.FIELDS) <= set(e) and extra <= set(registry.EXTRA_FIELDS), (key, set(e) ^ set(registry.FIELDS))
-        assert extra == ({"general_requests"} if key in ("north", "glm46v") else set()), (key, extra)
+        assert extra == ({"general_requests"} if key in ("north", "glm46v", "ge4b", "g12b") else set()), (key, extra)
         assert e["key"] == key and e["lane"] and e["general_answers"]["anchors"].startswith("anchors/")
         assert set(e["lines"]) <= set(registry.LINES) and set(e["pace"]) == set(e["lines"]) == set(e["peak"])
         assert set(e["licenses"]) == set(e["lines"])

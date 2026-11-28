@@ -37,5 +37,23 @@ def test_the_general_rows_ask_the_cleaned_requests(key):
 
 
 def test_the_other_version_1_lanes_still_write_their_own_requests():
-    for key in ("9b", "4b", "2b", "08b", "ge4b", "g12b", "molmo2o", "phi4rv", "mi14"):
+    for key in ("9b", "4b", "2b", "08b", "molmo2o", "phi4rv", "mi14"):
         assert "general_requests" not in registry.get(key), key
+
+
+GEMMA = "text/requests_qwen_v1.json"
+
+
+@pytest.mark.parametrize("key", ["ge4b", "g12b"])
+def test_the_gemma_lanes_ask_the_qwen_written_requests_their_lanes_asked(key):
+    # Gemma 4 answers inside the user turn it writes, so its own requests are not requests (2026-11-22); his v11a_g12b and
+    # v11txr_ge4b / v11txh_ge4b asked 2,000 + 200 from this file (2026-11-27, the guides)
+    for line in ("apache", "nc"):
+        b = lines.build_lane(registry.get(key), line, PROJECT, set(lines.PROJECT_FILES) | {GEMMA})
+        assert b["problems"] == [] and b["missing"] == [], (key, line)
+        g = b["specs"][0]["tool"]["args"]
+        assert g["requests"] == f"hub:{GEMMA}" and (g["n_picture"], g["n_text"], g["n_held_picture"], g["n_held_text"]) == \
+            (4000, 2000, 200, 200)
+        bare = lines.build_lane(registry.get(key), line, PROJECT, set(lines.PROJECT_FILES))
+        assert [m.split(" ")[0] for m in bare["missing"]] == [GEMMA]
+    assert "as_run" in registry.get("ge4b")["general_requests"] and "as_run" not in registry.get("g12b")["general_requests"]

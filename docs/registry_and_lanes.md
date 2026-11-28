@@ -76,6 +76,7 @@ starts (the generator names each one that is missing):
 | text/text_held_v1.jsonl, text/text_held_v1_deep.jsonl | the 300 held pictures with lettering, at a closer and a long look |
 | text/notext_control_v1.jsonl | 200 photos without lettering, for the controls |
 | text/requests_qwen_v1_clean.json | only for a model whose registry entry names it (`general_requests`: North-Micro-Vision, GLM-4.6V-Flash, Anima Eyes 1B): the text requests of its general answers, written in a user's voice by Qwen3.5-9B and Qwen3.5-4B and filtered by rule (requests that stop mid-sentence, point at material they do not carry, only set a role or a scene, or run under 12 characters are dropped) |
+| text/requests_qwen_v1.json | only for the two Gemma 4 models (Ulisse E4B and 12B, `general_requests`): the requests the cleaned file was filtered from (2,722 + 274), of which their lanes ask the first 2,000 + 200. Gemma 4 seldom ends a request it writes itself (it goes on to answer it inside the same turn), so its lanes ask these instead |
 
 **Which of these are public.** For the Apache-2.0 lanes of North-Micro-Vision v1.2 and GLM-4.6V-Flash v1.2, all eleven files
 the lane reads are in the public record repo
@@ -83,7 +84,9 @@ the lane reads are in the public record repo
 (published 2026-11-27): eight as our runs read them, and three in a public form that its README describes (the two
 `sft/v11_rows_a*` files keep their picture fields only, which is all the general-answers step reads; the requests file leaves
 out one request that the public rows release's word rule holds back). Copy them into your project repo at the same paths and
-the lane runs. Other lanes may read files that are not published yet (the non-commercial lanes' inputs are not published); the
+the lane runs. The Gemma lanes' `text/requests_qwen_v1.json` is public there too (added later on 2026-11-27), less two
+requests the same rule holds back: a lane built from it answers one different request among its first 2,000 and the same 200
+held. Other lanes may read files that are not published yet (the non-commercial lanes' inputs are not published); the
 generator names every file a lane reads, so check them against the record repo (or build your own: the rows themselves are
 public in release 5 of the dataset). The lane notebooks in `notebooks/` are
 our own runs as they ran: each reads its inputs from our project repo, which is private, so use the generator above for a lane

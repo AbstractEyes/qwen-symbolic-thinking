@@ -77,6 +77,51 @@ def test_a_model_with_a_requests_file_lists_it_with_its_own_counts():
     assert f"`{training_md.REQUESTS}`" not in plain and "2,000 plain requests (200 + 200 more held out)" in plain
 
 
+def test_the_gemma_pages_name_the_requests_their_lanes_asked_and_how_ours_differed():
+    # the three holds of 2026-11-27: the Gemma pages described a lane that writes its own requests, and the E4B's bars
+    # command stopped on a preservation read without text asks
+    for key in ("ge4b", "g12b"):
+        text, placeholders = training_md.render(registry.get(key))
+        files = text.split("## What your project repo must hold")[1].split("## The steps")[0]
+        assert f"`{training_md.REQUESTS_GEMMA}`" in files and f"`{training_md.REQUESTS}`" not in files
+        assert "less two requests the public rows release's word rule holds back" in files
+        assert ("4,000 requests\n   about pictures and 2,000 plain requests from `text/requests_qwen_v1.json` (200 + 200 more "
+                "held out)") in text
+        assert [w for w, _ in placeholders] == ["sft/v12_rows_nc.json", "the yardstick's records",
+                                               "text/text_held_v1_names.jsonl"], key
+    e4b, _ = training_md.render(registry.get("ge4b"))
+    assert "Our Apache-2.0 version was trained before this file existed" in e4b
+    assert "on the preservation read K_v12_A1_ge4b_by_t (its held text requests asked apart" in e4b
+    assert "`--keep K_v12_A1_ge4b_by_t` reads it" in e4b and "-nc: V12NC_A1_gkl1_1ep_ge4b, read 2026-11-23." in e4b
+    twelve, _ = training_md.render(registry.get("g12b"))
+    assert "trained before this file existed" not in twelve and "--keep" not in twelve
+
+
+def test_the_anima_eyes_page_is_its_full_fine_tune_with_the_lora_beside_it():
+    # held 2026-11-27: the page called it a LoRA of "hub:base/..." (a link to nowhere) with the LoRA's pace; its release is the
+    # full fine-tune, of a starting model the lane's first run builds
+    text, placeholders = training_md.render(registry.get("ae1b"))
+    assert "hub:base" not in text and "huggingface.co/hub:" not in text
+    assert "Anima Eyes 1B v1.2 is a full fine-tune of Anima's eyes: [OpenGVLab/InternVL3_5-1B-HF]" in text
+    assert "as its output head, on the rows of the public dataset" in text
+    assert "| what trains | the full fine-tune: every weight but those its family keeps frozen (below); the LoRA beside it: " \
+           "rank 32, alpha 64 |" in text and "| learning rate | 2e-5 (the full fine-tune); 2e-4 (the LoRA) |" in text
+    assert "| Apache-2.0 (the full fine-tune) | 1.87 s; measured:" in text and "| Apache-2.0 (the LoRA) | 2.01 s; measured:" in text
+    assert "`base_ae1b` builds the starting model and writes it to `base/InternVL3_5-1B-anima-last4/`" in text
+    assert "The full fine-tune runs first, right after the two smokes" in text and "The LoRA's whole state saves" in text
+    assert "the full fine-tune's smoke, a steady pace above 2.34 s a step after step 10" in text
+    assert "python -m qwen_symbolic_thinking.reads ae1bf apache bars --project-repo <you>/<project> --out reads" in text
+    assert "it misses T2 backed (0.194, the band's floor 0.195) and T3 probe (118, the floor 133)" in text
+    assert ("it misses T1 full rows (0.017, the mark 0.95), T2 backed (0.186, the band's floor 0.195) and T3 probe (125, the "
+            "floor 133)") in text
+    assert "| the verdict | every bar passes | - | NOT READY |" in text
+    assert [w for w, _ in placeholders] == ["the yardstick's records", "text/text_held_v1_names.jsonl"]
+    two, _ = training_md.render(registry.get("2b"))                               # the LoRA pages keep their form
+    assert "is a LoRA fine-tune of [Qwen/Qwen3.5-2B](https://huggingface.co/Qwen/Qwen3.5-2B) on the rows" in two
+    assert "| LoRA | rank 32, alpha 64 |" in two and "The full fine-tune runs first" not in two and "Its whole state saves" in two
+    assert registry.get("ae1bf")["is_full"] and registry.get("ae1bf")["key"] == "ae1bf"
+
+
 def test_no_page_names_a_repo_that_is_not_public():
     fix = os.path.join(os.path.dirname(__file__), "fixtures", "v12_lanes", "queue_lucia_v12_9b.json")
     with open(fix, encoding="utf-8") as fh:

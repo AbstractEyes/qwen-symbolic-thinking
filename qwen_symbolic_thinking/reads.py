@@ -3,7 +3,7 @@ repo; no model runs and nothing is written to any repo):
 
     python -m qwen_symbolic_thinking.reads <model key> <apache|nc> <bars|text> --project-repo <owner/name> --out <folder>
         [--manifest <held manifest>] [--probe-manifest <local copy>] [--yardstick-run <run> --yardstick-tag <tag>]
-        [--yardstick-repo <owner/name>] [--records <local folder>] [--dry-run]
+        [--yardstick-repo <owner/name>] [--keep <run>] [--yardstick-keep <run>] [--records <local folder>] [--dry-run]
 
 The run names are the lane generator's (lines.py): the line's training and the nine reads after it, the comparison reads of
 the base model and of the older versions the registry compares (or the generator's default set), with the reads earlier lanes
@@ -11,7 +11,9 @@ made under other names (the registry's comparisons, "earlier"), and for the -nc 
 
 `bars` (after the line's preservation read K_v12_A1_<key>_<by|nc> is done): tools.bars, the line's training against its
 line's yardstick (registry.YARDSTICK: an arm of the same line trained without the keeping objective; --yardstick-run and
---yardstick-tag name another, --yardstick-repo reads it from another repo). Writes bars_<read tag>.txt and .json.
+--yardstick-tag name another, --yardstick-repo reads it from another repo). Writes bars_<read tag>.txt and .json. --keep
+names another preservation read for the line (and --yardstick-keep for the yardstick): our Ulisse E4B Apache-2.0 line was read
+on K_v12_A1_ge4b_by_t, its held text requests asked apart, because its registered held set holds none (registry.BARS).
 
 `text` (after the line's last read and its comparison reads are done): seven reads, each <stem>.json, .md and .txt:
 
@@ -115,12 +117,12 @@ def bars_set(entry: dict, line: str, yardstick_run: str | None = None, yardstick
     return n["train"], tag, yardstick_run or y["run"], yardstick_tag or y["tag"]
 
 
-def plan(entry: dict, line: str, which: str, yardstick_run=None, yardstick_tag=None) -> list:
+def plan(entry: dict, line: str, which: str, yardstick_run=None, yardstick_tag=None, keep=None, yardstick_keep=None) -> list:
     """The command's plan as lines of text."""
     if which == "bars":
         run, tag, a0_run, a0_tag = bars_set(entry, line, yardstick_run, yardstick_tag)
-        return [f"bars_{tag}: {run} (its reads P_probe_{tag}, K_{tag}, its screen) against the yardstick {a0_run} "
-                f"(P_probe_{a0_tag}, K_{a0_tag}, its screen)"]
+        return [f"bars_{tag}: {run} (its reads P_probe_{tag}, {keep or 'K_' + tag}, its screen) against the yardstick {a0_run} "
+                f"(P_probe_{a0_tag}, {yardstick_keep or 'K_' + a0_tag}, its screen)"]
     out = []
     for stem, tool, runs in text_sets(entry, line):
         out.append(f"{stem} (tools.{tool}): " + " ".join(n for n, _ in runs))
@@ -166,12 +168,14 @@ def run_text(records: rec.Records, entry: dict, line: str, out: str, manifest: s
 
 
 def run_bars(records: rec.Records, entry: dict, line: str, out: str, yardstick_run=None, yardstick_tag=None,
-             yardstick_repo: str | None = None, probe_manifest: str | None = None, say=print) -> tuple:
+             yardstick_repo: str | None = None, probe_manifest: str | None = None, say=print, keep: str | None = None,
+             yardstick_keep: str | None = None) -> tuple:
     """The bars of a line, written under out; returns (the JSON record, the files written)."""
     run, tag, a0_run, a0_tag = bars_set(entry, line, yardstick_run, yardstick_tag)
     other = rec.HubRecords(yardstick_repo) if yardstick_repo and yardstick_repo != records.repo else None
     try:
-        data, table = bars.run(records, run, tag, a0_run, a0_tag, os.path.join(out, f"bars_{tag}"), other, probe_manifest)
+        data, table = bars.run(records, run, tag, a0_run, a0_tag, os.path.join(out, f"bars_{tag}"), other, probe_manifest,
+                               keep, yardstick_keep)
     finally:
         if other is not None:
             other.close()
@@ -193,6 +197,8 @@ def main(argv=None) -> int:
     ap.add_argument("--yardstick-run", help="the bars' yardstick run (default: the registry's, by line)")
     ap.add_argument("--yardstick-tag", help="its read tag (default: the registry's, by line)")
     ap.add_argument("--yardstick-repo", help="the repo the yardstick's runs are in (default: the project repo)")
+    ap.add_argument("--keep", help="the bars: the line's preservation read (default: the lane's K_<read tag>)")
+    ap.add_argument("--yardstick-keep", help="the bars: the yardstick's preservation read (default: K_<its tag>)")
     ap.add_argument("--dry-run", action="store_true", help="print the runs each read takes; read nothing")
     a = ap.parse_args(argv)
     rec.utf8_stdout()
@@ -201,7 +207,7 @@ def main(argv=None) -> int:
         print(f"{entry['name']} has no {a.line} line (its lines: {', '.join(entry['lines'])})", file=sys.stderr)
         return 2
     print(f"{entry['name']} v1.2, the {a.line} line: the {a.set} reads" + ("" if a.dry_run else f", into {a.out}"))
-    for p in plan(entry, a.line, a.set, a.yardstick_run, a.yardstick_tag):
+    for p in plan(entry, a.line, a.set, a.yardstick_run, a.yardstick_tag, a.keep, a.yardstick_keep):
         print("  " + p)
     if a.dry_run:
         return 0
@@ -213,7 +219,7 @@ def main(argv=None) -> int:
         with rec.open_records(a.project_repo, a.records) as records:
             if a.set == "bars":
                 _, written = run_bars(records, entry, a.line, a.out, a.yardstick_run, a.yardstick_tag, a.yardstick_repo,
-                                      a.probe_manifest)
+                                      a.probe_manifest, keep=a.keep, yardstick_keep=a.yardstick_keep)
             else:
                 written = run_text(records, entry, a.line, a.out, a.manifest)
     except rec.RecordError as e:

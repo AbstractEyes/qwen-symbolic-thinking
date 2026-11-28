@@ -114,11 +114,11 @@ BARS = {
     ("08b", "nc"): {"run": "V12NC_A1_gkl1_1ep_08b", "read": "2026-11-22", "format": 1.0, "full_rows": 1.0, "said": 0.220,
                     "backed": 0.237, "probe": 155, "kl_picture": 0.077, "kl_text": 0.094, "kl_all": 0.105, "form": 0.0,
                     "ended": 0.863, "base_ended": 0.905, "pass": False},
-    # read with its keep read on the held set with text requests (K_v12_A1_ge4b_by_t): the registered K_v12_A1_ge4b_by holds
-    # no text request, so the command stops on K1's text bar (the entry's todo)
+    # read with its keep read on the held set with text requests (K_v12_A1_ge4b_by_t, the held text requests asked apart from
+    # text/requests_qwen_v1.json): the registered K_v12_A1_ge4b_by holds no text request ("keep": reads --keep names it)
     ("ge4b", "apache"): {"run": "V12_A1_gkl1_1ep_ge4b_by", "read": "2026-11-22", "format": 1.0, "full_rows": 1.0, "said": 0.231,
                          "backed": 0.202, "probe": 145, "kl_picture": 0.063, "kl_text": 0.061, "kl_all": 0.072, "form": 0.0,
-                         "ended": 0.933, "base_ended": 0.908, "pass": True},
+                         "ended": 0.933, "base_ended": 0.908, "pass": True, "keep": "K_v12_A1_ge4b_by_t"},
     ("ge4b", "nc"): {"run": "V12NC_A1_gkl1_1ep_ge4b", "read": "2026-11-23", "format": 1.0, "full_rows": 1.0, "said": 0.219,
                      "backed": 0.239, "probe": 136, "kl_picture": 0.094, "kl_text": 0.060, "kl_all": 0.098, "form": 0.0,
                      "ended": 0.910, "base_ended": 0.908, "pass": True},
@@ -134,6 +134,19 @@ BARS = {
     ("glm46v", "apache"): {"run": "V12_A1_gkl1_1ep_glm46v_by", "read": "2026-11-27", "format": 1.0, "full_rows": 1.0,
                            "said": 0.219, "backed": 0.251, "probe": 160, "kl_picture": 0.053, "kl_text": 0.049, "kl_all": 0.073,
                            "form": 0.0, "ended": 0.966, "base_ended": 0.953, "pass": True},
+    # Anima's eyes: no bars were read for the release (the full fine-tune, released 2026-11-25 on a side-by-side look at Anima's
+    # pictures in ComfyUI); read 2026-11-27 with this package's bar code (tools.bars on the project repo's records).
+    # The full fine-tune misses T2 backed by 0.001 (the band's floor 0.195) and T3 probe (118, the floor 133); the LoRA beside
+    # it, never released, wrote its rows and never ended them (T1 full rows 0.017)
+    ("ae1bf", "apache"): {"run": "V12_A1_gkl1_1ep_ae1bf_by", "read": "2026-11-27", "format": 1.0, "full_rows": 1.0,
+                          "said": 0.225, "backed": 0.194, "probe": 118, "kl_picture": 0.068, "kl_text": 0.057, "kl_all": 0.096,
+                          "form": 0.0, "ended": 0.957, "base_ended": 0.961, "pass": False,
+                          "note": "our release, whose bars were read after it: it was released on a side-by-side look at "
+                                  "Anima's pictures in ComfyUI, with it in Anima's text-encoder slot against Anima's own encoder"},
+    ("ae1b", "apache"): {"run": "V12_A1_gkl1_1ep_ae1b_by", "read": "2026-11-27", "format": 1.0, "full_rows": 0.017,
+                         "said": 0.231, "backed": 0.186, "probe": 125, "kl_picture": 0.049, "kl_text": 0.046, "kl_all": 0.069,
+                         "form": 0.0, "ended": 0.944, "base_ended": 0.961, "pass": False,
+                         "note": "not released: it wrote each row and never ended it, so almost no row is whole"},
 }
 # The general answers' time on a G4, measured where a lane made them (the first start to the last end of its three runs).
 GENERAL_ANSWERS_MINUTES = {
@@ -370,6 +383,14 @@ ENTRIES = {
         "image_settings": None,                                      # his v1: the processor's default (280 picture tokens)
         "read_batch": 64, "keep_batch": KEEP_BATCH,                  # P_probe_ge4b ran at 64
         "general_answers": {"anchors": "anchors/v11a_ge4b", "anchors_by": "anchors/v11a_ge4b_by", "text": "anchors/v11txt_ge4b"},
+        # Gemma 4 seldom ends a user turn it writes (it answers inside it), so its text requests come from the Qwen-written file
+        # (from 0.1.70): his v11txr_ge4b (2,000) and v11txh_ge4b (200) asked them; his Apache-2.0 training came before the fix
+        "general_requests": {"requests": "hub:text/requests_qwen_v1.json", "n_text": 2000, "n_held_text": 200,
+                             "as_run": "Our Apache-2.0 version was trained before this file existed: its general text rows "
+                                       "answered requests gemma-4-E4B-it wrote itself, most of which were not requests (the "
+                                       "model goes on to answer inside the turn it writes), and none was held out. Its held "
+                                       "text requests (for its bars) and every text request of our -nc line were then asked "
+                                       "from this file, as this lane asks them."},
         "template": _GEMMA_TEMPLATE + "; a separate vision tower (frozen under the LoRA)",
         "pace": {"apache": _pace(4.75, True, "measured: V12_A1_gkl1_1ep_ge4b_by, 10,137 steps in 803.1 min"),
                  "nc": _pace(4.65, True, "measured: V12NC_A1_gkl1_1ep_ge4b, 21,815 steps in 1,689.5 min over two machines "
@@ -394,13 +415,10 @@ ENTRIES = {
         ],
         "comparisons": None,
         "space": {"lookers": {"v1": "ulisse-e4b"}, "gb": 15.99, "tps": 25},
-        "todo": ["comparisons: none recorded; the generator's default set applies until his lane's plan names one",
-                 "bars apache: the bars command stops on K1's text bar (his held set anchors/v11a_ge4b/held.json holds no text "
-                 "request: gemma-4-E4B-it kept 591 of the text requests it wrote); the release read them on K_v12_A1_ge4b_by_t "
-                 "(the held text requests asked apart, v11txh_ge4b); how the package reads K1 for him decides it",
-                 "general answers: his lane asked his text answers again from text/requests_qwen_v1.json (v11txr_ge4b, "
-                 "v11txh_ge4b), and his -nc training took the merged anchors/v11a_ge4b_r (its keep read anchors/v11a_ge4b_t); "
-                 "this entry has the model write its own requests; whether it takes a requests file decides it"],
+        # 2026-11-27: the two open values settled (v0.1.77): his bars read with `reads ge4b apache bars --keep
+        # K_v12_A1_ge4b_by_t` (BARS "keep"); his text requests from text/requests_qwen_v1.json (general_requests; his -nc
+        # trained on the merged anchors/v11a_ge4b_r, its keep read anchors/v11a_ge4b_t, which one run of this lane makes)
+        "todo": ["comparisons: none recorded; the generator's default set applies until his lane's plan names one"],
         "blockers": [],
     },
     "g12b": {
@@ -414,6 +432,8 @@ ENTRIES = {
         "image_settings": None,
         "read_batch": 64, "keep_batch": KEEP_BATCH,                  # P_probe_g12b_lr5 ran at 64
         "general_answers": {"anchors": "anchors/v11a_g12b", "anchors_by": "anchors/v11a_g12b_by", "text": "anchors/v11txt_g12b"},
+        # his v11a_g12b asked its text requests from the Qwen-written file (2,000 + 200), as Gemma 4 needs (the E4B's lesson)
+        "general_requests": {"requests": "hub:text/requests_qwen_v1.json", "n_text": 2000, "n_held_text": 200},
         "template": (_GEMMA_TEMPLATE + "; encoder-free: the early language layers read the picture and sit under the LoRA, so "
                      "an arm's picture dependence is read at its early checkpoints (tools.picture_probe), not only at the end"),
         "pace": {"apache": _pace(9.04, True, "measured: V12_A1_gkl1_1ep_g12b_by, 10,137 steps in 1,527.8 min over two machines "
@@ -440,9 +460,7 @@ ENTRIES = {
         ],
         "comparisons": None,
         "space": {"lookers": {"v1": "ulisse-12b"}, "gb": 23.92, "tps": 18},
-        "todo": ["comparisons: none recorded; the generator's default set applies until his lane's plan names one",
-                 "general answers: his lane's v11a_g12b took its text requests from text/requests_qwen_v1.json (2,000 + 200); "
-                 "this entry has the model write its own requests; whether it takes a requests file decides it"],
+        "todo": ["comparisons: none recorded; the generator's default set applies until his lane's plan names one"],
         "blockers": [],
     },
     # ------------------------------------------------------------------------------------------------ the other families
@@ -614,7 +632,8 @@ FIELDS = ("key", "name", "line_name", "family", "model_type", "base", "base_revi
           "keep_batch", "general_answers", "template", "pace", "peak", "repos", "tags", "licenses", "versions", "comparisons",
           "space", "todo", "blockers")
 # What an entry's lane may carry beyond the common recipe (lines.py reads them; the table below): a version-1 entry carries one
-# only when its v1.2 lane needs it (North-Micro-Vision and GLM-4.6V-Flash take their general text requests from a file).
+# only when its v1.2 lane needs it (North-Micro-Vision, GLM-4.6V-Flash and the two Gemma 4 models take their general text
+# requests from a file; "as_run" in it, for the guide, says where our own version's lane differed).
 EXTRA_FIELDS = ("prepare", "general_requests", "train_extra", "full", "retrains")
 
 # Models added to the catalogue after the version-1 list: no version 1 and no Space looker yet. Beside FIELDS an entry here may
@@ -663,10 +682,7 @@ LATER = {
         "todo": ["repos apache: the LoRA's release repo, named at a release (the full fine-tune's is released; the first LoRA's "
                  "rows never ended, its retrain is ae1bt)",
                  "an A/B in ComfyUI of the LoRA (Anima with it in its text-encoder slot against its own encoder) before it is "
-                 "called done (the full fine-tune's: a side-by-side look in ComfyUI on 2026-11-25, before its release)",
-                 "bars apache: none entered; no bars were read for the release (the full fine-tune); read on 2026-11-27 with "
-                 "the package's bar code on its full entry: NOT READY (T2 backed 0.194, T3 probe 118); the bars command reads "
-                 "the LoRA V12_A1_gkl1_1ep_ae1b_by (NOT READY: T1 full rows 0.017); which the page shows decides it"],
+                 "called done (the full fine-tune's: a side-by-side look in ComfyUI on 2026-11-25, before its release)"],
         "blockers": [],
         "prepare": {"name": "base_ae1b", "module": "anima_eyes_base", "args": {"head": _AE.HEAD},
                     "makes": [f"{_AE.FOLDER}/model.safetensors", f"{_AE.FOLDER}/config.json", f"{_AE.FOLDER}/anima_eyes.json"]},
@@ -749,7 +765,7 @@ def retrain_keys() -> list:
 def get(name: str) -> dict:
     """An entry (a deep copy) by its run key, its base model id, one of its release repos or one of its Space looker keys
     (case does not matter); the version-1 list first, then the later additions (LATER). A retrain's run key gives the retrain's
-    entry (retrain_entry)."""
+    entry (retrain_entry), a full fine-tune's run key the full fine-tune's (full_entry: `reads ae1bf apache bars`)."""
     want = str(name).strip().lower()
     for key, e in list(ENTRIES.items()) + list(LATER.items()):
         names = {key, e["base"].lower(), e["base"].split("/")[-1].lower(), e["name"].lower()}
@@ -761,6 +777,8 @@ def get(name: str) -> dict:
         for key in e.get("retrains") or {}:
             if want == key.lower():
                 return retrain_entry(e, key)
+        if e.get("full") and want == e["full"]["key"].lower():
+            return full_entry(e)
     raise KeyError(f"no model {name!r} in the registry; its keys: {', '.join(all_keys() + retrain_keys())}")
 
 
