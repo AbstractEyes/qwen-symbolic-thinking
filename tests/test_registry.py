@@ -71,11 +71,11 @@ def test_the_recorded_settings():
     assert all(e["lora"] == {"rank": 32, "alpha": 64} and (e["batch"], e["grad_accum"]) == (8, 2) for e in registry.ENTRIES.values())
     # the measured v1.2 paces and the estimates of the others
     paces = {k: {ln: e["pace"][ln]["s"] for ln in e["lines"]} for k, e in registry.ENTRIES.items()}
-    assert paces["9b"] == {"apache": 9.03, "nc": 8.1} and paces["4b"] == {"apache": 6.23, "nc": 5.6}
-    assert paces["2b"] == {"apache": 3.18, "nc": 2.87} and paces["08b"] == {"apache": 2.1, "nc": 1.9}
-    assert paces["ge4b"] == {"apache": 4.1, "nc": 3.7} and paces["g12b"] == {"apache": 7.0, "nc": 6.3}
+    assert paces["9b"] == {"apache": 9.03, "nc": 8.14} and paces["4b"] == {"apache": 6.23, "nc": 5.6}
+    assert paces["2b"] == {"apache": 3.18, "nc": 2.96} and paces["08b"] == {"apache": 2.09, "nc": 1.9}
+    assert paces["ge4b"] == {"apache": 4.75, "nc": 4.65} and paces["g12b"] == {"apache": 9.04, "nc": 8.53}
     assert (paces["north"], paces["glm46v"], paces["molmo2o"], paces["phi4rv"], paces["mi14"]) == (
-        {"apache": 3.6}, {"apache": 14.4}, {"apache": 11.5}, {"apache": 21.8}, {"apache": 31.6})
+        {"apache": 3.46}, {"apache": 13.59}, {"apache": 11.5}, {"apache": 21.8}, {"apache": 31.6})
 
 
 @pytest.mark.parametrize("key", list(registry.ENTRIES))
@@ -107,7 +107,7 @@ def test_the_recipe_and_the_versions():
     v1 = registry.version(registry.get("2b"), "v1")
     assert v1["adapter"] == registry.RECORD and v1["keep_tag"] == "lucia1_2b" and v1["release"]["tag"] == "lucia-v1"
     assert registry.version(registry.get("9b"), "v1.1", "nc")["adapter"] == registry.PROJECT
-    assert not registry.version(registry.get("9b"), "v1.2", "nc")["ready"]
+    assert registry.version(registry.get("9b"), "v1.2", "nc")["ready"]
     with pytest.raises(KeyError):
         registry.version(registry.get("08b"), "v1.1")
 

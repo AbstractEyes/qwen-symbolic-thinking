@@ -24,8 +24,8 @@ def test_the_entry_is_a_later_addition_and_the_v1_list_is_unchanged():
     assert set(registry.FIELDS) <= set(e) and e["lines"] == ("apache",) and e["licenses"] == {"apache": "Apache-2.0"}
     f = registry.full_entry(e)
     assert f["key"] == "ae1bf" and f["lora"]["rank"] == 0 and f["lr"] == 2e-5 and f["is_full"] and f["full"] is None
-    assert registry.smoke_stop(f, "apache")["steady_s_per_step"] == round(1.5 * 1.8, 2)
-    assert registry.smoke_stop(e, "apache")["steady_s_per_step"] == round(1.5 * 2.1, 2)
+    assert registry.smoke_stop(f, "apache")["steady_s_per_step"] == round(1.25 * 1.87, 2)
+    assert registry.smoke_stop(e, "apache")["steady_s_per_step"] == round(1.25 * 2.01, 2)
     assert registry.full_entry(registry.get("08b")) is None
     text = registry.describe(e)
     assert "full fine-tune (ae1bf)" in text and "base_ae1b" in text and "requests_qwen_v1_clean.json" in text

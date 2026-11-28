@@ -150,7 +150,7 @@ def test_the_lines_the_catalogue_gives_and_the_blockers():
         lines.build_lane(registry.get("2b"), "both", "no-owner", set())
 
 
-def test_the_08b_lane_builds_with_its_estimates_and_the_default_comparisons():
+def test_the_08b_lane_builds_with_its_measured_paces_and_the_default_comparisons():
     entry = registry.get("08b")
     built = lines.build_lane(entry, "both", "someone/their-project", set(lines.PROJECT_FILES))
     names = [s["name"] for s in built["specs"]]
@@ -159,8 +159,8 @@ def test_the_08b_lane_builds_with_its_estimates_and_the_default_comparisons():
     assert names[5:-2] == ["XT_base_08b_noadapter", "XT_base_08b_deep", "XTA_base_08b", "XCA2_base_08b", "XC2_base_08b",
                            "K0_lucia1_08b", "XT_v1_08b_s1_deep", "XT_v1_08b_s1"]
     smoke = built["specs"][3]
-    assert smoke["stop_if"] == {"steady_s_per_step": round(1.5 * 2.1, 2), "peak_gb": 85, "after_step": 10}    # estimates: 1.5x
-    assert built["specs"][-2]["stop_if"]["steady_s_per_step"] == round(1.5 * 1.9, 2)
+    assert smoke["stop_if"] == {"steady_s_per_step": round(1.25 * 2.09, 2), "peak_gb": 85, "after_step": 10}   # measured: 1.25x
+    assert built["specs"][-2]["stop_if"]["steady_s_per_step"] == round(1.25 * 1.9, 2)
     k0 = built["specs"][10]["tool"]["args"]
     assert k0["adapter"] == registry.RECORD and k0["adapter_subfolder"].endswith("_G_med4_2ep_08b/final")
     assert all(s.get("needs") == __version__ for s in built["specs"]) and built["problems"] == [] and built["missing"] == []

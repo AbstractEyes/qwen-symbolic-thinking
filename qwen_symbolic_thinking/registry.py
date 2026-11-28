@@ -104,11 +104,50 @@ BARS = {
     ("9b", "apache"): {"run": "V12_A1_gkl1_1ep_9b_by", "read": "2026-11-21", "format": 1.0, "full_rows": 1.0, "said": 0.194,
                        "backed": 0.258, "probe": 165, "kl_picture": 0.054, "kl_text": 0.062, "kl_all": 0.066, "form": 0.0,
                        "ended": 0.930, "base_ended": 0.918, "pass": True},
+    ("9b", "nc"): {"run": "V12NC_A1_gkl1_1ep_9b", "read": "2026-11-23", "format": 1.0, "full_rows": 1.0, "said": 0.234,
+                   "backed": 0.244, "probe": 172, "kl_picture": 0.081, "kl_text": 0.104, "kl_all": 0.103, "form": 0.0,
+                   "ended": 0.918, "base_ended": 0.918, "pass": True},
+    ("08b", "apache"): {"run": "V12_A1_gkl1_1ep_08b_by", "read": "2026-11-21", "format": 1.0, "full_rows": 1.0, "said": 0.208,
+                        "backed": 0.239, "probe": 136, "kl_picture": 0.077, "kl_text": 0.073, "kl_all": 0.105, "form": 0.0,
+                        "ended": 0.887, "base_ended": 0.905, "pass": True},
+    # K3 ended missed (0.863 against the line 0.885): released with that caveat
+    ("08b", "nc"): {"run": "V12NC_A1_gkl1_1ep_08b", "read": "2026-11-22", "format": 1.0, "full_rows": 1.0, "said": 0.220,
+                    "backed": 0.237, "probe": 155, "kl_picture": 0.077, "kl_text": 0.094, "kl_all": 0.105, "form": 0.0,
+                    "ended": 0.863, "base_ended": 0.905, "pass": False},
+    # read with its keep read on the held set with text requests (K_v12_A1_ge4b_by_t): the registered K_v12_A1_ge4b_by holds
+    # no text request, so the command stops on K1's text bar (the entry's todo)
+    ("ge4b", "apache"): {"run": "V12_A1_gkl1_1ep_ge4b_by", "read": "2026-11-22", "format": 1.0, "full_rows": 1.0, "said": 0.231,
+                         "backed": 0.202, "probe": 145, "kl_picture": 0.063, "kl_text": 0.061, "kl_all": 0.072, "form": 0.0,
+                         "ended": 0.933, "base_ended": 0.908, "pass": True},
+    ("ge4b", "nc"): {"run": "V12NC_A1_gkl1_1ep_ge4b", "read": "2026-11-23", "format": 1.0, "full_rows": 1.0, "said": 0.219,
+                     "backed": 0.239, "probe": 136, "kl_picture": 0.094, "kl_text": 0.060, "kl_all": 0.098, "form": 0.0,
+                     "ended": 0.910, "base_ended": 0.908, "pass": True},
+    ("g12b", "apache"): {"run": "V12_A1_gkl1_1ep_g12b_by", "read": "2026-11-25", "format": 1.0, "full_rows": 1.0, "said": 0.251,
+                         "backed": 0.213, "probe": 159, "kl_picture": 0.048, "kl_text": 0.009, "kl_all": 0.034, "form": 0.0,
+                         "ended": 0.842, "base_ended": 0.855, "pass": True},
+    ("g12b", "nc"): {"run": "V12NC_A1_gkl1_1ep_g12b", "read": "2026-11-26", "format": 1.0, "full_rows": 1.0, "said": 0.229,
+                     "backed": 0.253, "probe": 163, "kl_picture": 0.064, "kl_text": 0.018, "kl_all": 0.046, "form": 0.0,
+                     "ended": 0.850, "base_ended": 0.855, "pass": True},
+    ("north", "apache"): {"run": "V12_A1_gkl1_1ep_north_by", "read": "2026-11-26", "format": 1.0, "full_rows": 1.0, "said": 0.194,
+                          "backed": 0.252, "probe": 149, "kl_picture": 0.028, "kl_text": 0.060, "kl_all": 0.044, "form": 0.0,
+                          "ended": 1.000, "base_ended": 0.996, "pass": True},
+    ("glm46v", "apache"): {"run": "V12_A1_gkl1_1ep_glm46v_by", "read": "2026-11-27", "format": 1.0, "full_rows": 1.0,
+                           "said": 0.219, "backed": 0.251, "probe": 160, "kl_picture": 0.053, "kl_text": 0.049, "kl_all": 0.073,
+                           "form": 0.0, "ended": 0.966, "base_ended": 0.953, "pass": True},
 }
 # The general answers' time on a G4, measured where a lane made them (the first start to the last end of its three runs).
 GENERAL_ANSWERS_MINUTES = {
     "2b": {"minutes": 30.4, "source": "its lane's v11a_2b 24 min 51 s, v11a_2b_by 3 s, v11txt_2b 5 min 25 s, 2026-11-20"},
     "08b": {"minutes": 26.3, "source": "her lane's v11a_08b 21 min 40 s, v11a_08b_by 3 s, v11txt_08b 4 min 33 s, 2026-11-21"},
+    "ge4b": {"minutes": 50.4, "source": "his lane's v11a_ge4b 40 min 43 s, v11a_ge4b_by 5 s, v11txt_ge4b 9 min 31 s, 2026-11-22"},
+    "g12b": {"minutes": 103.2, "source": "his lane's v11a_g12b 77 min 36 s, v11a_g12b_by 5 s, v11txt_g12b 25 min 24 s, "
+                                         "2026-11-24"},
+    "north": {"minutes": 18.2, "source": "its lane's v11a_north 13 min 26 s, v11a_north_by 2 s, v11txt_north 4 min 43 s, "
+                                         "2026-11-26"},
+    "glm46v": {"minutes": 58.7, "source": "its lane's v11a_glm46v 43 min 45 s, v11a_glm46v_by 2 s, v11txt_glm46v 14 min 52 s, "
+                                          "2026-11-26"},
+    "ae1b": {"minutes": 139.1, "source": "its lane's v11a_ae1b 97 min 46 s, v11a_ae1b_by 2 s, v11txt_ae1b 41 min 17 s, "
+                                         "2026-11-25"},
 }
 
 # An estimate: a v1.2 step costs about 1.5 times a v1 step of the same model on the Apache rows and about 1.4 times on the -nc
@@ -150,13 +189,14 @@ ENTRIES = {
         "general_answers": {"anchors": "anchors/v11a_9b", "anchors_by": "anchors/v11a_9b_by", "text": "anchors/v11txt_9b"},
         "template": _QWEN_TEMPLATE,
         "pace": {"apache": _pace(9.03, True, "measured: V12_A1_gkl1_1ep_9b_by, 10,137 steps in 1,525.9 min over two machines"),
-                 "nc": _pace(8.1, True, "measured: V12NC_A1_gkl1_1ep_9b's first steps, 8.0-8.1 s a step (training)")},
+                 "nc": _pace(8.14, True, "measured: V12NC_A1_gkl1_1ep_9b, 21,815 steps in 2,961.1 min over three machines "
+                                         "(the second from step 8,340, the third from step 18,470)")},
         "peak": {"apache": {"gb": 58.7, "source": "measured: V12_A1_gkl1_1ep_9b_by (its smoke 51.3)"},
-                 "nc": {"gb": None, "source": "its smoke S_v12_smoke_gc1_9b_nc 41.7; the training's own when it ends"}},
+                 "nc": {"gb": 60.74, "source": "measured: V12NC_A1_gkl1_1ep_9b (its smoke 41.69)"}},
         "repos": {"apache": "AbstractPhil/qwen3.5-9b-think-symbolic-image", "nc": "AbstractPhil/qwen3.5-9b-think-symbolic-image-nc",
                   "full": None},                                   # no full fine-tune of the 9B (its states do not fit one card)
         "tags": {"AbstractPhil/qwen3.5-9b-think-symbolic-image": ["legacy-e-all-2ep", "lucia-v1", "lucia-v1.1", "lucia-v1.2"],
-                 "AbstractPhil/qwen3.5-9b-think-symbolic-image-nc": ["lucia-v1.1"]},
+                 "AbstractPhil/qwen3.5-9b-think-symbolic-image-nc": ["lucia-v1.1", "lucia-v1.2"]},
         "licenses": {"apache": "Apache-2.0", "nc": "CC BY-NC-SA 4.0"},              # the release cards
         "versions": [
             _version("v1", "apache", RECORD, "lora/Qwen3.5-9B/r32/20261031_085915_G_med4_2ep/final",
@@ -171,9 +211,9 @@ ENTRIES = {
             _version("v1.2", "apache", PROJECT, "lora/Qwen3.5-9B/r32/20261120_062038_V12_A1_gkl1_1ep_9b_by/final",
                      ("AbstractPhil/qwen3.5-9b-think-symbolic-image", "lucia-v1.2"), "v12_9b_by_s1", wordings="v1.1",
                      source="V12_A1_gkl1_1ep_9b_by"),
-            _version("v1.2", "nc", PROJECT, "lora/Qwen3.5-9B/r32/20261121_100931_V12NC_A1_gkl1_1ep_9b/final", None,
-                     "v12_9b_nc_s1", wordings="v1.1", ready=False,
-                     source="V12NC_A1_gkl1_1ep_9b: training; its final folder ships when the training ends"),
+            _version("v1.2", "nc", PROJECT, "lora/Qwen3.5-9B/r32/20261121_100931_V12NC_A1_gkl1_1ep_9b/final",
+                     ("AbstractPhil/qwen3.5-9b-think-symbolic-image-nc", "lucia-v1.2"), "v12_9b_nc_s1", wordings="v1.1",
+                     source="V12NC_A1_gkl1_1ep_9b"),
         ],
         # the 9B lane compared the base and both v1.1 lines; their closer-look reads (XT_base_9b_noadapter, the v1.1 lines'
         # closer reads), Lucia v1.1's text preservation read and Lucia v1's reads existed from earlier runs ("earlier")
@@ -185,8 +225,7 @@ ENTRIES = {
                          "earlier": {"closer": "XT_v11nc_9b_s1"}}],
         "space": {"lookers": {"v1": "lucia-9b", "v1.1": "lucia-9b-v1.1", "v1.1-nc": "lucia-9b-v1.1-nc", "v1.2": "lucia-9b-v1.2"},
                   "gb": 19.31, "tps": 20},
-        "todo": ["versions v1.2 nc: its release (the -nc repo's lucia-v1.2 tag) and its final folder, when the training ends",
-                 "peak nc: the -nc training's own peak, from its marker when it ends"],
+        "todo": [],
         "blockers": [],
     },
     "4b": {
@@ -251,12 +290,14 @@ ENTRIES = {
         "general_answers": {"anchors": "anchors/v11a_2b", "anchors_by": "anchors/v11a_2b_by", "text": "anchors/v11txt_2b"},
         "template": _QWEN_TEMPLATE,
         "pace": {"apache": _pace(3.18, True, "measured: V12_A1_gkl1_1ep_2b_by, 10,137 steps in 538.4 min"),
-                 "nc": _pace(2.87, True, "measured: V12NC_A1_gkl1_1ep_2b mid-run (its final marker: 2.89 s a training step)")},
+                 "nc": _pace(2.96, True, "measured: V12NC_A1_gkl1_1ep_2b, 21,815 steps in 1,075.4 min over two machines "
+                                         "(the second from step 15,590)")},
         "peak": {"apache": {"gb": 44.2, "source": "measured: V12_A1_gkl1_1ep_2b_by (its smoke 33.3)"},
                  "nc": {"gb": 44.1, "source": "measured: V12NC_A1_gkl1_1ep_2b (its smoke 24.4)"}},
-        "repos": {"apache": "AbstractPhil/qwen3.5-2b-think-symbolic-image", "nc": None,
+        "repos": {"apache": "AbstractPhil/qwen3.5-2b-think-symbolic-image", "nc": "AbstractPhil/qwen3.5-2b-think-symbolic-image-nc",
                   "full": "AbstractPhil/qwen3.5-2b-think-symbolic-image-full"},
         "tags": {"AbstractPhil/qwen3.5-2b-think-symbolic-image": ["lucia-v1", "lucia-v1.2"],
+                 "AbstractPhil/qwen3.5-2b-think-symbolic-image-nc": ["lucia-v1.2"],
                  "AbstractPhil/qwen3.5-2b-think-symbolic-image-full": ["lucia-v1"]},
         "licenses": {"apache": "Apache-2.0", "nc": "CC BY-NC-SA 4.0"},
         "versions": [
@@ -266,16 +307,16 @@ ENTRIES = {
             _version("v1.2", "apache", PROJECT, "lora/Qwen3.5-2B/r32/20261120_064248_V12_A1_gkl1_1ep_2b_by/final",
                      ("AbstractPhil/qwen3.5-2b-think-symbolic-image", "lucia-v1.2"), "v12_2b_by_s1", wordings="v1.1",
                      source="V12_A1_gkl1_1ep_2b_by"),
-            _version("v1.2", "nc", PROJECT, "lora/Qwen3.5-2B/r32/20261120_161853_V12NC_A1_gkl1_1ep_2b/final", None,
-                     "v12_2b_nc_s1", wordings="v1.1", source="V12NC_A1_gkl1_1ep_2b (trained; not released yet)"),
+            _version("v1.2", "nc", PROJECT, "lora/Qwen3.5-2B/r32/20261120_161853_V12NC_A1_gkl1_1ep_2b/final",
+                     ("AbstractPhil/qwen3.5-2b-think-symbolic-image-nc", "lucia-v1.2"), "v12_2b_nc_s1", wordings="v1.1",
+                     source="V12NC_A1_gkl1_1ep_2b"),
         ],
         # the 2B lane compared the base (closer and deep text reads, the lettering read, both controls) and Lucia 2B v1 (her keep
         # read at strengths 0 and 1, her deep and closer text reads), in that order
         "comparisons": [{"of": "base", "reads": ["closer", "deep", "lettering", "control_lettering", "control"]},
                         {"of": "v1", "line": "apache", "reads": ["keep", "deep", "closer"]}],
         "space": {"lookers": {"v1": "lucia-2b", "v1.2": "lucia-2b-v1.2"}, "gb": 4.55, "tps": 28},
-        "todo": ["repos nc: the 2B -nc release repo, created at its release (released by decision, not yet)",
-                 "versions v1.2 nc: its release tag, at that release"],
+        "todo": [],
         "blockers": [],
     },
     "08b": {
@@ -283,7 +324,7 @@ ENTRIES = {
         "base": "Qwen/Qwen3.5-0.8B", "base_revision": None,
         "trust_remote_code": False, "transformers": None, "install": {"transformers": "transformers>=5.0", "fast_path": True},
         "lines": ("apache", "nc"), "scheduled": True,
-        "lane": "lucia_v12_08b",                               # the generator's rule (<line>_v12_<key>); no v1.2 lane has run
+        "lane": "lucia_v12_08b",                               # the lane both 0.8B lines ran in
         # the v1.2 recipe; Lucia 0.8B v1 is the recipe's verbatim arm (lr 2e-4, 8 x 2; G_med4_2ep_08b), chosen over a
         # three-epoch lr 3e-4 arm
         "lora": {"rank": 32, "alpha": 64}, "lr": 2e-4, "batch": 8, "grad_accum": 2, "max_len": 2048,
@@ -291,27 +332,31 @@ ENTRIES = {
         "read_batch": 64, "keep_batch": KEEP_BATCH,                     # her v1 reads ran at 64 (P_probe_08b)
         "general_answers": {"anchors": "anchors/v11a_08b", "anchors_by": "anchors/v11a_08b_by", "text": "anchors/v11txt_08b"},
         "template": _QWEN_TEMPLATE,
-        "pace": {"apache": _pace(2.1, False, _EST.format(v1=1.36, run="G_med4_2ep_08b")
-                                 + "; her smoke S_v12_smoke_gc1_08b: 1.95 s a step over steps 10-30 on its 2,000 items"),
-                 "nc": _pace(1.9, False, _EST.format(v1=1.36, run="G_med4_2ep_08b"))},
-        "peak": {"apache": {"gb": None, "source": "her smoke S_v12_smoke_gc1_08b 29.92; the training's own when it ends"},
-                 "nc": {"gb": None, "source": "not measured: her smoke measures it"}},
-        "repos": {"apache": "AbstractPhil/qwen3.5-0.8b-think-symbolic-image", "nc": None,
+        "pace": {"apache": _pace(2.09, True, "measured: V12_A1_gkl1_1ep_08b_by, 10,137 steps in 353.0 min"),
+                 "nc": _pace(1.9, True, "measured: V12NC_A1_gkl1_1ep_08b, 21,815 steps in 689.1 min")},
+        "peak": {"apache": {"gb": 40.51, "source": "measured: V12_A1_gkl1_1ep_08b_by (her smoke 29.92)"},
+                 "nc": {"gb": 40.47, "source": "measured: V12NC_A1_gkl1_1ep_08b (her smoke 23.27)"}},
+        "repos": {"apache": "AbstractPhil/qwen3.5-0.8b-think-symbolic-image",
+                  "nc": "AbstractPhil/qwen3.5-0.8b-think-symbolic-image-nc",
                   "full": "AbstractPhil/qwen3.5-0.8b-think-symbolic-image-full"},
-        "tags": {"AbstractPhil/qwen3.5-0.8b-think-symbolic-image": ["lucia-v1"],
+        "tags": {"AbstractPhil/qwen3.5-0.8b-think-symbolic-image": ["lucia-v1", "lucia-v1.2"],
+                 "AbstractPhil/qwen3.5-0.8b-think-symbolic-image-nc": ["lucia-v1.2"],
                  "AbstractPhil/qwen3.5-0.8b-think-symbolic-image-full": ["lucia-v1"]},
         "licenses": {"apache": "Apache-2.0", "nc": "CC BY-NC-SA 4.0"},
         "versions": [
             _version("v1", "apache", RECORD, "lora/Qwen3.5-0.8B/r32/20261101_041418_G_med4_2ep_08b/final",
                      ("AbstractPhil/qwen3.5-0.8b-think-symbolic-image", "lucia-v1"), "v1_08b_s1", "lucia1_08b",
                      source="G_med4_2ep_08b's marker in the record repo"),
+            _version("v1.2", "apache", PROJECT, "lora/Qwen3.5-0.8B/r32/20261121_150248_V12_A1_gkl1_1ep_08b_by/final",
+                     ("AbstractPhil/qwen3.5-0.8b-think-symbolic-image", "lucia-v1.2"), "v12_08b_by_s1", wordings="v1.1",
+                     source="V12_A1_gkl1_1ep_08b_by"),
+            _version("v1.2", "nc", PROJECT, "lora/Qwen3.5-0.8B/r32/20261121_212736_V12NC_A1_gkl1_1ep_08b/final",
+                     ("AbstractPhil/qwen3.5-0.8b-think-symbolic-image-nc", "lucia-v1.2"), "v12_08b_nc_s1", wordings="v1.1",
+                     source="V12NC_A1_gkl1_1ep_08b"),
         ],
         "comparisons": None,
         "space": {"lookers": {"v1": "lucia-0.8b"}, "gb": 1.75, "tps": 30},
-        "todo": ["peak apache, nc: the trainings' own, from their markers when they end (the Apache smoke's is in its source)",
-                 "pace apache, nc: the trainings' own, from their markers when they end",
-                 "comparisons: none recorded; the generator's default set applies until her lane's plan names one",
-                 "repos nc: the 0.8B -nc release repo, created at its release"],
+        "todo": ["comparisons: none recorded; the generator's default set applies until her lane's plan names one"],
         "blockers": [],
     },
     # ------------------------------------------------------------------------------------------------ Ulisse (Gemma 4)
@@ -326,23 +371,36 @@ ENTRIES = {
         "read_batch": 64, "keep_batch": KEEP_BATCH,                  # P_probe_ge4b ran at 64
         "general_answers": {"anchors": "anchors/v11a_ge4b", "anchors_by": "anchors/v11a_ge4b_by", "text": "anchors/v11txt_ge4b"},
         "template": _GEMMA_TEMPLATE + "; a separate vision tower (frozen under the LoRA)",
-        "pace": {"apache": _pace(4.1, False, _EST.format(v1=2.67, run="G_med4_2ep_ge4b")),
-                 "nc": _pace(3.7, False, _EST.format(v1=2.67, run="G_med4_2ep_ge4b"))},
-        "peak": {"apache": {"gb": None, "source": "not measured: his smoke measures it"},
-                 "nc": {"gb": None, "source": "not measured: his smoke measures it"}},
-        "repos": {"apache": "AbstractPhil/gemma-4-e4b-think-symbolic-image", "nc": None, "full": None},
-        "tags": {"AbstractPhil/gemma-4-e4b-think-symbolic-image": ["ulisse-v1", "v1"]},
+        "pace": {"apache": _pace(4.75, True, "measured: V12_A1_gkl1_1ep_ge4b_by, 10,137 steps in 803.1 min"),
+                 "nc": _pace(4.65, True, "measured: V12NC_A1_gkl1_1ep_ge4b, 21,815 steps in 1,689.5 min over two machines "
+                                         "(the second from step 5,450)")},
+        "peak": {"apache": {"gb": 50.16, "source": "measured: V12_A1_gkl1_1ep_ge4b_by (his smoke 44.55)"},
+                 "nc": {"gb": 51.71, "source": "measured: V12NC_A1_gkl1_1ep_ge4b (his smoke 42.54)"}},
+        "repos": {"apache": "AbstractPhil/gemma-4-e4b-think-symbolic-image",
+                  "nc": "AbstractPhil/gemma-4-e4b-think-symbolic-image-nc", "full": None},
+        "tags": {"AbstractPhil/gemma-4-e4b-think-symbolic-image": ["ulisse-v1", "ulisse-v1.2", "v1"],
+                 "AbstractPhil/gemma-4-e4b-think-symbolic-image-nc": ["ulisse-v1.2"]},
         "licenses": {"apache": "Apache-2.0", "nc": "CC BY-NC-SA 4.0"},
         "versions": [
             _version("v1", "apache", RECORD, "lora/gemma-4-E4B-it/r32/20261101_093141_G_med4_2ep_ge4b/final",
                      ("AbstractPhil/gemma-4-e4b-think-symbolic-image", "ulisse-v1"), "v1_ge4b_s1", "ulisse1_ge4b",
                      source="G_med4_2ep_ge4b's marker in the record repo"),
+            _version("v1.2", "apache", PROJECT, "lora/gemma-4-E4B-it/r32/20261122_101943_V12_A1_gkl1_1ep_ge4b_by/final",
+                     ("AbstractPhil/gemma-4-e4b-think-symbolic-image", "ulisse-v1.2"), "v12_ge4b_by_s1", wordings="v1.1",
+                     source="V12_A1_gkl1_1ep_ge4b_by"),
+            _version("v1.2", "nc", PROJECT, "lora/gemma-4-E4B-it/r32/20261123_013549_V12NC_A1_gkl1_1ep_ge4b/final",
+                     ("AbstractPhil/gemma-4-e4b-think-symbolic-image-nc", "ulisse-v1.2"), "v12_ge4b_nc_s1", wordings="v1.1",
+                     source="V12NC_A1_gkl1_1ep_ge4b"),
         ],
         "comparisons": None,
         "space": {"lookers": {"v1": "ulisse-e4b"}, "gb": 15.99, "tps": 25},
-        "todo": ["peak apache, nc: measured by his smokes",
-                 "comparisons: none recorded; the generator's default set applies until his lane's plan names one",
-                 "repos nc: the E4B -nc release repo, created at its release"],
+        "todo": ["comparisons: none recorded; the generator's default set applies until his lane's plan names one",
+                 "bars apache: the bars command stops on K1's text bar (his held set anchors/v11a_ge4b/held.json holds no text "
+                 "request: gemma-4-E4B-it kept 591 of the text requests it wrote); the release read them on K_v12_A1_ge4b_by_t "
+                 "(the held text requests asked apart, v11txh_ge4b); how the package reads K1 for him decides it",
+                 "general answers: his lane asked his text answers again from text/requests_qwen_v1.json (v11txr_ge4b, "
+                 "v11txh_ge4b), and his -nc training took the merged anchors/v11a_ge4b_r (its keep read anchors/v11a_ge4b_t); "
+                 "this entry has the model write its own requests; whether it takes a requests file decides it"],
         "blockers": [],
     },
     "g12b": {
@@ -358,23 +416,33 @@ ENTRIES = {
         "general_answers": {"anchors": "anchors/v11a_g12b", "anchors_by": "anchors/v11a_g12b_by", "text": "anchors/v11txt_g12b"},
         "template": (_GEMMA_TEMPLATE + "; encoder-free: the early language layers read the picture and sit under the LoRA, so "
                      "an arm's picture dependence is read at its early checkpoints (tools.picture_probe), not only at the end"),
-        "pace": {"apache": _pace(7.0, False, _EST.format(v1=4.49, run="G_med4_2ep_g12b_lr5")),
-                 "nc": _pace(6.3, False, _EST.format(v1=4.49, run="G_med4_2ep_g12b_lr5"))},
-        "peak": {"apache": {"gb": None, "source": "not measured: his smoke measures it"},
-                 "nc": {"gb": None, "source": "not measured: his smoke measures it"}},
-        "repos": {"apache": "AbstractPhil/gemma-4-12b-think-symbolic-image", "nc": None, "full": None},
-        "tags": {"AbstractPhil/gemma-4-12b-think-symbolic-image": ["ulisse-v1", "v1"]},
+        "pace": {"apache": _pace(9.04, True, "measured: V12_A1_gkl1_1ep_g12b_by, 10,137 steps in 1,527.8 min over two machines "
+                                             "(the second from step 8,590)"),
+                 "nc": _pace(8.53, True, "measured: V12NC_A1_gkl1_1ep_g12b, 21,815 steps in 3,103.0 min over three machines "
+                                         "(the second from step 9,940, the third from step 19,740)")},
+        "peak": {"apache": {"gb": 61.78, "source": "measured: V12_A1_gkl1_1ep_g12b_by (his smoke 58.51)"},
+                 "nc": {"gb": 62.74, "source": "measured: V12NC_A1_gkl1_1ep_g12b (his smoke 56.1)"}},
+        "repos": {"apache": "AbstractPhil/gemma-4-12b-think-symbolic-image",
+                  "nc": "AbstractPhil/gemma-4-12b-think-symbolic-image-nc", "full": None},
+        "tags": {"AbstractPhil/gemma-4-12b-think-symbolic-image": ["ulisse-v1", "ulisse-v1.2", "v1"],
+                 "AbstractPhil/gemma-4-12b-think-symbolic-image-nc": ["ulisse-v1.2"]},
         "licenses": {"apache": "Apache-2.0", "nc": "CC BY-NC-SA 4.0"},
         "versions": [
             _version("v1", "apache", RECORD, "lora/gemma-4-12B-it/r32/20261101_151340_G_med4_2ep_g12b_lr5/final",
                      ("AbstractPhil/gemma-4-12b-think-symbolic-image", "ulisse-v1"), "v1_g12b_s1", "ulisse1_g12b",
                      source="G_med4_2ep_g12b_lr5's marker in the record repo"),
+            _version("v1.2", "apache", PROJECT, "lora/gemma-4-12B-it/r32/20261124_053851_V12_A1_gkl1_1ep_g12b_by/final",
+                     ("AbstractPhil/gemma-4-12b-think-symbolic-image", "ulisse-v1.2"), "v12_g12b_by_s1", wordings="v1.1",
+                     source="V12_A1_gkl1_1ep_g12b_by"),
+            _version("v1.2", "nc", PROJECT, "lora/gemma-4-12B-it/r32/20261124_064044_V12NC_A1_gkl1_1ep_g12b/final",
+                     ("AbstractPhil/gemma-4-12b-think-symbolic-image-nc", "ulisse-v1.2"), "v12_g12b_nc_s1", wordings="v1.1",
+                     source="V12NC_A1_gkl1_1ep_g12b"),
         ],
         "comparisons": None,
         "space": {"lookers": {"v1": "ulisse-12b"}, "gb": 23.92, "tps": 18},
-        "todo": ["peak apache, nc: measured by his smokes",
-                 "comparisons: none recorded; the generator's default set applies until his lane's plan names one",
-                 "repos nc: the 12B -nc release repo, created at its release"],
+        "todo": ["comparisons: none recorded; the generator's default set applies until his lane's plan names one",
+                 "general answers: his lane's v11a_g12b took its text requests from text/requests_qwen_v1.json (2,000 + 200); "
+                 "this entry has the model write its own requests; whether it takes a requests file decides it"],
         "blockers": [],
     },
     # ------------------------------------------------------------------------------------------------ the other families
@@ -391,20 +459,23 @@ ENTRIES = {
         # its v1.2 lane's general text requests: the cleaned requests file, as Anima's eyes (ae1b) take them
         "general_requests": {"requests": "hub:text/requests_qwen_v1_clean.json", "n_text": 500, "n_held_text": 40},
         "template": "no family-specific handling: the shared path (the chat template's own picture parts and turn end)",
-        "pace": {"apache": _pace(3.6, False, _EST.format(v1=2.29, run="G_med4_2ep_north"))},
-        "peak": {"apache": {"gb": None, "source": "not measured: its smoke measures it"}},
+        "pace": {"apache": _pace(3.46, True, "measured: V12_A1_gkl1_1ep_north_by, 10,137 steps in 585.1 min")},
+        "peak": {"apache": {"gb": 46.23, "source": "measured: V12_A1_gkl1_1ep_north_by (its smoke 34.44)"}},
         "repos": {"apache": "AbstractPhil/north-micro-vision-think-symbolic-image", "nc": None, "full": None},
-        "tags": {"AbstractPhil/north-micro-vision-think-symbolic-image": ["v1"]},
+        "tags": {"AbstractPhil/north-micro-vision-think-symbolic-image": ["v1", "v1.2"]},
         "licenses": {"apache": "Apache-2.0"},
         "versions": [
             _version("v1", "apache", RECORD, "lora/North-Micro-Vision-Instruct/r32/20261102_041917_G_med4_2ep_north/final",
                      ("AbstractPhil/north-micro-vision-think-symbolic-image", "v1"), "v1_north_s1", "v1_north",
                      source="G_med4_2ep_north's marker in the record repo"),
+            _version("v1.2", "apache", PROJECT,
+                     "lora/North-Micro-Vision-Instruct/r32/20261126_192053_V12_A1_gkl1_1ep_north_by/final",
+                     ("AbstractPhil/north-micro-vision-think-symbolic-image", "v1.2"), "v12_north_by_s1", wordings="v1.1",
+                     source="V12_A1_gkl1_1ep_north_by"),
         ],
         "comparisons": None,
         "space": {"lookers": {"v1": "north"}, "gb": 4.97, "tps": 45},
-        "todo": ["peak apache: measured by its smoke",
-                 "comparisons: none recorded; the generator's default set applies until its lane's plan names one"],
+        "todo": ["comparisons: none recorded; the generator's default set applies until its lane's plan names one"],
         "blockers": [],
     },
     "glm46v": {
@@ -421,20 +492,23 @@ ENTRIES = {
         # its v1.2 lane's general text requests: the cleaned requests file, as Anima's eyes (ae1b) take them
         "general_requests": {"requests": "hub:text/requests_qwen_v1_clean.json", "n_text": 500, "n_held_text": 40},
         "template": "GLM-4V: the MLP fuses its gate and up projections (gate_up_proj), which the LoRA targets name",
-        "pace": {"apache": _pace(14.4, False, _EST.format(v1=9.31, run="G_med4_2ep_glm46v"))},
-        "peak": {"apache": {"gb": None, "source": "not measured: its smoke measures it"}},
+        "pace": {"apache": _pace(13.59, True, "measured: V12_A1_gkl1_1ep_glm46v_by, 10,137 steps in 2,295.8 min over two machines "
+                                              "(the second from step 5,940)")},
+        "peak": {"apache": {"gb": 55.76, "source": "measured: V12_A1_gkl1_1ep_glm46v_by (its smoke 45.57)"}},
         "repos": {"apache": "AbstractPhil/glm-4.6v-flash-think-symbolic-image", "nc": None, "full": None},
-        "tags": {"AbstractPhil/glm-4.6v-flash-think-symbolic-image": ["v1"]},
+        "tags": {"AbstractPhil/glm-4.6v-flash-think-symbolic-image": ["v1", "v1.2"]},
         "licenses": {"apache": "MIT"},                               # its card follows the base's MIT license
         "versions": [
             _version("v1", "apache", RECORD, "lora/GLM-4.6V-Flash/r32/20261102_041223_G_med4_2ep_glm46v/final",
                      ("AbstractPhil/glm-4.6v-flash-think-symbolic-image", "v1"), "v1_glm46v_s1", "v1_glm46v",
                      source="G_med4_2ep_glm46v's marker in the record repo"),
+            _version("v1.2", "apache", PROJECT, "lora/GLM-4.6V-Flash/r32/20261126_013856_V12_A1_gkl1_1ep_glm46v_by/final",
+                     ("AbstractPhil/glm-4.6v-flash-think-symbolic-image", "v1.2"), "v12_glm46v_by_s1", wordings="v1.1",
+                     source="V12_A1_gkl1_1ep_glm46v_by"),
         ],
         "comparisons": None,
         "space": {"lookers": {"v1": "glm"}, "gb": 20.59, "tps": 20},
-        "todo": ["peak apache: measured by its smoke",
-                 "comparisons: none recorded; the generator's default set applies until its lane's plan names one"],
+        "todo": ["comparisons: none recorded; the generator's default set applies until its lane's plan names one"],
         "blockers": [],
     },
     "molmo2o": {
@@ -573,20 +647,26 @@ LATER = {
                      "ends <|im_end|>; one 448-pixel tile a picture (256 tokens). Anima's eyes: InternVL3.5-1B with Anima's own "
                      "language layers 24-27 and final norm (Qwen3-0.6B-Base); that slot carries no LoRA module and stays frozen "
                      "in the full fine-tune; the slot term holds its final states to Anima's encoder's (anima_eyes.py)"),
-        "pace": {"apache": _pace(2.1, False, "estimate: Lucia 0.8B v1.2's measured 2.09 s a step on the same Apache rows "
-                                             "(V12_A1_gkl1_1ep_08b_by, 10,137 steps in 353.0 min), the nearest size (a 0.6B "
-                                             "language model of the same width; 256 picture tokens a row); its smoke measures it")},
-        "peak": {"apache": {"gb": None, "source": "not measured: its smoke measures it (Lucia 0.8B's v1.2 training: 40.51 GB)"}},
-        "repos": {"apache": None, "nc": None, "full": None},
-        "tags": {}, "licenses": {"apache": "Apache-2.0"},     # InternVL3.5-1B and Qwen3-0.6B-Base are both Apache-2.0
-        "versions": [],
+        "pace": {"apache": _pace(2.01, True, "measured: V12_A1_gkl1_1ep_ae1b_by, 10,137 steps in 338.9 min")},
+        "peak": {"apache": {"gb": 21.29, "source": "measured: V12_A1_gkl1_1ep_ae1b_by (its smoke S_v12_smoke_gc1_ae1b_t1 18.89)"}},
+        # the full fine-tune is the release; the LoRA is not released (its rows never ended: the retrain ae1bt below)
+        "repos": {"apache": None, "nc": None, "full": "AbstractPhil/anima-eyes-1b-think-symbolic-image-full"},
+        "tags": {"AbstractPhil/anima-eyes-1b-think-symbolic-image-full": ["v1.2"]},
+        "licenses": {"apache": "Apache-2.0"},                 # InternVL3.5-1B and Qwen3-0.6B-Base are both Apache-2.0
+        "versions": [
+            _version("v1.2", "apache", PROJECT, "full/InternVL3_5-1B-anima-last4/20261125_123803_V12_A1_gkl1_1ep_ae1bf_by/final",
+                     ("AbstractPhil/anima-eyes-1b-think-symbolic-image-full", "v1.2"), "v12_ae1bf_by_s1", wordings="v1.1",
+                     source="V12_A1_gkl1_1ep_ae1bf_by, the full fine-tune"),
+        ],
         "comparisons": [{"of": "base", "reads": ["closer", "deep", "lettering", "control_lettering", "control"]}],
         "space": None,
-        "todo": ["peak apache: measured by its smoke",
-                 "repos apache: the release repos (the LoRA's and the full fine-tune's), named at the release",
-                 "full peak: measured by its smoke",
-                 "an A/B in ComfyUI (Anima with each trained model in its text-encoder slot against its own encoder) before "
-                 "either is called done"],
+        "todo": ["repos apache: the LoRA's release repo, named at a release (the full fine-tune's is released; the first LoRA's "
+                 "rows never ended, its retrain is ae1bt)",
+                 "an A/B in ComfyUI of the LoRA (Anima with it in its text-encoder slot against its own encoder) before it is "
+                 "called done (the full fine-tune's: a side-by-side look in ComfyUI on 2026-11-25, before its release)",
+                 "bars apache: none entered; no bars were read for the release (the full fine-tune); read on 2026-11-27 with "
+                 "the package's bar code on its full entry: NOT READY (T2 backed 0.194, T3 probe 118); the bars command reads "
+                 "the LoRA V12_A1_gkl1_1ep_ae1b_by (NOT READY: T1 full rows 0.017); which the page shows decides it"],
         "blockers": [],
         "prepare": {"name": "base_ae1b", "module": "anima_eyes_base", "args": {"head": _AE.HEAD},
                     "makes": [f"{_AE.FOLDER}/model.safetensors", f"{_AE.FOLDER}/config.json", f"{_AE.FOLDER}/anima_eyes.json"]},
@@ -611,9 +691,8 @@ LATER = {
                            "squared error per token). Every log line reads the agreement on 24 held Anima-style prompts "
                            "(slot_held, the centered cosine; the hybrid starts at 0.805)."),
         "full": {"key": "ae1bf", "lr": 2e-5, "batch": 8, "grad_accum": 2, "max_len": 2048, "general_kl": 1.0,
-                 "pace": _pace(1.8, False, "estimate: 2.09 s (Lucia 0.8B v1.2's LoRA) x 1.17 / 1.36 (the 0.8B's v1 full "
-                                           "fine-tune F_med4_2ep_08b against its LoRA G_med4_2ep_08b); its smoke measures it"),
-                 "peak": {"gb": None, "source": "not measured: its smoke measures it"}},
+                 "pace": _pace(1.87, True, "measured: V12_A1_gkl1_1ep_ae1bf_by, 10,137 steps in 315.7 min"),
+                 "peak": {"gb": 35.67, "source": "measured: V12_A1_gkl1_1ep_ae1bf_by (its smoke S_v12_smoke_gc1_ae1bf_t1 31.99)"}},
         # The LoRA again, with its output head's turn-end row trained beside its pairs (ae1bt). The first LoRA
         # (V12_A1_gkl1_1ep_ae1b_by) wrote each row right and then never ended it: junk tokens and newlines to the token cap,
         # so every read rejected its rows (0 or 1 kept of every set; the full fine-tune kept 97-100% of the text reads). The

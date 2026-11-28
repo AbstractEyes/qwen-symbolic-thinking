@@ -59,7 +59,7 @@ def test_our_numbers_and_the_yardstick_appear_where_we_have_them():
     assert "| the verdict | every bar passes | - / - | PASS / PASS |" in two
     assert "On a G4 the three took 30.4 minutes (measured:" in two
     small, _ = training_md.render(registry.get("08b"))
-    assert "| T3 probe (of 500 held-out pictures) | within 10 of the yardstick (above the band is never a miss) | 143 / 134 | not read yet / not read yet |" in small
+    assert "| T3 probe (of 500 held-out pictures) | within 10 of the yardstick (above the band is never a miss) | 143 / 134 | 136 / 155 |" in small
     glm, _ = training_md.render(registry.get("glm46v"))
     assert "the trained adapter follows its base model's license, MIT" in glm and "learning rate | 2e-4" in glm
     assert "learning rate | 5e-5" in training_md.render(registry.get("g12b"))[0]
