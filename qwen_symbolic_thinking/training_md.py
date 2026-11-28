@@ -306,8 +306,11 @@ def general_time(entry: dict) -> str:
     if entry["key"] in m:
         t = m[entry["key"]]
         return f"On a G4 the three took {t['minutes']} minutes (measured: {t['source']})."
-    known = " and ".join(f"the {registry.get(k)['name']}'s {v['minutes']}" for k, v in m.items())
-    return f"Not measured for this model; on a G4 {known} minutes (measured), a larger model longer."
+    # 2026-11-27: the measured times do not grow with the model's size (the 1B Anima eyes 139.1 against the 12B's 103.2; the
+    # requests asked differ by model), so the sentence gives them as they are and claims no trend
+    known = ", ".join(f"the {registry.get(k)['name']}'s {v['minutes']}" for k, v in m.items())
+    return (f"Not measured for this model; on a G4 they took {known} minutes (measured), which follow neither the model's size "
+            "nor one another closely.")
 
 
 def comparisons(entry: dict) -> str:
