@@ -306,7 +306,7 @@ def general_time(entry: dict) -> str:
     if entry["key"] in m:
         t = m[entry["key"]]
         return f"On a G4 the three took {t['minutes']} minutes (measured: {t['source']})."
-    known = " and ".join(f"the {registry.ENTRIES[k]['name']}'s {v['minutes']}" for k, v in m.items())
+    known = " and ".join(f"the {registry.get(k)['name']}'s {v['minutes']}" for k, v in m.items())
     return f"Not measured for this model; on a G4 {known} minutes (measured), a larger model longer."
 
 
